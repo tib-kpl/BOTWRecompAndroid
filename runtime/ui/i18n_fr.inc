@@ -1,4 +1,8 @@
 // French Android menu catalog. English source strings are stable lookup keys.
+{"Storage", "Stockage"},
+{"Game data storage", "Stockage des données du jeu"},
+{"Choose where game files and saves are stored. Changing storage restarts the app. Existing files stay in their current location.",
+ "Choisissez où stocker les fichiers du jeu et les sauvegardes. Changer de stockage redémarre l’application. Les fichiers existants restent à leur emplacement actuel."},
 {"A file in the chosen folder couldn't be read. Copy the whole game folder again and try again.",
  "Impossible de lire un fichier du dossier choisi. Copiez à nouveau tout le dossier du jeu, puis réessayez."},
 {"Motion controls",

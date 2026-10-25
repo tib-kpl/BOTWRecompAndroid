@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="storage_title">Stockage des données du jeu</string>
+    <string name="storage_internal">Stockage interne</string>
+    <string name="storage_removable">Carte SD / stockage amovible</string>
+    <string name="storage_save_error">Impossible d’enregistrer le choix du stockage. Réessayez.</string>
     <string name="shortcut_watch_map">Carte sur la montre</string>
     <string name="shortcut_watch_map_long">Configurer la mini-carte sur la montre</string>
     <string name="shortcut_system_driver">Pilote du système</string>

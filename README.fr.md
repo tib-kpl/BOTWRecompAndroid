@@ -76,10 +76,13 @@ la détection et réaffecter les boutons. La disposition par défaut est celle d
 
 1. Téléchargez l’APK depuis [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) et installez-le
    (Android 11 ou ultérieur, ARM64, Vulkan ; environ 30 Go d’espace libre par version du jeu).
-2. Ouvrez l’application, choisissez **Importer les fichiers du jeu**, puis sélectionnez le dossier contenant
+2. Pour stocker les données du jeu sur une carte SD, ouvrez d’abord **Paramètres → Fichiers → Stockage des données
+   du jeu** et sélectionnez la carte. Le choix est conservé au prochain lancement ; changer de stockage redémarre
+   l’application et ne déplace pas les fichiers existants.
+3. Choisissez **Importer les fichiers du jeu**, puis sélectionnez le dossier contenant
    `exefs` et `romfs`. La version est détectée à partir des fichiers. L’application copie les fichiers nécessaires
    et compile le code du jeu sur le téléphone.
-3. Sur les téléphones équipés d’un GPU Adreno, un pilote Mesa Turnip (**Paramètres → Fichiers → Pilote Vulkan**)
+4. Sur les téléphones équipés d’un GPU Adreno, un pilote Mesa Turnip (**Paramètres → Fichiers → Pilote Vulkan**)
    fait tourner le jeu beaucoup plus vite que le pilote du système. Si l’application s’arrête au démarrage avec
    « Vulkan driver is too old », faites un appui long sur son icône et choisissez **Choisir un pilote** pour en
    sélectionner un avant le lancement du jeu.

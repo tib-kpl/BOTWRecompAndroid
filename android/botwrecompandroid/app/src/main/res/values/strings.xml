@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="storage_title">Game data storage</string>
+    <string name="storage_internal">Internal storage</string>
+    <string name="storage_removable">SD card / removable storage</string>
+    <string name="storage_save_error">Could not save the storage selection. Try again.</string>
     <string name="shortcut_watch_map">Watch map</string>
     <string name="shortcut_watch_map_long">Configure the watch minimap</string>
     <string name="shortcut_system_driver">System driver</string>

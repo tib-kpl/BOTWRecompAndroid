@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="storage_title">Armazenamento dos dados do jogo</string>
+    <string name="storage_internal">Armazenamento interno</string>
+    <string name="storage_removable">Cartão SD / armazenamento removível</string>
+    <string name="storage_save_error">Não foi possível salvar a escolha de armazenamento. Tente novamente.</string>
     <string name="shortcut_watch_map">Mapa no relógio</string>
     <string name="shortcut_watch_map_long">Configurar o minimapa no relógio</string>
     <string name="shortcut_system_driver">Driver do sistema</string>

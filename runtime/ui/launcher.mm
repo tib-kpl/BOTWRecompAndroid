@@ -1818,6 +1818,13 @@ extern "C" void launcher_run(const char *root) {
                 if (seen_frame != ImGui::GetFrameCount() - 1) focus_first = 4;
                 seen_frame = ImGui::GetFrameCount();
                 opt_begin("##files", sc);
+#ifdef __ANDROID__
+                opt_section("Storage");
+                if (busy) opt_disable_next();
+                std::string storage_desc = std::string(tr("Choose where game files and saves are stored. Changing storage "
+                    "restarts the app. Existing files stay in their current location.")) + "\n\n" + rt_data_root();
+                if (opt_action("Game data storage", "Choose...", storage_desc.c_str(), true)) android_call("pickGameStorage");
+#endif
                 version_rows(busy, focus_first > 0 && focus_first--);
                 // the folder: this version's files when they aren't set up, else another version's (or this one's again)
                 opt_section("Your copy of the game");

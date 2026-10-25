@@ -31,6 +31,7 @@ import android.content.IntentFilter;
 import android.content.res.AssetManager;
 import android.os.BatteryManager;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -94,9 +95,12 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         try {
             // Match native menus to Android's selected app language, including per-app language settings.
             setenv("LARECOMP_HOST_LANG", getResources().getConfiguration().getLocales().get(0).toLanguageTag());
+            File dataRoot = gameDataDirectory(this);
+            setenv("LARECOMP_DATA_ROOT", dataRoot.getAbsolutePath());
+            Log.i(TAG, "game data: " + dataRoot.getAbsolutePath());
             File res = new File(getFilesDir(), "res");
             copyAssets("res", res);
-            File games = new File(getExternalFilesDir(null), "extracted");
+            File games = new File(dataRoot, "extracted");
             copyIfChanged(new File(games, "botwgame.so"), new File(res, "botwgame.so"));
             copyIfChanged(new File(games, "botwgame.so.id"), new File(res, "botwgame.so.id"));
             setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir);
@@ -128,7 +132,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 if (env.contains("LARECOMP_EXPORT_GAMELIB")) {
                     File lib = new File(res, "botwgame.so");
                     if (lib.exists()) try (InputStream in = new FileInputStream(lib)) {
-                        copy(in, new File(getExternalFilesDir(null), "botwgame-export.so"));
+                        copy(in, new File(dataRoot, "botwgame-export.so"));
                     }
                 }
             }
@@ -233,6 +237,43 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     }
 
     // ---- pickers (called from the start screen, on SDL's thread)
+    private static File gameDataDirectory(Context context) {
+        // Create this app's directories on mounted volumes through Android's storage API.
+        context.getExternalFilesDirs(null);
+        String selected = context.getSharedPreferences("game_storage", MODE_PRIVATE).getString("data_root", "");
+        // Keep the selected path if its card is absent: native startup reports the unavailable storage instead of
+        // silently importing a second copy into internal storage.
+        return selected.isEmpty() ? context.getExternalFilesDir(null) : new File(selected);
+    }
+
+    public static void pickGameStorage() {
+        self.runOnUiThread(() -> {
+            List<File> locations = new ArrayList<>();
+            List<String> labels = new ArrayList<>();
+            int checked = 0;
+            File current = gameDataDirectory(self);
+            for (File dir : self.getExternalFilesDirs(null)) {
+                if (dir == null || !Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState(dir))) continue;
+                if (dir.equals(current)) checked = locations.size();
+                locations.add(dir);
+                labels.add(self.getString(Environment.isExternalStorageRemovable(dir)
+                        ? R.string.storage_removable : R.string.storage_internal));
+            }
+            new AlertDialog.Builder(self).setTitle(R.string.storage_title)
+                .setSingleChoiceItems(labels.toArray(new String[0]), checked, (dialog, which) -> {
+                    File selected = locations.get(which);
+                    dialog.dismiss();
+                    if (selected.equals(current)) return;
+                    if (self.getSharedPreferences("game_storage", MODE_PRIVATE).edit()
+                            .putString("data_root", selected.getAbsolutePath()).commit()) {
+                        restartApp();
+                    } else {
+                        android.widget.Toast.makeText(self, R.string.storage_save_error, android.widget.Toast.LENGTH_LONG).show();
+                    }
+                }).setNegativeButton(R.string.action_cancel, null).show();
+        });
+    }
+
     public static void pickGameFolder() {
         self.runOnUiThread(() -> {
             try {

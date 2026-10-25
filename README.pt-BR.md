@@ -67,9 +67,12 @@ os botões. A disposição padrão é a da Nintendo: **A à direita, B embaixo**
 
 1. Baixe o APK em [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) e instale (Android 11+, arm64,
    Vulkan; cerca de 30 GB livres por versão do jogo).
-2. Abra, vá em **Configurar arquivos do jogo** e escolha a pasta com o seu `exefs` e `romfs`. A versão é reconhecida
+2. Para guardar os dados do jogo no cartão SD, abra primeiro **Configurações → Arquivos → Armazenamento dos dados
+   do jogo** e selecione o cartão. A escolha é mantida nos próximos inícios; mudar o armazenamento reinicia o app
+   e não move os arquivos existentes.
+3. Vá em **Configurar arquivos do jogo** e escolha a pasta com o seu `exefs` e `romfs`. A versão é reconhecida
    pelos arquivos. O app copia o que precisa e compila o código do jogo no celular.
-3. Em celulares com Adreno, um driver Mesa Turnip (Configurações > Arquivos > Driver Vulkan) roda o jogo bem mais
+4. Em celulares com Adreno, um driver Mesa Turnip (Configurações > Arquivos > Driver Vulkan) roda o jogo bem mais
    rápido que o driver do sistema. Se o app parar ao abrir com "Vulkan driver is too old", toque e segure o ícone do
    app e escolha **Escolher driver** para selecionar um antes de o jogo começar.
 

@@ -1,5 +1,9 @@
 // The menus' text in Brazilian Portuguese (ui/i18n.mm): {English as in the code, Portuguese}. LASRecompAndroid's
 // translations for the strings both apps share, BOTW's own for the rest.
+{"Storage", "Armazenamento"},
+{"Game data storage", "Armazenamento dos dados do jogo"},
+{"Choose where game files and saves are stored. Changing storage restarts the app. Existing files stay in their current location.",
+ "Escolha onde armazenar os arquivos do jogo e os saves. Mudar o armazenamento reinicia o app. Os arquivos existentes ficam no local atual."},
 {"\n\nChosen: ",
  "\n\nEscolhida: "},
 {"\n\nProgress since your last save is lost.",
