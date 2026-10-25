@@ -1,6 +1,6 @@
 # BOTWRecompAndroid
 
-[English](README.md) | **Português**
+[English](README.md) | [Français](README.fr.md) | **Português**
 
 > [!NOTE]
 > **Objetivo deste fork**
