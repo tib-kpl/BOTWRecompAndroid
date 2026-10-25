@@ -98,6 +98,9 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             File dataRoot = gameDataDirectory(this);
             setenv("LARECOMP_DATA_ROOT", dataRoot.getAbsolutePath());
             Log.i(TAG, "game data: " + dataRoot.getAbsolutePath());
+            File buildCache = new File(getCacheDir(), "gamebuild");
+            if (!buildCache.isDirectory() && !buildCache.mkdirs()) throw new IOException("Could not create compiler cache");
+            setenv("LARECOMP_BUILD_CACHE_DIR", buildCache.getAbsolutePath());
             File res = new File(getFilesDir(), "res");
             copyAssets("res", res);
             File games = new File(dataRoot, "extracted");

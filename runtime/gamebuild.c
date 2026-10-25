@@ -503,6 +503,15 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
     if (t.zig) {  // its caches in the work folder too (deleted below), not ~/.cache: hundreds of MB, used once
         char zc[1200];
         snprintf(zc, sizeof zc, "%s" SEP "zig-cache", work);
+#ifdef __ANDROID__
+        // Removable SD volumes can reject Zig's cache manifest locks. Android's private cache supports them;
+        // generated sources and game data still use the selected game folder on the SD card.
+        const char *cache = getenv("LARECOMP_BUILD_CACHE_DIR");
+        if (cache && *cache) {
+            snprintf(zc, sizeof zc, "%s/v%d", cache, rt_game_dir_version(game_dir));
+            mkdir(zc, 0700);
+        }
+#endif
 #ifdef _WIN32
         _putenv_s("ZIG_GLOBAL_CACHE_DIR", zc);
         _putenv_s("ZIG_LOCAL_CACHE_DIR", zc);
