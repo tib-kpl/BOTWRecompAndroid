@@ -325,7 +325,14 @@ static float extract_progress(void) {
 // Builds the game code from the copied files in dir (a few minutes); false = failed (the job line says so)
 static bool build_game_code(const std::string &dir) {
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
-    GameBuildOpts o = {build_progress, cores < ram_gb - 2 ? cores : ram_gb - 2 > 1 ? ram_gb - 2 : 1};
+    int memory_jobs = ram_gb - 2;
+#ifdef __ANDROID__
+    // A large generated chunk can use several GiB in clang. Keep room for Android and the two generators:
+    // five concurrent compilers caused the low-memory killer to stop setup on an 8 GiB Odin 2 Portal.
+    memory_jobs = (ram_gb - 2) / 3;
+#endif
+    if (memory_jobs < 1) memory_jobs = 1;
+    GameBuildOpts o = {build_progress, cores < memory_jobs ? cores : memory_jobs};
     char why[256] = "";
     g_build_frac = 0;
     bool ok = gamebuild_run(dir.c_str(), &o, why, sizeof why);
