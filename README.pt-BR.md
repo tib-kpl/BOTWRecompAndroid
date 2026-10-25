@@ -26,7 +26,7 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
   bordas da tela) e o ritmo de quadros do SavageWindRecomp.
 - **Vídeo:** resolução interna, upscaling AMD FSR 1 / Snapdragon GSR 1, resolução de saída, SMAA.
 - **App:** configuração dos arquivos do jogo pelo celular (cada versão na sua pasta, trocadas na página Arquivos do
-  Jogo), controles de toque, controles físicos, mods, menus em inglês e português, escolha do driver Vulkan (Turnip
+  Jogo), controles de toque, controles físicos, mods, menus em inglês, francês e português, escolha do driver Vulkan (Turnip
   pelo adrenotools) e opções de compatibilidade do driver.
 - **Lacunas conhecidas:** configurar o jogo pelo celular compila o código do jogo nele, e isso ainda não foi medido nem
   testado com o BOTW (espere uma demora longa e o celular quente); GPUs que não são Adreno 8xx usam caminhos mais
@@ -42,7 +42,7 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
 
 ## Instalando (beta)
 
-1. Baixe o APK em [Releases](https://github.com/mamcjr/BOTWRecompAndroid/releases) e instale (Android 11+, arm64,
+1. Baixe o APK em [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) e instale (Android 11+, arm64,
    Vulkan; cerca de 30 GB livres por versão do jogo).
 2. Abra, vá em **Configurar arquivos do jogo** e escolha a pasta com o seu `exefs` e `romfs`. A versão é reconhecida
    pelos arquivos. O app copia o que precisa e compila o código do jogo no celular.

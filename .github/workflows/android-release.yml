@@ -43,7 +43,7 @@ jobs:
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_LINUX=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "$ANDROID_HOME/cmake/$CMAKE_VERSION/bin" >> "$GITHUB_PATH"
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         id: deps
         with:
           path: android/deps/out
@@ -54,6 +54,12 @@ jobs:
           bash android/deps/build_deps.sh
           bash android/deps/build_ffmpeg.sh
           bash android/deps/build_gen_deps.sh
+      # Preserve expensive native builds even if a later Gradle/signing step fails.
+      - uses: actions/cache/save@v4
+        if: steps.deps.outputs.cache-hit != 'true'
+        with:
+          path: android/deps/out
+          key: ${{ steps.deps.outputs.cache-primary-key }}
       - name: Restore release signing key
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:

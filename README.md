@@ -26,7 +26,7 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
   the screen's edges) and SavageWindRecomp's frame pacing.
 - **Video:** internal resolution, AMD FSR 1 / Snapdragon GSR 1 upscaling, output resolution, SMAA.
 - **App:** game files set up from the phone (each version in its own folder, switched on the Game Files page), touch
-  controls, controllers, mods, menus in English and Portuguese, Vulkan driver choice (Turnip via adrenotools) and
+  controls, controllers, mods, menus in English, French and Portuguese, Vulkan driver choice (Turnip via adrenotools) and
   driver compatibility options.
 - **Known gaps:** setting the game up on the phone compiles the game code there, and that has not been timed or
   tested with BOTW yet (expect a long wait and a hot phone); GPUs other than Adreno 8xx take slower, safer paths;
@@ -42,7 +42,7 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
 
 ## Installing (beta)
 
-1. Download the APK from [Releases](https://github.com/mamcjr/BOTWRecompAndroid/releases) and install it (Android 11+,
+1. Download the APK from [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) and install it (Android 11+,
    arm64, Vulkan; about 30 GB free per game version).
 2. Open it, go to **Set up game files** and choose the folder with your `exefs` and `romfs`. The version is told from
    the files. The app copies what it needs and builds the game code on the phone.
