@@ -3387,7 +3387,7 @@ static uint64_t gmem_tried;  // heap size the import was last attempted for (gme
 // own bytes, as with the desktop's import - no CPU copies (gcopy_prepare), and what a compute pass writes the next
 // draw reads (the game's lighting: lights listed by compute, read by the fragment shaders). Freed on reset (vkFreeMemory
 // unmaps it; runtime/main.c then remaps the whole window). LARECOMP_VK_NO_PLACED=1: off (CPU copies).
-bool vk_heap_place(uint64_t size) {
+static bool try_heap_place(uint64_t size) {
 #ifdef __ANDROID__
     extern void vk_async_drain(void);
     vk_async_drain();  // (the render thread idle: vulkan/async.c)
@@ -3457,6 +3457,16 @@ bool vk_heap_place(uint64_t size) {
         (unsigned long long)(size >> 20), (unsigned long long)HEAP_BASE, type, (unsigned)mp.memoryTypes[type].propertyFlags,
         (unsigned long long)(g_vk.props.limits.maxStorageBufferRange >> 20), gwin_mode ? "; draws reach global memory through windows" : "");
     return true;
+}
+
+bool vk_heap_place(uint64_t size) {
+    bool placed = try_heap_place(size);
+    // The extension can be present while this path is disabled by Driver compatibility, or placement can fail.
+    // Copy mode still needs write tracking for its vertex cache and texture checks. Testing only map_placed in
+    // vk_exec_init left those caches disabled on an Adreno 740 with Turnip's extension available but heap = Auto.
+    // Do this after the placement decision: CPU page protection must not be enabled on a directly mapped GPU heap.
+    if (size && !placed && gcopy_mode) plat_write_tracking_enable(HEAP_BASE, HEAP_BASE + HEAP_MAX);
+    return placed;
 }
 #endif
 

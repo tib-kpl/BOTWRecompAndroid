@@ -15,6 +15,7 @@ textures = (ROOT / 'runtime/nvn/vulkan/textures.c').read_text()
 execution = (ROOT / 'runtime/nvn/vulkan/exec.c').read_text()
 texture_helpers = textures[textures.index('static uint8_t *upload_scratch;'):textures.index('uint64_t prof_tex_checks,')]
 arena_helper = execution[execution.index('static uint64_t ga_load_copy('):execution.index('static bool gres_prepare(')]
+heap_fallback = execution[execution.index('bool vk_heap_place('):execution.index('#endif', execution.index('bool vk_heap_place('))]
 preamble = r"""
 typedef unsigned long long uint64_t;
 typedef unsigned int size_t;
@@ -50,6 +51,15 @@ int atoi(const char *s) { return 0; }
 typedef struct { uint64_t data_hash; } TexBackend;
 static uint8_t guest[2048], arena[4096];
 #define HEAP_BASE ((uintptr_t)guest)
+#define HEAP_MAX sizeof guest
+static bool gcopy_mode, place_result;
+static int tracking_calls;
+static uint64_t tracking_lo, tracking_hi;
+static bool try_heap_place(uint64_t size) { return place_result; }
+static void plat_write_tracking_enable(uint64_t lo, uint64_t hi) {
+    tracking_calls++;
+    tracking_lo = lo; tracking_hi = hi;
+}
 static uint8_t *ga_ptr = arena;
 static uint64_t gcopy_gen, seq = 1, top;
 static uint64_t vk_pending_seq(void) { return seq; }
@@ -62,6 +72,17 @@ tests = r"""
 #define CHECK(c) do { count++; if (!(c)) return count; } while (0)
 int test(void) {
     int count = 0;
+    // An advertised placement extension can still be disabled or fail. Copy-mode caches must remain available.
+    gcopy_mode = true;
+    CHECK(!vk_heap_place(1024) && tracking_calls == 1);
+    CHECK(tracking_lo == HEAP_BASE && tracking_hi == HEAP_BASE + HEAP_MAX);
+    // Direct GPU mappings must never receive CPU page protection through this fallback.
+    place_result = true;
+    CHECK(vk_heap_place(1024) && tracking_calls == 1);
+    place_result = false; gcopy_mode = false;
+    CHECK(!vk_heap_place(1024) && tracking_calls == 1);
+    gcopy_mode = true;
+    CHECK(!vk_heap_place(0) && tracking_calls == 1);
     TexBackend b = {123};
     uint8_t pixels[64] = {1, 2, 3};
     CHECK(!texture_unchanged(&b, pixels, sizeof pixels));
@@ -109,7 +130,7 @@ int test(void) {
 }
 """
 source = OUT / 'upload_caches.c'
-source.write_text(preamble + texture_helpers + arena_helper + tests)
+source.write_text(preamble + texture_helpers + arena_helper + heap_fallback + tests)
 subprocess.run([str(BIN / 'clang.exe'), '-target', 'wasm32', '-ffreestanding', '-fno-builtin', '-O2', '-c', str(source), '-o', str(OUT / 'upload_caches.o')], check=True)
 subprocess.run([str(BIN / 'ld.lld.exe'), '-flavor', 'wasm', '--no-entry', '--export=test', str(OUT / 'upload_caches.o'), '-o', str(OUT / 'upload_caches.wasm')], check=True)
 runner = OUT / 'upload_caches.cjs'
