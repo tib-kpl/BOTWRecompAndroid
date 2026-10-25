@@ -37,3 +37,17 @@ SDL, shaderc, FFmpeg, and the Python/Zig/Capstone/Unicorn/LZ4 toolchain needed t
 phone. Native dependencies are cached by their build scripts and NDK version. No game dump is needed or included.
 Before publishing, CI verifies the APK signature and checks that the native runtime and on-device compiler are
 actually packaged. A failed build publishes no release; inspect the Actions log for the failing step.
+
+## Re-running an older workflow
+
+[GitHub restricts release creation](https://docs.github.com/en/rest/releases/releases#create-a-release) when the
+target commit's workflow files differ from the current default branch. Its built-in Actions token cannot obtain
+the extra workflow permission. This can affect a historical build re-run after the CI itself was changed; normal
+commits using the current workflow publish automatically.
+
+If that publication step fails with `403 Resource not accessible by integration`, the signed `android-release`
+artifact is still available in the successful APK job. A repository owner can download it with
+`gh run download RUN_ID --name android-release --dir dist` and publish it from their authenticated local CLI with
+`gh release create TAG dist/* --target FULL_COMMIT_SHA --prerelease --latest=false --notes "Android CI build"`.
+Use the build's original tag (`build-RUN_NUMBER-SHORT_SHA`), then re-run the failed publication job. The workflow
+detects the existing release and replaces its assets without creating another tag or release.
