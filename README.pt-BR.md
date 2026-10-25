@@ -3,10 +3,20 @@
 [English](README.md) | **Português**
 
 > [!NOTE]
-> **Controles integrados — AYN Thor, Odin 2 e Retroid:** os botões padrão, os dois analógicos e os gatilhos devem
-> funcionar pelo suporte a gamepads Android do SDL3, desde que o aparelho seja compatível com o APK. Esses portáteis
-> **ainda não foram testados com este fork**. Abra **Configurações → Controles** para verificar a detecção e remapear
-> os botões. A disposição padrão é a da Nintendo: **A à direita, B embaixo**.
+> **Objetivo deste fork**
+>
+> Este fork de [mamcjr/BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) facilita o download das versões
+> Android e amplia os idiomas disponíveis nos menus do aplicativo. As adições atuais são:
+>
+> - **Releases automáticas de APK:** cada push bem-sucedido para `main` gera um APK Android assinado e o publica como
+>   pré-release na [página Releases deste fork](https://github.com/tib-kpl/BOTWRecompAndroid/releases).
+> - **Menus em francês:** traduções para a tela inicial, configurações, controles, diálogos e atalhos Android,
+>   junto dos menus existentes em inglês e português. A interface segue o idioma do aplicativo no Android.
+> - **Suporte a futuras traduções:** catálogos separados, recursos de texto Android e verificações na CI facilitam
+>   a inclusão de outros idiomas. Veja o [guia de tradução](docs/TRANSLATIONS.md).
+>
+> O motor de recompilação e o suporte existente ao jogo vêm dos projetos de origem creditados abaixo. As traduções
+> dos menus descritas aqui são da interface do aplicativo; o idioma dos textos do jogo tem sua própria configuração.
 
 Uma recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões **1.0.0, 1.6.0 e
 1.8.2**) para Android. **Não é emulação**: o código ARM64 do jogo vira C compilado para o seu celular, e os gráficos
@@ -18,21 +28,6 @@ O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)
 > [!WARNING]
 > **Beta.** Testado num celular só (POCO F7 Ultra, Adreno 830, driver Mesa Turnip). Espere bugs. O plano e o estado
 > de cada fase estão em [docs/BOTW-PORT.md](docs/BOTW-PORT.md).
-
-## Objetivo deste fork
-
-Este fork de [mamcjr/BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) facilita o download das versões
-Android e amplia os idiomas disponíveis nos menus do aplicativo. As adições atuais são:
-
-- **Releases automáticas de APK:** cada push bem-sucedido para `main` gera um APK Android assinado e o publica como
-  pré-release na [página Releases deste fork](https://github.com/tib-kpl/BOTWRecompAndroid/releases).
-- **Menus em francês:** traduções para a tela inicial, configurações, controles, diálogos e atalhos Android,
-  junto dos menus existentes em inglês e português. A interface segue o idioma do aplicativo no Android.
-- **Suporte a futuras traduções:** catálogos separados, recursos de texto Android e verificações na CI facilitam
-  a inclusão de outros idiomas. Veja o [guia de tradução](docs/TRANSLATIONS.md).
-
-O motor de recompilação e o suporte existente ao jogo vêm dos projetos de origem creditados abaixo. As traduções
-dos menus descritas aqui são da interface do aplicativo; o idioma dos textos do jogo tem sua própria configuração.
 
 ## Plataforma suportada
 
@@ -60,6 +55,13 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
 > [!NOTE]
 > **Nenhum arquivo do jogo vem incluído.** Você precisa do seu próprio dump, obtido legalmente, de *Breath of the
 > Wild* 1.0.0, 1.6.0 ou 1.8.2 (`exefs` e `romfs`, extraídos). Não serão dadas instruções de como obtê-lo.
+
+## Compatibilidade dos controles
+
+**Controles integrados — AYN Thor, Odin 2 e Retroid:** os botões padrão, os dois analógicos e os gatilhos devem
+funcionar pelo suporte a gamepads Android do SDL3, desde que o aparelho seja compatível com o APK. Esses portáteis
+**ainda não foram testados com este fork**. Abra **Configurações → Controles** para verificar a detecção e remapear
+os botões. A disposição padrão é a da Nintendo: **A à direita, B embaixo**.
 
 ## Instalando (beta)
 

@@ -3,10 +3,22 @@
 **English** | [Português](README.pt-BR.md)
 
 > [!NOTE]
-> **Built-in controllers — AYN Thor, Odin 2 and Retroid:** standard buttons, both sticks and triggers are expected
-> to work through SDL3's Android gamepad support, provided the device is compatible with the APK. These handhelds
-> have **not yet been tested with this fork**. Open **Settings → Controls** to check detection and remap buttons.
-> The default layout is Nintendo-style: **A on the right, B at the bottom**.
+> **Purpose of this fork**
+>
+> This fork of [mamcjr/BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) focuses on making Android builds
+> easy to download and the application's menus accessible in more languages. Its current additions are:
+>
+> - **Automatic APK releases:** every successful push to `main` builds a signed Android APK and publishes it as a
+>   prerelease on [this fork's Releases page](https://github.com/tib-kpl/BOTWRecompAndroid/releases).
+> - **French menus:** French translations for the launcher, settings, controls, Android dialogs and shortcuts,
+>   alongside the existing English and Portuguese menus. The interface follows the Android app language.
+> - **Support for future translations:** separate translation catalogs, Android string resources and CI checks make
+>   it easier to add more languages. See [the translation guide](docs/TRANSLATIONS.md).
+>
+> The recompilation engine and existing game support come from the upstream projects credited below. The menu
+> translations described here concern the application interface; the game's text language has its own setting.
+>
+> See [Android CI releases](docs/ANDROID-RELEASES.md) for build and signing details.
 
 A static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0 and
 1.8.2**) for Android. This is **not emulation**: the game's ARM64 code becomes C compiled for your phone, and its
@@ -18,21 +30,6 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 > [!WARNING]
 > **Beta.** Tested on one phone only (POCO F7 Ultra, Adreno 830, Mesa Turnip driver). Expect bugs. The plan and the
 > state of each phase are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (in Portuguese).
-
-## Purpose of this fork
-
-This fork of [mamcjr/BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) focuses on making Android builds
-easy to download and the application's menus accessible in more languages. Its current additions are:
-
-- **Automatic APK releases:** every successful push to `main` builds a signed Android APK and publishes it as a
-  prerelease on [this fork's Releases page](https://github.com/tib-kpl/BOTWRecompAndroid/releases).
-- **French menus:** French translations for the launcher, settings, controls, Android dialogs and shortcuts,
-  alongside the existing English and Portuguese menus. The interface follows the Android app language.
-- **Support for future translations:** separate translation catalogs, Android string resources and CI checks make
-  it easier to add more languages. See [the translation guide](docs/TRANSLATIONS.md).
-
-The recompilation engine and existing game support come from the upstream projects credited below. The menu
-translations described here concern the application interface; the game's text language has its own setting.
 
 ## Supported platform
 
@@ -61,6 +58,13 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
 > **No game files are included.** You need your own legally obtained dump of *Breath of the Wild* 1.0.0, 1.6.0 or
 > 1.8.2 (`exefs` and `romfs`, extracted). Instructions on how to obtain it will not be provided.
 
+## Controller compatibility
+
+**Built-in controllers — AYN Thor, Odin 2 and Retroid:** standard buttons, both sticks and triggers are expected
+to work through SDL3's Android gamepad support, provided the device is compatible with the APK. These handhelds
+have **not yet been tested with this fork**. Open **Settings → Controls** to check detection and remap buttons.
+The default layout is Nintendo-style: **A on the right, B at the bottom**.
+
 ## Installing (beta)
 
 1. Download the APK from [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) and install it (Android 11+,
@@ -81,12 +85,6 @@ android/build_gamelib.sh Dump/01007EF00011E000/exefs  # the game code (about an 
 android/push_game.sh Dump/01007EF00011E000           # game files and game code onto the phone
 android/run_boot.sh 120                               # start the game, log to android/out/boot.log
 ```
-
-## Automated builds and translations
-
-Automatic Android APKs are available on this fork's [GitHub Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases)
-after successful pushes to `main`. See [Android CI releases](docs/ANDROID-RELEASES.md) for signing and build details,
-and [Translations](docs/TRANSLATIONS.md) for the French/Portuguese menu catalogs and adding another language.
 
 ## Credits
 
