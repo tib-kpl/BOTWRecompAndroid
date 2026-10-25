@@ -22,4 +22,5 @@
     <string name="action_save">Save</string>
     <string name="watch_code_copied">Code copied</string>
     <string name="watch_crop_error">Enter four comma-separated values from 0 to 100, with left &lt; right and top &lt; bottom. Use a period for decimals.</string>
+    <string name="driver_error_intro">The graphics driver couldn\'t run the game. A Turnip driver for your GPU (.zip) usually solves it: tap Install a driver.\n\nDetails:</string>
 </resources>

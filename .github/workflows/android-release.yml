@@ -80,10 +80,12 @@ jobs:
         run: |
           cd android/botwrecompandroid
           if [ "$RELEASE_BUILD" = true ]; then
+            base_version=$(sed -n 's/^[[:space:]]*versionName = .*getOrElse("\([^"]*\)").*/\1/p' app/build.gradle.kts)
+            test -n "$base_version"
             bash gradlew --no-daemon :app:assembleRelease \
               -PrequireReleaseSigning=true \
               -PciVersionCode="$((1000 + GITHUB_RUN_NUMBER))" \
-              -PciVersionName="0.1.8-beta.ci.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
+              -PciVersionName="${base_version}.ci.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
           else
             bash gradlew --no-daemon :app:assembleDebug
           fi

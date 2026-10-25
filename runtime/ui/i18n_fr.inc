@@ -1,4 +1,10 @@
 // French Android menu catalog. English source strings are stable lookup keys.
+{"A file in the chosen folder couldn't be read. Copy the whole game folder again and try again.",
+ "Impossible de lire un fichier du dossier choisi. Copiez à nouveau tout le dossier du jeu, puis réessayez."},
+{"Motion controls",
+ "Commandes par mouvements"},
+{"The phone's gyroscope - or a controller's that has one - aims the bow and the Sheikah Slate's camera and tilts the shrines' motion puzzles, as the Switch's motion controls do. The game's own options can turn motion aiming off.",
+ "Le gyroscope du téléphone, ou celui d’une manette équipée, permet de viser avec l’arc et l’appareil photo de la tablette Sheikah, et d’incliner les mécanismes des sanctuaires, comme sur Switch. Les options du jeu permettent de désactiver la visée par mouvements."},
 {"\n\nChosen: ",
  "\n\nSélection : "},
 {"\n\nProgress since your last save is lost.",

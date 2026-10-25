@@ -726,6 +726,22 @@ RT_ON_RESET(textures_reset) {
     g_nretired = g_cap_retired = 0;
 }
 
+// (debugging, runtime/hle/movie.c) the live textures whose storage overlaps [lo, hi): how the game reads a buffer
+void nvn_log_textures_over(uint64_t lo, uint64_t hi) {
+    pthread_mutex_lock(&g_live_lock);
+    int n = 0;
+    for (NvnTexture *t = g_all_tex; t && n < 8; t = t->next)
+        if (t->addr && t->addr < hi && t->addr + tegra_total_size(&t->layout) > lo) {
+            n++;
+            LOG("[nvn]   texture %ux%u fmt %#x flags %#x target %u at %llx (+%#llx) size %#llx stride %llu block %u\n",
+                t->width, t->height, t->format, t->flags, t->target, (unsigned long long)t->addr,
+                (unsigned long long)(t->addr - lo), (unsigned long long)tegra_total_size(&t->layout),
+                (unsigned long long)t->stride, t->layout.block_height_log2);
+        }
+    if (!n) LOG("[nvn]   no texture over %llx-%llx\n", (unsigned long long)lo, (unsigned long long)hi);
+    pthread_mutex_unlock(&g_live_lock);
+}
+
 // LARECOMP_WATCH_TEXADDR=<hex>: every texture created over that storage address, and its use as a render target or
 // a copy's ends (vulkan/exec.c) - who writes memory that a texture object reads (aliasing between descriptions)
 uint64_t nvn_watch_texaddr(void) {

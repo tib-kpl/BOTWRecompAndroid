@@ -18,6 +18,7 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#define fseeko _fseeki64
 #endif
 
 #define EMPTY 0xFFFFFFFFu
@@ -148,9 +149,12 @@ static bool mkdirs_for(const char *file) {  // the folders a file's path needs
     return true;
 }
 
+// One file's data into the image; false with err saying what went wrong (the image's write failing: write_failed)
 static bool copy_data(FILE *out, const File *f, const Source *src, uint8_t *buf, size_t bufsize, uint64_t *done,
-                      uint64_t total, void (*progress)(uint64_t, uint64_t)) {
+                      uint64_t total, void (*progress)(uint64_t, uint64_t), char *err, size_t err_size,
+                      bool *write_failed) {
     FILE *in = NULL;
+    *write_failed = false;
     if (src && src->open_fd) {
         int fd = src->open_fd(src->ctx, f->index);
         in = fd >= 0 ? fdopen(fd, "rb") : NULL;
@@ -158,27 +162,38 @@ static bool copy_data(FILE *out, const File *f, const Source *src, uint8_t *buf,
     } else {
         in = fopen(f->path, "rb");
     }
-    if (!in) return false;
+    if (!in) { snprintf(err, err_size, "can't open it"); return false; }
     FILE *copy = NULL;
     if (src && src->keep && src->keep(f->path)) {
         char p[2048];
         snprintf(p, sizeof p, "%s/%s", src->keep_dir, f->path);
         mkdirs_for(p);
-        if (!(copy = fopen(p, "wb"))) { fclose(in); return false; }
+        if (!(copy = fopen(p, "wb"))) { fclose(in); snprintf(err, err_size, "can't write its copy"); return false; }
     }
     uint64_t left = f->size;
     bool ok = true;
     while (left && ok) {
         size_t want = left < bufsize ? (size_t)left : bufsize;
         size_t got = fread(buf, 1, want, in);
-        ok = got == want && fwrite(buf, 1, got, out) == got && (!copy || fwrite(buf, 1, got, copy) == got);
+        if (got != want) {  // (an error, or the file shorter than the folder listing said)
+            if (ferror(in)) snprintf(err, err_size, "read error (%s)", strerror(errno));
+            else snprintf(err, err_size, "it ended at %llu of %llu bytes", (unsigned long long)(f->size - left + got),
+                          (unsigned long long)f->size);
+            ok = false;
+        } else if (fwrite(buf, 1, got, out) != got || (copy && fwrite(buf, 1, got, copy) != got)) {
+            *write_failed = true;
+            ok = false;
+        }
         left -= got;
         *done += got;
         if (progress) progress(*done, total);
     }
-    if (ok && src && src->open_fd && fgetc(in) != EOF) ok = false;  // (larger than listed: not the file it was)
+    if (ok && src && src->open_fd && fgetc(in) != EOF) {  // (larger than listed: not the file it was)
+        snprintf(err, err_size, "it's larger than the folder listing said");
+        ok = false;
+    }
     fclose(in);
-    if (copy && fclose(copy) != 0) ok = false;
+    if (copy && fclose(copy) != 0 && ok) *write_failed = true, ok = false;
     return ok;
 }
 
@@ -360,7 +375,19 @@ static bool write_image(Dir *root, const Source *src, const char *out_path, void
         File *f = l.files[i];
         if (f->data_off > pos && fwrite(zero, 1, (size_t)(f->data_off - pos), out) != f->data_off - pos)
             FAIL("write failed (disk full?)");
-        if (!copy_data(out, f, src, buf, bufsize, &done, total, progress)) FAIL("can't read %s", f->path);
+        // (a read that failed is tried twice more from the file's start, over what it wrote: setups through Android's
+        // file provider stopped with "can't read" on one file of ~41000, issue #17)
+        uint64_t done_before = done;
+        char err[96] = "";
+        bool write_failed;
+        for (int attempt = 1; !copy_data(out, f, src, buf, bufsize, &done, total, progress, err, sizeof err, &write_failed);
+             attempt++) {
+            if (write_failed) FAIL("write failed (disk full?)");
+            if (attempt == 3 || fseeko(out, (long long)(DATA_START + f->data_off), SEEK_SET) != 0)
+                FAIL("can't read %s: %s", f->path, err);
+            fprintf(stderr, "[romfs] %s: %s, trying again\n", f->path, err);
+            done = done_before;
+        }
         pos = f->data_off + f->size;
     }
     uint64_t tail = dhash_off - DATA_START - pos;

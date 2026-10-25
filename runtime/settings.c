@@ -33,6 +33,7 @@ Settings g_settings = {
     .volume = 1.0f,
     .reverb = true,
     .movie_audio = true,
+    .motion = true,
 #ifdef __ANDROID__
     .show_fps = true,  // (the performance overlay, ui/perf_overlay.mm: on until turned off in the menu)
     .touch_controls = true,
@@ -58,12 +59,14 @@ Settings g_settings = {
 };
 
 // The game's own text languages: its RomFS carries these per region (regionUS/USen|USes|USfr, regionEU/EUen|EUes|...,
-// regionJP/JPja, regionKR/KRkr, regionTW/TWch, regionCN/CNch), and the game picks one from the system language it
+// regionJP/JPja, regionKR/KRko, regionTW/TWzh, regionCN/CNzh), and the game picks one from the system language it
 // reads back (runtime/services/am.c), exactly as it does on the console. Codes as the Switch reports them.
 // Brazilian Portuguese (regionUS/USpt, Pack/Bootup_USpt.pack) came with the game's v1.8.2 (runtime/language.c in
 // SavageWindRecomp); the older versions are told English instead.
+// Chinese is zh-Hans / zh-Hant, as GetDesiredLanguage answers since system 4.0 (and Eden): the older zh-CN / zh-TW
+// gave Japanese text (issue #15).
 const char *const g_language_codes[N_LANGUAGES] = {"auto", "ja", "en-US", "es", "fr", "de", "it", "nl", "ru", "ko",
-                                                   "zh-CN", "zh-TW", "pt-BR"};
+                                                   "zh-Hans", "zh-Hant", "pt-BR"};
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "Spanish", "French", "German",
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)", "Portuguese (Brazil)"};
@@ -119,7 +122,7 @@ static const char *host_language(void) {
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(l, map[i].loc)) return map[i].code;
     if (!strcmp(l, "zh"))  // (TW / HK, Hant: traditional)
-        return strstr(e, "TW") || strstr(e, "HK") || strstr(e, "Hant") ? "zh-TW" : "zh-CN";
+        return strstr(e, "TW") || strstr(e, "HK") || strstr(e, "Hant") ? "zh-Hant" : "zh-Hans";
     if (!strcmp(l, "pt")) return "pt-BR";  // (the only Portuguese the game has)
     return "en-US";
 }
@@ -155,6 +158,7 @@ void settings_reset_defaults(void) {
     g_settings.reverb = d->reverb;
     g_settings.movie_audio = d->movie_audio;
     g_settings.show_fps = d->show_fps;
+    g_settings.motion = d->motion;
 #ifdef __ANDROID__
     g_settings.touch_controls = d->touch_controls;
     g_settings.overlay_style = d->overlay_style;
@@ -191,6 +195,7 @@ void settings_load(void) {
         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
         else if (!strcmp(key, "movie_audio")) g_settings.movie_audio = atoi(val) != 0;
         else if (!strcmp(key, "show_fps")) g_settings.show_fps = atoi(val) != 0;
+        else if (!strcmp(key, "motion")) g_settings.motion = atoi(val) != 0;
 #ifdef __ANDROID__
         else if (!strcmp(key, "overlay")) g_settings.overlay_style = !strcmp(val, "compact");
         else if (!strcmp(key, "overlay_pos")) sscanf(val, "%f,%f", &g_settings.overlay_pos[0], &g_settings.overlay_pos[1]);
@@ -233,8 +238,9 @@ void settings_load(void) {
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
         else if (!strcmp(key, "language")) {  // ("auto" or one of the game's codes; anything else: auto)
             g_settings.language = LANG_AUTO;
+            const char *v = !strcmp(val, "zh-CN") ? "zh-Hans" : !strcmp(val, "zh-TW") ? "zh-Hant" : val;  // (saved before #15)
             for (int i = 1; i < N_LANGUAGES; i++)
-                if (!strcmp(val, g_language_codes[i])) g_settings.language = i;
+                if (!strcmp(v, g_language_codes[i])) g_settings.language = i;
         }
         else if (!strcmp(key, "menu_tip_seen")) g_settings.menu_tip_seen = atoi(val) != 0, tip_key = true;
         else if (!strcmp(key, "mods_off")) snprintf(g_settings.mods_off, sizeof g_settings.mods_off, "%s", val);
@@ -259,6 +265,7 @@ void settings_save(void) {
     fprintf(f, "reverb = %d\n", g_settings.reverb);
     fprintf(f, "movie_audio = %d\n", g_settings.movie_audio);
     fprintf(f, "show_fps = %d\n", g_settings.show_fps);
+    fprintf(f, "motion = %d\n", g_settings.motion);
 #ifdef __ANDROID__
     fprintf(f, "overlay = %s\n", g_settings.overlay_style == 1 ? "compact" : "full");
     fprintf(f, "overlay_pos = %.4f,%.4f\n", g_settings.overlay_pos[0], g_settings.overlay_pos[1]);

@@ -52,6 +52,21 @@ static int open_fd(void *ctx, int i) {
     snprintf(p, sizeof p, "%s/%s", base, e[i].path);
     return open(p, O_RDONLY);
 }
+// (a read that stops early once - the file provider's, issue #17 - and works when tried again: a kept file, so its
+// loose copy is written over too)
+static int flaky_left = 1;
+static int open_flaky(void *ctx, int i) {
+    const RomfsEntry *e = ctx;
+    if (strcmp(e[i].path, "region_common/ui/Game.arc") || !flaky_left--) return open_fd(ctx, i);
+    char p[1024], half[1024];
+    snprintf(p, sizeof p, "%s/%s", base, e[i].path);
+    snprintf(half, sizeof half, "%s.half", base);
+    FILE *in = fopen(p, "rb"), *out = fopen(half, "wb");
+    char b[500];
+    fwrite(b, 1, fread(b, 1, sizeof b, in), out);
+    fclose(in), fclose(out);
+    return open(half, O_RDONLY);
+}
 static bool keep(const char *rel) {
     size_t n = strlen(rel);
     return (n > 5 && !strcmp(rel + n - 5, ".webm")) || !strcmp(rel, "region_common/ui/Game.arc");
@@ -65,6 +80,10 @@ int main(int argc, char **argv) {
     RomfsEntry e[64];
     for (int i = 0; i < n; i++) e[i] = (RomfsEntry){argv[6 + 2 * i], (uint64_t)atoll(argv[7 + 2 * i])};
     if (!romfs_build_entries(e, n, open_fd, e, argv[4], argv[5], keep, NULL, why, sizeof why)) { printf("entries: %s\n", why); return 1; }
+    char flakyp[1024];
+    snprintf(flakyp, sizeof flakyp, "%s.flaky", argv[4]);
+    if (!romfs_build_entries(e, n, open_flaky, e, flakyp, argv[5], keep, NULL, why, sizeof why)) { printf("flaky: %s\n", why); return 1; }
+    if (flaky_left >= 0) { printf("flaky read never happened\n"); return 1; }
     char shortp[1024];
     snprintf(shortp, sizeof shortp, "%s.short", argv[4]);
     e[0].size += 1;  // a file shorter than its listed size must fail, not write a wrong image
@@ -88,8 +107,12 @@ subprocess.run(argv, check=True)
 old_bin, new_bin = (out / 'old.bin').read_bytes(), (out / 'new.bin').read_bytes()
 assert old_bin == new_bin, 'folder build changed (desktop)'
 assert (out / 'entries.bin').read_bytes() == old_bin, 'image from the entry list differs from the folder build'
+assert (out / 'entries.bin.flaky').read_bytes() == old_bin, 'a read tried again gave a different image'
 assert not (out / 'entries.bin.short').exists(), 'a failed build must not leave its image'
 loose = sorted(str(f.relative_to(keep_dir)).replace(os.sep, '/') for f in keep_dir.rglob('*') if f.is_file())
 assert loose == ['region_common/movie/title.webm', 'region_common/ui/Game.arc'], loose
 assert (keep_dir / 'region_common/movie/title.webm').read_bytes() == (game / 'region_common/movie/title.webm').read_bytes()
-print('5 romfs image checks passed: folder build unchanged, entry list identical, short and long files rejected, loose copies as picked')
+# (the flaky build's: the short and long ones stop at a.bin, before it)
+assert (keep_dir / 'region_common/ui/Game.arc').read_bytes() == (game / 'region_common/ui/Game.arc').read_bytes()
+print('6 romfs image checks passed: folder build unchanged, entry list identical, a failed read tried again, short and '
+      'long files rejected, loose copies as picked')

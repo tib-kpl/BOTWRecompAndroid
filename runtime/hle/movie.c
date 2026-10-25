@@ -759,6 +759,36 @@ static void dec_get_output_buffer(Cpu *c) {
         c->x[0] = 0;
         return;
     }
+    if (d->video && b->base && b->capacity > 8) {
+        // the game's own buffer (BOTW's player: the memory pool under the texture it draws, SetDataAndCapacity +
+        // SetRange, released right after): the frame is copied in. Pointing the buffer at ours left that memory as
+        // it was - colored noise for the whole movie (the Great Plateau tower's, 2026-10-25).
+        uint64_t room = b->capacity - (uint64_t)(b->offset > 0 ? b->offset : 0);
+        uint8_t *dst = (uint8_t *)(uintptr_t)(b->base + (uint64_t)(b->offset > 0 ? b->offset : 0));
+        int w = d->width, h = d->height;
+        uint32_t n;
+        if (room == (uint64_t)w * h * 3 / 2) {
+            // BOTW's buffer is width x height x 1.5 (3110400 bytes for its 1920x1080 movies): NV12 without padding -
+            // the luma rows, then the chroma's right after them
+            const uint8_t *uv = d->out_mem[i] + (size_t)d->stride * ((h + 15) & ~15);
+            for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * w, d->out_mem[i] + (size_t)y * d->stride, w);
+            for (int y = 0; y < h / 2; y++) memcpy(dst + (size_t)w * h + (size_t)y * w, uv + (size_t)y * d->stride, w);
+            n = (uint32_t)room;
+        } else {
+            n = d->out_size[i] < room ? d->out_size[i] : (uint32_t)room;
+            memcpy(dst, d->out_mem[i], n);
+        }
+        static int nlog;
+        if (getenv("LARECOMP_LOG_MOVIE") && nlog++ < 4) {
+            LOG("[movie] frame into the game's buffer %llx (capacity %llu, offset %d, size %d): %u bytes, stride %d\n",
+                (unsigned long long)b->base, (unsigned long long)b->capacity, b->offset, b->size, n, d->stride);
+            extern void nvn_log_textures_over(uint64_t lo, uint64_t hi);
+            if (nlog == 1) nvn_log_textures_over(b->base, b->base + b->capacity);
+        }
+        b->size = (int32_t)n;
+        c->x[0] = 0;
+        return;
+    }
     memset(b, 0, sizeof *b);
     b->base = (uint64_t)(uintptr_t)d->out_mem[i];
     b->capacity = d->out_cap;
@@ -829,6 +859,8 @@ HLE_FUNC("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11Dec
         vt = g_dec_vt = make_vtable(f, 19, "Decoder");
     }
     uint64_t *self = (uint64_t *)(uintptr_t)c->x[0];
+    if (getenv("LARECOMP_LOG_MOVIE"))  // (BOTW 1.8.2's player: format 4, mode 1)
+        LOG("[movie] decoder type %u, output format %u, mode %u\n", (unsigned)c->x[1], (unsigned)c->x[2], (unsigned)c->x[3]);
     Decoder *d = calloc(1, sizeof *d);
     movie_track(1, d, true);
     pthread_mutex_init(&d->lock, NULL);

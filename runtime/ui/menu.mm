@@ -719,6 +719,11 @@ static void tab_about(void) {
          "screen, then Play.");
     ImGui::Spacing();
     header("Controls");
+    if (toggle("Motion controls", &g_settings.motion)) settings_save();  // (runtime/hle/motion.c)
+    hint("The phone's gyroscope - or a controller's that has one - aims the bow and the Sheikah Slate's camera and tilts "
+         "the shrines' motion puzzles, as the Switch's motion controls do. The game's own options can turn motion "
+         "aiming off.");
+    ImGui::Spacing();
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");

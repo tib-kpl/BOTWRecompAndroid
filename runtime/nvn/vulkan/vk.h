@@ -31,6 +31,9 @@ void vk_wait_ready(void);    // device.c: until the device exists (the window's 
 #endif
 #define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { if (r_ == VK_ERROR_DEVICE_LOST) vk_device_fault_report(); \
     FATAL("%s failed: %d (%s:%d)\n", #x, r_, __FILE__, __LINE__); } } while (0)
+// The most swapchain images the renderer keeps (one view and one present semaphore each): it asks for few, but drivers
+// may make more - a Mali-G57's made 12 (issue #1)
+#define VK_MAX_SWAP_IMAGES 16
 
 typedef struct {
     VkInstance inst;
@@ -62,8 +65,8 @@ typedef struct {
     VkFormat sc_format;
     VkExtent2D sc_extent;
     uint32_t sc_count;
-    VkImage sc_images[8];
-    VkImageView sc_views[8];
+    VkImage sc_images[VK_MAX_SWAP_IMAGES];
+    VkImageView sc_views[VK_MAX_SWAP_IMAGES];
 } VkG;
 extern VkG g_vk;
 

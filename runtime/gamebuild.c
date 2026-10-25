@@ -263,7 +263,6 @@ typedef struct {
     char src[1100], obj[1100], log[1100];
     unsigned long long bytes;
     bool o0;  // (a file with a giant function: compiled at -O0 - mark_cold)
-    bool started;
 } Unit;
 
 typedef struct {
@@ -283,7 +282,6 @@ static void add_unit(Units *us, const char *src, const char *work, const char *s
     struct stat st;
     u->bytes = stat(src, &st) == 0 ? (unsigned long long)st.st_size : 0;
     u->o0 = false;
-    u->started = false;
 }
 
 // The flags the game code was built with (GAMELIB_CFLAGS, part of its id). zig cc reads -march=<cpu> with its own CPU
@@ -595,22 +593,17 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         if (!ok) break;
         for (int k = 0; k < units.n; k++) written += units.u[k].bytes;
 
-        // compiles: the largest file ready first (a big one started last held the build's end on one core; LAS Recomp
-        // for Android d2da382, from LASRecomp-Android-Plus, MIT)
+        // compiles, in the order the generator wrote them (the largest ready first - LAS Recomp for Android d2da382 -
+        // started the biggest files together while the generator still ran: 0.1.8-beta's setups crashed halfway
+        // through on phones where 0.1.7's went through, issue #17)
         while (nrun < jobs && next < units.n) {
-            int pick = -1;
-            for (int k = 0; k < units.n; k++)
-                if (!units.u[k].started && (pick < 0 || units.u[k].bytes > units.u[pick].bytes)) pick = k;
-            if (pick < 0) break;
 #ifdef __ANDROID__  // (unit 0 is the shipped entry file; a file that can't be marked just stays at -O1)
-            if (pick > 0 && !mark_cold(units.u[pick].src, &units.u[pick].o0))
-                LOG("[gamebuild] couldn't mark cold functions in %s\n", units.u[pick].src);
+            if (next > 0 && !mark_cold(units.u[next].src, &units.u[next].o0))
+                LOG("[gamebuild] couldn't mark cold functions in %s\n", units.u[next].src);
 #endif
-            PlatProc p = start_compile(&t, &units.u[pick]);
+            PlatProc p = start_compile(&t, &units.u[next]);
             if (!p) { snprintf(why, why_size, "the compiler didn't start"); ok = false; break; }
-            units.u[pick].started = true;
-            run[nrun].p = p, run[nrun].unit = pick;
-            next++;  // (units started)
+            run[nrun].p = p, run[nrun].unit = next++;
             nrun++;
         }
         for (int k = 0; k < nrun; k++) {

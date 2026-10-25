@@ -167,6 +167,8 @@ static void pad_open(SDL_JoystickID id) {
     pad = pads[0];
     LOG("[input] gamepad %u: %s (type %d, %d open)\n", (unsigned)id, SDL_GetGamepadName(g), (int)SDL_GetGamepadType(g), npads);
     note_family();
+    extern void motion_pad_opened(SDL_Gamepad *g);  // (runtime/hle/motion.c: its gyroscope, if it has one)
+    motion_pad_opened(g);
 }
 static void pad_close(SDL_JoystickID id) {
     for (int p = 0; p < npads; p++)
@@ -184,7 +186,11 @@ void input_handle_event(const SDL_Event *e) {
         for (int i = 0; i < n; i++) pad_open(ids[i]);
         SDL_free(ids);
     }
+    extern void motion_event(const SDL_Event *e);  // runtime/hle/motion.c
     switch (e->type) {
+    case SDL_EVENT_SENSOR_UPDATE: case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+        motion_event(e);
+        break;
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;

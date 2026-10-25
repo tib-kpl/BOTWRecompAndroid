@@ -11,6 +11,7 @@
     <string name="driver_install">Installer un pilote</string>
     <string name="driver_system">Utiliser le pilote du système</string>
     <string name="driver_close">Fermer</string>
+    <string name="driver_error_intro">Le pilote graphique n’a pas pu faire fonctionner le jeu. Un pilote Turnip adapté à votre GPU (.zip) résout généralement ce problème : appuyez sur Installer un pilote.\n\nDétails :</string>
     <string name="watch_connection_error">Impossible d’ouvrir la connexion à la montre (port 18880).</string>
     <string name="watch_share_position">Partager la position et les marqueurs avec la montre</string>
     <string name="watch_connection_code">Code de connexion (à coller dans les paramètres de Recomp Mapa dans Zepp) :\n%1$s</string>

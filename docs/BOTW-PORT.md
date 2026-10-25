@@ -672,6 +672,15 @@ Pedidos ainda não começados, o mais recente no fim.
   - **Analógicos invisíveis sem toque:** desenhar cada um só enquanto um dedo o segura (uma opção na aba Controles:
     sempre visíveis / só ao tocar).
   - **Áreas maiores:** cada metade inteira da tela, com os botões ainda na frente.
+- **Resolução dinâmica do jogo só no modo Dinâmica** (sugestão do usuário, 2026-10-25; há mods do BOTW que a
+  desligam): o próprio jogo baixa a resolução da cena quando o quadro pesa (1600x900, 1440x810... no log `[post]
+  scene`), e as folhas escuras do aspecto livre aparecem justamente nesses degraus; trocas de tamanho dos alvos também
+  são candidatas a outros bugs. Ideia: com a Resolução interna num valor fixo, prender a escala do jogo no máximo, e
+  deixar a dinâmica só quando a opção estiver em Dinâmica. Caminhos:
+  - O jogo escolhe a escala pelos tempos de GPU que lê (`ReportCounter`): o pacer já os finge (com `frame_rate = 30`
+    ele fica na escala mínima), então devolver tempos curtos pode prendê-la no máximo sem mexer no código do jogo.
+  - Ou como os mods fazem (patch no exefs que trava a escala): conferir os endereços deles nas três versões.
+  - Medir o custo: a escala dinâmica é o que segura os 30 fps nos lugares pesados; sem ela, menos fps lá.
 
 ## Regras
 

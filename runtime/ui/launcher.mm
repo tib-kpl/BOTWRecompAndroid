@@ -499,6 +499,15 @@ extern "C" JNIEXPORT jint JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     return game_version_of_build((const uint8_t *)b);
 }
 
+// The picked folder is searched (the activity's import thread, through the file provider: it can take a while) - before,
+// nothing on the screen moved until the copy began (issue #17). nativeImportBegin or nativeImportDone follows.
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportLooking(JNIEnv *, jclass) {
+    pthread_mutex_lock(&g_lock);
+    g_busy = true;
+    pthread_mutex_unlock(&g_lock);
+    set_job("Looking for the game files...");
+}
+
 // The import of that version's files begins: its own extracted/ (runtime/paths.h), emptied of an earlier setup - its
 // path back, for the activity to copy exefs/ into
 extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportBegin(JNIEnv *env, jclass, jstring name,
@@ -640,6 +649,9 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     pthread_mutex_unlock(&g_lock);
     if (result == 1) return;
     set_failure(result == 2 ? FAIL_NOT_FOUND : result == 3 ? FAIL_UNUSABLE : result == 4 ? FAIL_VERSION : FAIL_COPY);
+    if (result == 5 && detail.rfind("can't read ", 0) == 0)  // (not the free space: issue #17 read it as 30 GB asked for)
+        set_job("Setup didn't finish", true,
+                "A file in the chosen folder couldn't be read. Copy the whole game folder again and try again.");
     set_job_detail(detail);
 }
 
@@ -1488,10 +1500,13 @@ extern "C" void launcher_run(const char *root) {
             pthread_mutex_lock(&g_lock);
             int set_up = g_set_up_version;
             g_set_up_version = 0;
+            bool failed = g_job_failed;
             pthread_mutex_unlock(&g_lock);
             if (set_up && set_up != rt_game_version()) switch_to_version(set_up);  // (set up beside this one: played now)
             status = check_game_files(g_root);
-            if (status.empty() && !g_switching_to) { load_background(dev); page = MAIN; }
+            // (a failure stays on the page with its cause: with this version's files ready, a setup of another folder
+            // that failed went back to the start screen without a word)
+            if (status.empty() && !g_switching_to && !failed) { load_background(dev); page = MAIN; }
         }
         was_busy = busy;
 

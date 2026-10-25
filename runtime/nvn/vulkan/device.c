@@ -933,9 +933,13 @@ static void create_swapchain(void) {
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
     uint32_t count = caps.minImageCount + 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
-    if (count > 8) count = 8;
+    if (count > 8) count = 8;  // (asked for: the driver may make more, up to VK_MAX_SWAP_IMAGES)
+    if (count < caps.minImageCount) count = caps.minImageCount;
+    const char *sc_env = getenv("LARECOMP_SWAP_IMAGES");  // (a test switch: as many as a driver that makes more)
+    if (sc_env && atoi(sc_env) > 0) count = (uint32_t)atoi(sc_env);
 #ifdef __ANDROID__  // (only the usages and composition the surface supports: drivers differ)
-    if (count < caps.minImageCount) FATAL("Surface needs %u swapchain images; renderer supports at most 8.\n", caps.minImageCount);
+    if (count > VK_MAX_SWAP_IMAGES)
+        FATAL("Surface needs %u swapchain images; renderer supports at most %d.\n", caps.minImageCount, VK_MAX_SWAP_IMAGES);
     VkImageUsageFlags usage = vk_backend_swapchain_usage(caps.supportedUsageFlags);
     VkCompositeAlphaFlagBitsKHR alpha = vk_backend_composite_alpha(caps.supportedCompositeAlpha);
     if (!usage || !alpha) FATAL("Vulkan surface lacks supported color rendering or composition (usage %#x alpha %#x).\n",
@@ -961,10 +965,11 @@ static void create_swapchain(void) {
     g_vk.sc_extent = ext;
 #ifdef __ANDROID__
     VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, NULL));
-    if (g_vk.sc_count > 8) FATAL("Driver created %u swapchain images; renderer supports at most 8.\n", g_vk.sc_count);
+    if (g_vk.sc_count > VK_MAX_SWAP_IMAGES)
+        FATAL("Driver created %u swapchain images; renderer supports at most %d.\n", g_vk.sc_count, VK_MAX_SWAP_IMAGES);
     VK_CHECK(vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images));
 #else
-    g_vk.sc_count = 8;
+    g_vk.sc_count = VK_MAX_SWAP_IMAGES;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
 #endif
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
@@ -1018,7 +1023,7 @@ static bool android_surface_ready(void) {  // false: no window to draw into now
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
 #define FRAMES 3
-static VkSemaphore acquire_sem[FRAMES], done_sem[8];
+static VkSemaphore acquire_sem[FRAMES], done_sem[VK_MAX_SWAP_IMAGES];
 static uint64_t slot_seq[FRAMES];
 static int slot;
 
@@ -1809,7 +1814,8 @@ bool vk_driver_is_turnip(void) {
 
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) SDL_Delay(1);
-    LOG("[vk] %s, swapchain %ux%u\n", g_vk.props.deviceName, g_vk.sc_extent.width, g_vk.sc_extent.height);
+    LOG("[vk] %s, swapchain %ux%u, %u images\n", g_vk.props.deviceName, g_vk.sc_extent.width, g_vk.sc_extent.height,
+        g_vk.sc_count);
 }
 
 // ---- in-place reboot (runtime/main.c teardown; main thread, guest threads stopped)
@@ -1872,6 +1878,8 @@ int ui_run(void) {
             if (menu_handle_event(&e)) continue;
             input_handle_event(&e);
         }
+        extern void motion_open(void);  // (runtime/hle/motion.c: the phone's sensors, once the setting is on)
+        motion_open();
         menu_apply_window_requests(window);
 #ifdef __ANDROID__
         {   // the pipeline cache to disk now and then while it grows: an app is killed rather than exited, so
