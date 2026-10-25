@@ -112,6 +112,13 @@ jobs:
           path: android/botwrecompandroid/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           compression-level: 0
+      - name: Preserve native symbols for performance and crash reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-native-symbols
+          path: android/botwrecompandroid/app/build/intermediates/cxx/**/obj/arm64-v8a/libmain.so
+          if-no-files-found: error
+          retention-days: 14
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/release.jks" "$RUNNER_TEMP/keystore.properties"
