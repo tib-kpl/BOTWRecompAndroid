@@ -11,4 +11,15 @@
     <string name="driver_install">Instalar um driver</string>
     <string name="driver_system">Usar o driver do sistema</string>
     <string name="driver_close">Fechar</string>
+    <string name="watch_connection_error">Não foi possível abrir a conexão do relógio (porta 18880).</string>
+    <string name="watch_share_position">Compartilhar posição e marcadores com o relógio</string>
+    <string name="watch_connection_code">Código de conexão (cole nas configurações do app Recomp Mapa no Zepp):\n%1$s</string>
+    <string name="watch_letterbox">Jogo em proporção 16:9 (com barras laterais)</string>
+    <string name="watch_crop_hint">Área do minimapa em %: esquerda, topo, direita, base.\nMantenha o minimapa visível; menus também aparecem na captura.</string>
+    <string name="watch_title">Mapa no relógio</string>
+    <string name="action_cancel">Cancelar</string>
+    <string name="watch_copy_code">Copiar código</string>
+    <string name="action_save">Salvar</string>
+    <string name="watch_code_copied">Código copiado</string>
+    <string name="watch_crop_error">Use quatro valores de 0 a 100 separados por vírgulas, com esquerda &lt; direita e topo &lt; base. Use ponto para decimais.</string>
 </resources>

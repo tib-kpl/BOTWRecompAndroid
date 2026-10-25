@@ -1,0 +1,136 @@
+name: Android release
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Every push to main gets its own release, including when another build is still running.
+concurrency:
+  group: android-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      NDK_VERSION: 30.0.16248370
+      CMAKE_VERSION: 3.30.4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check translations
+        run: |
+          python3 tools/check_translations.py
+          c++ -std=c++17 -D__ANDROID__ -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+            tools/test_i18n.cpp -o "$RUNNER_TEMP/test_i18n"
+          "$RUNNER_TEMP/test_i18n"
+      - name: Install Android tools
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" "build-tools;36.0.0" "ndk;$NDK_VERSION" "cmake;$CMAKE_VERSION"
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_LINUX=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmake/$CMAKE_VERSION/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        id: deps
+        with:
+          path: android/deps/out
+          key: android-arm64-${{ runner.os }}-${{ env.NDK_VERSION }}-${{ hashFiles('android/deps/*.sh', 'android/gen/**') }}
+      - name: Build native dependencies and on-device compiler
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: |
+          bash android/deps/build_deps.sh
+          bash android/deps/build_ffmpeg.sh
+          bash android/deps/build_gen_deps.sh
+      - name: Restore release signing key
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/release.jks" "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > "$RUNNER_TEMP/keystore.properties"
+          echo "BOTW_KEYSTORE_PROPERTIES=$RUNNER_TEMP/keystore.properties" >> "$GITHUB_ENV"
+      - name: Build APK
+        env:
+          RELEASE_BUILD: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        run: |
+          cd android/botwrecompandroid
+          if [ "$RELEASE_BUILD" = true ]; then
+            bash gradlew --no-daemon :app:assembleRelease \
+              -PrequireReleaseSigning=true \
+              -PciVersionCode="$((1000 + GITHUB_RUN_NUMBER))" \
+              -PciVersionName="0.1.8-beta.ci.${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}"
+          else
+            bash gradlew --no-daemon :app:assembleDebug
+          fi
+      - name: Package and verify release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p dist
+          apk="dist/BOTWRecompAndroid-build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}-arm64-v8a.apk"
+          cp android/botwrecompandroid/app/build/outputs/apk/release/app-release.apk "$apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk"
+          python3 tools/check_release_apk.py "$apk"
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          name: android-release
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+        with:
+          name: android-debug
+          path: android/botwrecompandroid/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          compression-level: 0
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks" "$RUNNER_TEMP/keystore.properties"
+
+  release:
+    needs: apk
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-release
+          path: dist
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          printf 'APK Android arm64-v8a compilé automatiquement depuis le commit `%s`.\n\nAndroid 11 ou ultérieur. Aucun fichier du jeu inclus.\n\nInstaller le fichier `.apk` ci-dessous. Les sommes SHA-256 sont dans `SHA256SUMS.txt`.\n' \
+            "$GITHUB_SHA" > notes.md
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --target "$GITHUB_SHA" \
+              --title "BOTWRecompAndroid — build ${GITHUB_RUN_NUMBER}" \
+              --notes-file notes.md --prerelease --latest=false
+          fi

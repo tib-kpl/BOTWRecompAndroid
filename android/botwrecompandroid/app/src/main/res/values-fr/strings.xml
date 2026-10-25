@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_watch_map">Carte sur la montre</string>
+    <string name="shortcut_watch_map_long">Configurer la mini-carte sur la montre</string>
+    <string name="shortcut_system_driver">Pilote du système</string>
+    <string name="shortcut_system_driver_long">Démarrer avec le pilote du système</string>
+    <string name="shortcut_pick_driver">Choisir un pilote</string>
+    <string name="shortcut_pick_driver_long">Choisir un pilote Vulkan (.zip)</string>
+    <string name="driver_not_a_package">Ce fichier n’est pas un paquet de pilote (.zip ou .so) : le pilote reste inchangé.</string>
+    <string name="driver_error_title">Erreur du pilote graphique</string>
+    <string name="driver_install">Installer un pilote</string>
+    <string name="driver_system">Utiliser le pilote du système</string>
+    <string name="driver_close">Fermer</string>
+    <string name="watch_connection_error">Impossible d’ouvrir la connexion à la montre (port 18880).</string>
+    <string name="watch_share_position">Partager la position et les marqueurs avec la montre</string>
+    <string name="watch_connection_code">Code de connexion (à coller dans les paramètres de Recomp Mapa dans Zepp) :\n%1$s</string>
+    <string name="watch_letterbox">Jeu au format 16:9 (avec bandes latérales)</string>
+    <string name="watch_crop_hint">Zone de la mini-carte en % : gauche, haut, droite, bas.\nGardez la mini-carte visible ; les menus apparaissent aussi dans la capture.</string>
+    <string name="watch_title">Carte sur la montre</string>
+    <string name="action_cancel">Annuler</string>
+    <string name="watch_copy_code">Copier le code</string>
+    <string name="action_save">Enregistrer</string>
+    <string name="watch_code_copied">Code copié</string>
+    <string name="watch_crop_error">Saisissez quatre valeurs de 0 à 100 séparées par des virgules, avec gauche &lt; droite et haut &lt; bas. Utilisez un point pour les décimales.</string>
+</resources>

@@ -68,5 +68,5 @@ void settings_reset_defaults(void);
 const char *settings_language(void);
 // That code's name for the menu ("Spanish")
 const char *settings_language_name(void);
-// Android: the phone's language is Portuguese (the menus' own text: ui/i18n.mm). LARECOMP_HOST_LANG=pt|en (tests)
-bool settings_host_portuguese(void);
+// Menu locale, independent of the game's language. LARECOMP_HOST_LANG overrides SDL's preferred locale.
+const char *settings_host_language(void);

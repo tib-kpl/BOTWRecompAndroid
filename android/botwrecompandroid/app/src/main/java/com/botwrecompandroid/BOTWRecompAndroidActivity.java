@@ -66,6 +66,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     };
 
     private static native void nativeDeviceStats(float battTempC, float battPct, float watts, int thermal, float headroom);
+    private static native void nativeMenuLanguage(String locale);
     // the start screen (runtime/ui/launcher.mm)
     private static native int nativeGameVersion(byte[] head);
     private static native String nativeImportBegin(String name, int version);
@@ -90,6 +91,8 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle state) {
         try {
+            // Match native menus to Android's selected app language, including per-app language settings.
+            setenv("LARECOMP_HOST_LANG", getResources().getConfiguration().getLocales().get(0).toLanguageTag());
             File res = new File(getFilesDir(), "res");
             copyAssets("res", res);
             File games = new File(getExternalFilesDir(null), "extracted");
@@ -141,6 +144,12 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         watchMap = new WatchMapServer(this);
         if (getIntent() != null && WatchMapServer.ACTION.equals(getIntent().getAction()))
             stats.post(() -> watchMap.showSettings());
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        nativeMenuLanguage(config.getLocales().get(0).toLanguageTag());
     }
 
     @Override

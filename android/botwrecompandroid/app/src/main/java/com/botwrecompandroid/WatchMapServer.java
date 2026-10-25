@@ -74,7 +74,7 @@ final class WatchMapServer {
             worker.setDaemon(true);
             worker.start();
         } catch (IOException e) {
-            Toast.makeText(activity, "Não foi possível abrir a conexão do relógio (porta 18880).", Toast.LENGTH_LONG).show();
+            Toast.makeText(activity, R.string.watch_connection_error, Toast.LENGTH_LONG).show();
         }
     }
 
@@ -221,32 +221,33 @@ final class WatchMapServer {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(32, 12, 32, 8);
         CheckBox enabled = new CheckBox(activity);
-        enabled.setText("Compartilhar posição e marcadores com o relógio");
+        enabled.setText(R.string.watch_share_position);
         enabled.setChecked(prefs.getBoolean("enabled", false));
         panel.addView(enabled);
         TextView code = new TextView(activity);
-        code.setText("Código de conexão (cole nas configurações do app Recomp Mapa no Zepp):\n" + token);
+        code.setText(activity.getString(R.string.watch_connection_code, token));
         code.setTextIsSelectable(true);
         panel.addView(code);
         CheckBox letterbox = new CheckBox(activity);
-        letterbox.setText("Jogo em proporção 16:9 (com barras laterais)");
+        letterbox.setText(R.string.watch_letterbox);
         letterbox.setChecked(prefs.getBoolean("letterbox", true));
         panel.addView(letterbox);
         TextView label = new TextView(activity);
-        label.setText("Área do minimapa em %: esquerda, topo, direita, base.\nMantenha o minimapa visível; menus também aparecem na captura.");
+        label.setText(R.string.watch_crop_hint);
         panel.addView(label);
         EditText crop = new EditText(activity);
         crop.setSingleLine(true);
         crop.setText(String.format(Locale.US, "%.1f, %.1f, %.1f, %.1f", prefs.getFloat("left", .79f) * 100,
             prefs.getFloat("top", .70f) * 100, prefs.getFloat("right", .95f) * 100, prefs.getFloat("bottom", .98f) * 100));
         panel.addView(crop);
-        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Mapa no relógio").setView(panel)
-            .setNegativeButton("Cancelar", null).setNeutralButton("Copiar código", null).setPositiveButton("Salvar", null).create();
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(R.string.watch_title).setView(panel)
+            .setNegativeButton(R.string.action_cancel, null).setNeutralButton(R.string.watch_copy_code, null)
+            .setPositiveButton(R.string.action_save, null).create();
         dialog.setOnShowListener(ignored -> {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
                 ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
                 clipboard.setPrimaryClip(ClipData.newPlainText("Recomp Map", token));
-                Toast.makeText(activity, "Código copiado", Toast.LENGTH_SHORT).show();
+                Toast.makeText(activity, R.string.watch_code_copied, Toast.LENGTH_SHORT).show();
             });
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 try {
@@ -263,7 +264,7 @@ final class WatchMapServer {
                     stop();
                     if (resumed && enabled.isChecked()) start();
                     dialog.dismiss();
-                } catch (IllegalArgumentException e) { crop.setError("Use quatro valores de 0 a 100, com esquerda < direita e topo < base."); }
+                } catch (IllegalArgumentException e) { crop.setError(activity.getString(R.string.watch_crop_error)); }
             });
         });
         dialog.show();

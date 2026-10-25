@@ -61,6 +61,12 @@ android/push_game.sh Dump/01007EF00011E000           # game files and game code 
 android/run_boot.sh 120                               # start the game, log to android/out/boot.log
 ```
 
+## Automated builds and translations
+
+Automatic Android APKs are available on this fork's [GitHub Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases)
+after successful pushes to `main`. See [Android CI releases](docs/ANDROID-RELEASES.md) for signing and build details,
+and [Translations](docs/TRANSLATIONS.md) for the French/Portuguese menu catalogs and adding another language.
+
 ## Credits
 
 - [peiikai](https://github.com/peiikai) for [LAS Recomp](https://github.com/peiikai/LASRecomp), the recompiler and

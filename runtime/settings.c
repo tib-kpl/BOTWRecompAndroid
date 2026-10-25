@@ -68,22 +68,27 @@ const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English"
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)", "Portuguese (Brazil)"};
 
-bool settings_host_portuguese(void) {
+const char *settings_host_language(void) {
 #ifdef __ANDROID__
-    static int pt = -1;
-    if (pt < 0) {
+    static char language[16];
+    if (!language[0]) {
         const char *e = getenv("LARECOMP_HOST_LANG");
-        if (e && *e) pt = !strncmp(e, "pt", 2);
+        if (e && *e) snprintf(language, sizeof language, "%s", e);
         else {  // (the phone's first preferred language, through SDL)
             int n = 0;
             SDL_Locale **l = SDL_GetPreferredLocales(&n);
-            pt = l && n > 0 && l[0]->language && !strcmp(l[0]->language, "pt");
+            snprintf(language, sizeof language, "%s", l && n > 0 && l[0]->language ? l[0]->language : "en");
             SDL_free(l);
         }
+        // Normalize a BCP-47 or POSIX locale to its base language (fr-CA / fr_FR -> fr).
+        for (char *p = language; *p; p++) {
+            if (*p == '-' || *p == '_' || *p == '.') { *p = 0; break; }
+            if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
+        }
     }
-    return pt;
+    return language;
 #else
-    return false;
+    return "en";
 #endif
 }
 

@@ -10,7 +10,10 @@ val deps: File = repo.resolve("android/deps/out")  // android/deps/build_deps.sh
 val gen = layout.buildDirectory.dir("generated/botwrecompandroid")
 // The release key: outside the repository, in ~/.botwrecompandroid/keystore.properties (storeFile, storePassword, keyAlias,
 // keyPassword); without it, release builds are signed with the debug key
-val releaseKey: File = File(System.getProperty("user.home"), ".botwrecompandroid/keystore.properties")
+val releaseKey: File = file(providers.environmentVariable("BOTW_KEYSTORE_PROPERTIES")
+    .getOrElse(File(System.getProperty("user.home"), ".botwrecompandroid/keystore.properties").path))
+val requireReleaseSigning = providers.gradleProperty("requireReleaseSigning").orNull == "true"
+if (requireReleaseSigning && !releaseKey.isFile) error("Release signing properties are required: $releaseKey")
 
 android {
     namespace = "com.botwrecompandroid"
@@ -21,8 +24,8 @@ android {
         applicationId = "com.botwrecomp.android"
         minSdk = 30
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.1.8-beta"
+        versionCode = providers.gradleProperty("ciVersionCode").orNull?.toInt() ?: 10
+        versionName = providers.gradleProperty("ciVersionName").getOrElse("0.1.8-beta")
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -51,6 +54,7 @@ android {
 
     // aapt's default without "<dir>_*": the game code's builder needs Python's folders named _* (zipfile/_path, ...)
     androidResources {
+        generateLocaleConfig = true
         ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~"
     }
 

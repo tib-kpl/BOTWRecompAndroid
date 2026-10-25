@@ -21,3 +21,5 @@ tools/venv/
 venv/
 __pycache__/
 .DS_Store
+# Local backup of the CI signing key (never commit).
+/.android-signing/

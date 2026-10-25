@@ -1,5 +1,5 @@
-// The menus' text in Brazilian Portuguese on a phone set to Portuguese (Android; settings_host_portuguese): each
-// English string looked up in ui/i18n_pt.inc, anything not in it shown as written. Elsewhere tr() is the string itself.
+// Android menu catalogs: i18n_<language>.inc, selected by settings_host_language().
+// Missing translations and unsupported locales use the English source. Desktop uses English.
 // Display text only: labels used as ImGui IDs stay the English ones.
 #pragma once
 #include <string>
