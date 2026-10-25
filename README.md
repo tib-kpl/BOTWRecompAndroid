@@ -2,6 +2,12 @@
 
 **English** | [Português](README.pt-BR.md)
 
+> [!NOTE]
+> **Built-in controllers — AYN Thor, Odin 2 and Retroid:** standard buttons, both sticks and triggers are expected
+> to work through SDL3's Android gamepad support, provided the device is compatible with the APK. These handhelds
+> have **not yet been tested with this fork**. Open **Settings → Controls** to check detection and remap buttons.
+> The default layout is Nintendo-style: **A on the right, B at the bottom**.
+
 A static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0 and
 1.8.2**) for Android. This is **not emulation**: the game's ARM64 code becomes C compiled for your phone, and its
 graphics (NVN) are translated to Vulkan.
