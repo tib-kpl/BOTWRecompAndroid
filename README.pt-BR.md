@@ -13,6 +13,21 @@ O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)
 > **Beta.** Testado num celular só (POCO F7 Ultra, Adreno 830, driver Mesa Turnip). Espere bugs. O plano e o estado
 > de cada fase estão em [docs/BOTW-PORT.md](docs/BOTW-PORT.md).
 
+## Objetivo deste fork
+
+Este fork de [mamcjr/BOTWRecompAndroid](https://github.com/mamcjr/BOTWRecompAndroid) facilita o download das versões
+Android e amplia os idiomas disponíveis nos menus do aplicativo. As adições atuais são:
+
+- **Releases automáticas de APK:** cada push bem-sucedido para `main` gera um APK Android assinado e o publica como
+  pré-release na [página Releases deste fork](https://github.com/tib-kpl/BOTWRecompAndroid/releases).
+- **Menus em francês:** traduções para a tela inicial, configurações, controles, diálogos e atalhos Android,
+  junto dos menus existentes em inglês e português. A interface segue o idioma do aplicativo no Android.
+- **Suporte a futuras traduções:** catálogos separados, recursos de texto Android e verificações na CI facilitam
+  a inclusão de outros idiomas. Veja o [guia de tradução](docs/TRANSLATIONS.md).
+
+O motor de recompilação e o suporte existente ao jogo vêm dos projetos de origem creditados abaixo. As traduções
+dos menus descritas aqui são da interface do aplicativo; o idioma dos textos do jogo tem sua própria configuração.
+
 ## Plataforma suportada
 
 Android é o único alvo do aplicativo. Os ports e pacotes desktop foram descontinuados em 2026-10-22.
