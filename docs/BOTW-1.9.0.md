@@ -38,7 +38,7 @@ exclusive to 1.8.2. The 1.9.0 update is experimental; other areas and game event
   result `0xea01`; reacquiring it twice deadlocks.
 - Android's chosen storage volume is applied before the saved version selection. An explicit
   `LARECOMP_DATA_ROOT` test override still takes precedence.
-- Frame pacing: wait hook `0xe9487c`, VFR ratio hook `0x151d494`, pause state `0x1e44ef8`, screen manager holder
+- Frame pacing: wait hook `0xe9487c`, VFR ratio hook `0x151d494`, pause state `0x1e44ef0`, screen manager holder
   `0x1d66d58`, event manager `0x1e3a638` (active event at `+0x1d2b8`), controller frame step `0x1dad0e0`.
   The framework's interval setter returns to `0x11267c4`; its maximum interval is still at `+0x234`.
   Native tests simulate one minute at both 30 and 60 fps for 1.8.2 and 1.9.0 and verify clock, input duration and

@@ -36,9 +36,11 @@ int main(int argc, char **argv) {
     assert(framepace_on_title() && framepace_in_menu());
     assert(framepace_target() == 30);
     screens[1] = 0;
-    *(uint32_t *)(uintptr_t)PAUSE_STATE = 2;
-    assert(!framepace_on_title() && framepace_in_menu());
-    assert(framepace_target() == 30);
+    for (int state = 1; state <= 2; state++) {
+        *(uint32_t *)(uintptr_t)PAUSE_STATE = state;
+        assert(!framepace_on_title() && framepace_in_menu());
+        assert(framepace_target() == 30);
+    }
     *(uint32_t *)(uintptr_t)PAUSE_STATE = 0;
     assert(!framepace_on_title() && !framepace_in_menu());
     assert(framepace_target() == fps);
