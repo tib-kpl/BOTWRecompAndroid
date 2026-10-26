@@ -18,6 +18,11 @@
 #include "../renderer.h"
 #include "../../settings.h"
 #include "../../paths.h"
+#include "../../ui/menu.h"
+#include "temporal_history.h"
+
+static uint64_t post_reset_gen;
+void renderer_get_scene_scale(float *sx, float *sy);
 
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
 static uint64_t stat_feedback_reads;  // (attachments sampled as they are: only read, resolve_feedback)
@@ -1743,6 +1748,20 @@ static void begin_pass(void) {
                       ? vk_format(st.rt.cview[i].format) : b->format;
         uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
         uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
+        if (getenv("LARECOMP_LOG_HEIGHT_TILES") && (t->flags & 0x50) && t->width >= 128) {
+            static uint64_t seen[64]; static int nseen;
+            bool known = false;
+            for (int k = 0; k < nseen; k++) known |= seen[k] == t->addr;
+            if (!known && nseen < 64) {
+                seen[nseen++] = t->addr;
+                LOG("[height-tile] %ux%u fmt %#x flags %#x addr %llx levels %u layers %u backend %ux%u "
+                    "view %#x layer %u level %u eligible %d bytes %llu stride %llu\n",
+                    t->width, t->height, t->format, t->flags, (unsigned long long)t->addr, t->levels,
+                    t->layout.layers, b->width, b->height, st.rt.has_cview[i] ? st.rt.cview[i].setmask : 0,
+                    st.rt.has_cview[i] ? st.rt.cview[i].min_layer : 0, lv, wb_eligible(t, b, lv),
+                    (unsigned long long)tegra_total_size(&t->layout), (unsigned long long)t->stride);
+            }
+        }
         if (wb_eligible(t, b, lv) && !(st.rt.has_cview[i] && ((st.rt.cview[i].setmask & ~3u) || st.rt.cview[i].min_layer)))
             wb_pass[wb_npass++] = t;  // (a view of its level 0 / layer 0 only)
         if (!w) { renderer_texture_scale(t, &pass_sx, &pass_sy); w = ew; }
@@ -4386,6 +4405,7 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
+    post_reset_gen++;
     memset(prog_tab, 0, sizeof prog_tab);
     memset(pipe_tab, 0, sizeof pipe_tab);
     g_cs_n = 0;
@@ -6053,7 +6073,7 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
 
 // Post image `i` at w x h in format f (kept until the size or format changes). 0, 1: SMAA edges / weights, 2: SMAA
 // output, 3, 4: FSR EASU / RCAS (or SGSR) of the presented image; 5, 6: the same of the 3D scene (scene_upscale).
-enum { POST_IMAGES = 7 };
+enum { POST_IMAGES = 9 };  // 7, 8: temporal history, alternated (never sample the destination)
 static TexBackend *post_image(int i, uint32_t w, uint32_t h, VkFormat f) {
     static TexBackend img[POST_IMAGES];
     TexBackend *d = &img[i];
@@ -6150,14 +6170,28 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
 // The view the present samples: the game image, or its anti-aliased / upscaled version. ow x oh: the whole image's
 // size in the window (its crop is drawn into the viewport).
 static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, double oh_d) {
+    static TemporalHistory history;
     VkImageView v = raw_view(b);
     bool smaa = g_settings.antialias == AA_SMAA;
+    bool temporal = g_settings.temporal_aa && !menu_is_open();
+    float scene_sx, scene_sy;
+    renderer_get_scene_scale(&scene_sx, &scene_sy);
+    uint64_t history_key = post_reset_gen;
+    history_key = history_key * 16777619u ^ (uint64_t)g_settings.res_mode;
+    history_key = history_key * 16777619u ^ (uint64_t)g_settings.upscaler;
+    history_key = history_key * 16777619u ^ (uint64_t)g_settings.antialias;
+    history_key = history_key * 16777619u ^ (uint64_t)g_settings.out_lines;
+    history_key = history_key * 16777619u ^ (uint64_t)lroundf(scene_sx * 10000);
+    history_key = history_key * 16777619u ^ (uint64_t)lroundf(scene_sy * 10000);
+    unsigned history_write;
+    bool use_history = temporal_history_step(&history, b->width, b->height, history_key,
+                                             vk_frame_counter(), plat_now_ns(), temporal, &history_write);
     uint32_t ow = (uint32_t)lround(ow_d), oh = (uint32_t)lround(oh_d);
     if (ow > 16384) ow = 16384;
     if (oh > 16384) oh = 16384;
     bool fsr = (g_settings.upscaler == UPSCALE_FSR1 || g_settings.upscaler == UPSCALE_SGSR1) &&
                (ow > b->width + 1 || oh > b->height + 1);  // (an upscale only)
-    if (!smaa && !fsr) return v;
+    if (!smaa && !fsr && !temporal) return v;
     extern void vk_frame_suspend(void);
     extern void vk_frame_resume(void);
     vk_frame_suspend();
@@ -6172,6 +6206,15 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         post_pass(cb, "smaa_weight.frag", wi, 3, weights, m, true);
         VkImageView bi[3] = {v, post_view(weights)};
         post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
+        v = post_view(out);
+    }
+    if (temporal) {
+        TexBackend *out = post_image(7 + history_write, b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM);
+        VkImageView previous = v;  // first frame binds initialized current data, never an undefined history image
+        if (use_history) previous = post_view(post_image(7 + (history_write ^ 1), b->width, b->height, VK_FORMAT_R8G8B8A8_UNORM));
+        VkImageView inputs[3] = {v, previous};
+        float pc[8] = {0, 0, use_history ? 1.0f : 0.0f};
+        post_pass(cb, "temporal.frag", inputs, 2, out, pc, false);
         v = post_view(out);
     }
     if (fsr && g_settings.upscaler == UPSCALE_SGSR1) {

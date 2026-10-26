@@ -7,6 +7,7 @@
 
 #include "shaders.h"
 #include "shader_cache.h"
+#include "temporal_shader.h"
 
 void vk_shaders_init(void) {  // (compilers are per thread: check shaderc works at all)
     shaderc_compiler_t c = shaderc_compiler_initialize();
@@ -289,6 +290,7 @@ static const char *builtin_src(const char *name, int *stage) {
                "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
                "}\n";
     }
+    if (!strcmp(name, "temporal.frag")) { *stage = STAGE_FRAGMENT; return temporal_shader_src; }
     // SMAA 1x (third_party/smaa, runtime/nvn/smaa_data.c): the reference SMAA.hlsl in its GLSL mode, High preset,
     // with an entry point per pass. a = SMAA_RT_METRICS (1 / size, size). The vertex-stage offset helpers run per
     // pixel here. Luma edges (t0 = colour) -> blending weights (t0 = edges, t1 = area, t2 = search) -> neighbourhood

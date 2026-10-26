@@ -173,6 +173,7 @@ void settings_reset_defaults(void) {
     g_settings.upscaler = d->upscaler;
     g_settings.out_lines = d->out_lines;
     g_settings.antialias = d->antialias;
+    g_settings.temporal_aa = d->temporal_aa;
     g_settings.volume = d->volume;
     g_settings.reverb = d->reverb;
     g_settings.movie_audio = d->movie_audio;
@@ -259,6 +260,7 @@ void settings_load(void) {
             g_settings.out_lines = n == 1080 || n == 900 || n == 720 ? n : 0;
         }
         else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "temporal_aa")) g_settings.temporal_aa = atoi(val) != 0;
         else if (!strcmp(key, "language")) {  // ("auto" or one of the game's codes; anything else: auto)
             g_settings.language = LANG_AUTO;
             const char *v = !strcmp(val, "zh-CN") ? "zh-Hans" : !strcmp(val, "zh-TW") ? "zh-Hant" : val;  // (saved before #15)
@@ -315,6 +317,7 @@ void settings_save(void) {
     if (g_settings.out_lines > 0) fprintf(f, "output_resolution = %d\n", g_settings.out_lines);
     else fprintf(f, "output_resolution = screen\n");
     fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    fprintf(f, "temporal_aa = %d\n", g_settings.temporal_aa);
     if (g_settings.res_mode == RES_DYNAMIC) fprintf(f, "resolution = dynamic\n");
     else if (g_settings.res_mode == RES_Q75) fprintf(f, "resolution = 75%%\n");
     else if (g_settings.res_mode == RES_Q25) fprintf(f, "resolution = 25%%\n");

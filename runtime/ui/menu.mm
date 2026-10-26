@@ -646,6 +646,13 @@ static void tab_display(void) {
     opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
                "blends only along them, so textures stay sharp. Most useful at a lower internal resolution.");
+#ifndef __APPLE__
+    opt_toggle("Temporal stabilization (experimental)", &g_settings.temporal_aa, false,
+               "Blends compatible pixels from consecutive images to reduce shimmer. Works with SMAA or on its own. "
+               "Rejects large changes and clamps history to nearby current colours to limit trails. May soften moving "
+               "details and costs GPU time. This is a screen-space filter, not full TAA or FSR 2: it has no engine "
+               "motion vectors or camera jitter. Disabled by default.");
+#endif
 #ifdef __ANDROID__
     opt_toggle("32-bit shader math", &g_settings.shader_int32, false,
                "Translates the game's shaders with 32-bit address math, the path used for drivers without 64-bit "

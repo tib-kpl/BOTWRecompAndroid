@@ -28,6 +28,7 @@ typedef struct {
     int out_lines;       // Output resolution: the final image (scene + HUD) at most this many lines, scaled up to the
                          // screen at the end (0: the screen's own; 1080 / 900 / 720) - nvn/output_scale.c
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
+    bool temporal_aa;    // Vulkan: optional conservative temporal stabilization (no engine motion vectors)
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;

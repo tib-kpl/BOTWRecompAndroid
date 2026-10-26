@@ -48,6 +48,8 @@ jobs:
           done
           clang -std=gnu11 -D__ANDROID__ -pthread tools/test_command_shadow.c -o "$RUNNER_TEMP/test_command_shadow"
           for mode in fast locked ab; do "$RUNNER_TEMP/test_command_shadow" "$mode"; done
+          clang -std=c11 -Wall -Wextra -Werror tools/test_temporal_history.c -o "$RUNNER_TEMP/test_temporal_history"
+          "$RUNNER_TEMP/test_temporal_history"
       - name: Install Android tools
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
@@ -56,7 +58,9 @@ jobs:
           echo "ANDROID_NDK_LINUX=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "$ANDROID_HOME/cmake/$CMAKE_VERSION/bin" >> "$GITHUB_PATH"
       - name: Test Android upload caches and descriptor plans
-        run: python3 tools/test_android_upload_caches.py "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        run: |
+          python3 tools/test_android_upload_caches.py "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          python3 tools/test_temporal_shader.py "$ANDROID_NDK/shader-tools/linux-x86_64/glslc"
       - uses: actions/cache/restore@v4
         id: deps
         with:
