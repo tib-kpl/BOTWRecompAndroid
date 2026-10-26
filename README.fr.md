@@ -18,6 +18,8 @@
 >
 > - **Tests sur consoles Android :** un pilote Turnip corrigé permet de tenir 30 FPS sur l’Odin 2 Portal dans la scène
 >   testée de BOTW 1.0.0. Voir [les réglages mesurés et la version du pilote](docs/ANDROID-PERFORMANCE.fr.md).
+> - **Patch 1.9.0 expérimental :** adaptation du moteur et installation séparée dans `v190`, avec ses propres
+>   sauvegardes et paramètres. Les correctifs 60 FPS et écran large restent réservés à la 1.8.2.
 >
 > Le moteur de recompilation et la prise en charge existante du jeu proviennent des projets d’origine cités plus bas.
 > Les traductions décrites ici concernent l’interface de l’application ; la langue des textes du jeu dispose de son

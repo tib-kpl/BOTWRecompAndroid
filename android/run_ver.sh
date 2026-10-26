@@ -1,5 +1,5 @@
 #!/bin/bash
-# android/run_ver.sh <v160|v182> [seconds] [LARECOMP_X=1,...]: android/run_boot.sh for another version of the game, kept
+# android/run_ver.sh <v160|v182|v190> [seconds] [LARECOMP_X=1,...]: android/run_boot.sh for another version of the game, kept
 # beside v1.0.0 - its files in <external files>/<version>/extracted (android/push_game.sh with GAME_DEST and
 # GAMELIB_OUT=android/out/<version>), its game code copied into the app's internal storage, since Android loads no code
 # from external storage, and both handed to the runtime (LARECOMP_DATA_ROOT, LARECOMP_GAME_LIB). Saves and settings live
@@ -7,7 +7,7 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1  # (Git Bash: leave the device paths alone)
 cd "$(dirname "$0")/.."
-VER=${1:?usage: android/run_ver.sh <v160|v182> [seconds] [LARECOMP_X=1,...]}
+VER=${1:?usage: android/run_ver.sh <v160|v182|v190> [seconds] [LARECOMP_X=1,...]}
 PKG=com.botwrecomp.android
 EXT=/sdcard/Android/data/$PKG/files/$VER
 INT=/data/data/$PKG/files/$VER

@@ -110,7 +110,8 @@ static uint32_t device_integer_v55(uint32_t which) {
 
 NVN(nvnDeviceGetInteger) {
     uint32_t which = (uint32_t)A(1);
-    uint32_t v = g_game_version == 182 ? device_integer_v55(which) : device_integer(which);
+    // Both recent releases require NVN 55.15 (checked in their device initialization).
+    uint32_t v = (g_game_version == 182 || g_game_version == 190) ? device_integer_v55(which) : device_integer(which);
     if (g_game_version == 160 && which <= 1) v = which ? 311 : 53;  // (v1.6.0 needs NVN 53.x, minor >= 311: its SDK 7.3.2)
     *(int32_t *)AP(2) = (int32_t)v;
 }

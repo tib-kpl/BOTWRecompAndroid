@@ -567,10 +567,11 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     t->wait_tag = tag;
     __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     uint32_t r = block_current(timeout);
-    // A wait that timed out returns without the mutex in BOTW 1.8.2's SDK, as on the console: user mode takes it
+    // A wait that timed out returns without the mutex in BOTW 1.8.2's and 1.9.0's SDKs: user mode takes it
     // again (InternalConditionVariableImplByHorizon::TimedWait calls Enter on 0xea01). Taken here too, the thread then
     // waited for the mutex it held, and every thread after it (SavageWindRecomp). The older SDKs run as before.
-    if (r != R_OK && !(r == R_TIMEOUT && g_game_version == 182)) {
+    // 1.9.0: SDK TimedWait at 0x149354 calls Enter after 0xea01, just as 1.8.2 does.
+    if (r != R_OK && !(r == R_TIMEOUT && (g_game_version == 182 || g_game_version == 190))) {
         // timed out / cancelled: still must reacquire the mutex
         if (!mutex_acquire_or_mark(mutex, tag)) {
             t->wait_kind = WAIT_MUTEX;

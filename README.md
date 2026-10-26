@@ -16,6 +16,8 @@
 >   it easier to add more languages. See [the translation guide](docs/TRANSLATIONS.md).
 > - **Android handheld testing:** an updated Turnip driver restored steady 30 fps on the Odin 2 Portal in the tested
 >   BOTW 1.0.0 scene. See [the measured settings and driver version](docs/ANDROID-PERFORMANCE.md).
+> - **Experimental 1.9.0 update:** runtime adaptation and a separate `v190` installation, with its own saves and
+>   settings. The 60 fps and widescreen patches remain specific to 1.8.2.
 >
 > The recompilation engine and existing game support come from the upstream projects credited below. The menu
 > translations described here concern the application interface; the game's text language has its own setting.

@@ -36,6 +36,10 @@ jobs:
           c++ -std=c++17 -D__ANDROID__ -DI18N_NO_FONTS -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
             tools/test_i18n.cpp -o "$RUNNER_TEMP/test_i18n"
           "$RUNNER_TEMP/test_i18n"
+      - name: Test game versions and ROMFS validation
+        run: |
+          python3 tools/test_game_versions.py
+          python3 tools/test_romfs_build.py
       - name: Install Android tools
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \

@@ -137,7 +137,7 @@ uint64_t romfs_dir_bytes(const char *dir) {
 // DLC's mixed in; it froze at the tower's movie) and a romfs one file short (issue #23: the game stopped loading
 // Actor/ActorInfo.product.sbyml) - both set up fine before, then failed in the game.
 static const struct { int version, files; const char *name; } k_whole[] = {
-    {100, 39678, "1.0.0"}, {160, 41052, "1.6.0"}, {182, 41056, "1.8.2"}};
+    {100, 39678, "1.0.0"}, {160, 41052, "1.6.0"}, {182, 41056, "1.8.2"}, {190, 41062, "1.9.0"}};
 static const char *const k_key_files[] = {"Actor/ActorInfo.product.sbyml", "Pack/Bootup.pack", "Pack/TitleBG.pack",
                                          "System/Version.txt"};
 

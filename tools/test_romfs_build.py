@@ -94,6 +94,9 @@ static int set_check(int version, int n, int dropped, const char *txt, int want,
 static int set_checks(const char *game) {
     int bad = 0;
     bad += set_check(182, 41056, -1, "1.8.2", ROMFS_SET_OK, NULL);
+    bad += set_check(190, 41062, -1, "1.9.0", ROMFS_SET_OK, NULL);
+    bad += set_check(190, 41062, -1, "1.8.2", ROMFS_SET_OTHER_VERSION, "exefs/main is 1.9.0");
+    bad += set_check(190, 41061, -1, "1.9.0", ROMFS_SET_MISSING, "1 missing");
     bad += set_check(182, 41056, -1, "1.0.0", ROMFS_SET_OTHER_VERSION, "Version.txt says 1.0.0, exefs/main is 1.8.2");
     bad += set_check(100, 39678, -1, "\xEF\xBB\xBF 1.0.0\r\n", ROMFS_SET_OK, NULL);  // (a byte order mark, a line end)
     bad += set_check(100, 39677, 0, "1.0.0", ROMFS_SET_MISSING, "39677 files, a whole 1.0.0 has 39678: 1 missing, among them Actor/ActorInfo.product.sbyml");
@@ -156,5 +159,5 @@ assert (keep_dir / 'region_common/movie/title.webm').read_bytes() == (game / 're
 # (the flaky build's: the short and long ones stop at a.bin, before it)
 assert (keep_dir / 'region_common/ui/Game.arc').read_bytes() == (game / 'region_common/ui/Game.arc').read_bytes()
 print('6 romfs image checks passed: folder build unchanged, entry list identical, a failed read tried again, short and '
-      'long files rejected, loose copies as picked; 9 setup checks: other version, missing files, more files, Version.txt '
+      'long files rejected, loose copies as picked; 12 setup checks: other version, missing files, more files, Version.txt '
       'trimmed, a folder on disk')
