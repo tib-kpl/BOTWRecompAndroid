@@ -1305,7 +1305,8 @@ NVN(nvnWindowSetPresentInterval) {
     if (force > 0) c->x[1] = (uint64_t)force;
     // BOTW 1.8.2's frame loop (lr 0x7001012a34, x19 = the framework; [fw+0x234] the highest interval it may pick):
     // never 3 while the runtime sets the game's clock (runtime/hle/framepace.c), as SavageWindRecomp does
-    if (framepace_on() && c->x[30] == GUEST_LO + 0x1012a34ull) {
+    uint64_t interval_caller = GUEST_LO + (g_game_version == 190 ? 0x11267c4ull : 0x1012a34ull);
+    if (framepace_on() && c->x[30] == interval_caller) {
         uint32_t *max_iv = (uint32_t *)(uintptr_t)(c->x[19] + 0x234);
         if (*max_iv > 2) *max_iv = 2;
     }

@@ -1178,7 +1178,7 @@ static void version_rows(bool busy, bool focus) {
         "The game's first release, without updates.",
         "An update of the game.",
         "60 fps and widescreen (Video settings) work in this one.",
-        "Experimental update. 60 fps and widescreen are not available."};
+        "Experimental update. 60 fps is available; widescreen is not available."};
     opt_section("Game version");
     int cur = rt_game_version();
     for (int i = 0; i < N_VERSIONS; i++) {

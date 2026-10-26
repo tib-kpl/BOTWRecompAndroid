@@ -42,6 +42,10 @@ jobs:
         run: |
           python3 tools/test_game_versions.py
           python3 tools/test_romfs_build.py
+          clang -std=gnu11 -D__ANDROID__ tools/test_framepace.c -lm -o "$RUNNER_TEMP/test_framepace"
+          for version in 100 160 182 190; do
+            for fps in 30 60; do "$RUNNER_TEMP/test_framepace" "$version" "$fps"; done
+          done
       - name: Install Android tools
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \

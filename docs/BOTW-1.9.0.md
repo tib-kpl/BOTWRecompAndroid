@@ -23,8 +23,10 @@ dynamic internal resolution, FSR1 and SMAA:
 - Once initial shaders are compiled, observed samples in the tested room are around **30 fps**. This is not a
   whole-game performance or compatibility guarantee. First-time shader compilation causes visible pauses.
 
-The 60 fps and widescreen hooks remain exclusive to 1.8.2. Their hard-coded addresses must not be reused for
-1.9.0. The 1.9.0 update is experimental; other areas and game events still need testing.
+The experimental 60 fps mode uses separate 1.9.0 hooks and state addresses. It adjusts the game's time step to
+actual frame duration, rather than running the game twice as fast. It targets 30 fps in menus, events and movies.
+Selecting 60 fps sets a target; the actual frame rate depends on the device and scene. Widescreen hooks remain
+exclusive to 1.8.2. The 1.9.0 update is experimental; other areas and game events still need testing.
 
 ## Runtime differences
 
@@ -36,6 +38,11 @@ The 60 fps and widescreen hooks remain exclusive to 1.8.2. Their hard-coded addr
   result `0xea01`; reacquiring it twice deadlocks.
 - Android's chosen storage volume is applied before the saved version selection. An explicit
   `LARECOMP_DATA_ROOT` test override still takes precedence.
+- Frame pacing: wait hook `0xe9487c`, VFR ratio hook `0x151d494`, pause state `0x1e15ca0`, screen manager holder
+  `0x1d66d58`, event manager `0x1e3a638` (active event at `+0x1d2b8`), controller frame step `0x1dad0e0`.
+  The framework's interval setter returns to `0x11267c4`; its maximum interval is still at `+0x234`.
+  Native tests simulate one minute at both 30 and 60 fps for 1.8.2 and 1.9.0 and verify clock, input duration and
+  menu/event/movie caps. Generator hooks assert the original instruction words before replacing them.
 
 Native version/path tests and ROMFS validation run in the release CI. No game executable, generated game code,
 game data or console keys are distributed with the APK or this repository.

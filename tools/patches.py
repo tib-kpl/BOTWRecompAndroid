@@ -25,9 +25,11 @@ import struct
 PATCHES = {}      # v1.0.0 (main build 2094f152...)
 PATCHES_160 = {}  # v1.6.0 (main build 8e9978d5...): the same fixes at that build's addresses
 PATCHES_182 = {}  # v1.8.2 (main build de0b6ac4...)
+PATCHES_190 = {}  # v1.9.0 (main build cd57b23f...)
 BUILD_1_0_0 = '2094f152836683a3632c6153fd84ab80'
 BUILD_1_6_0 = '8e9978d50bdd20b4c8395a106c27ffde'
 BUILD_1_8_2 = 'de0b6ac4efc1dda7f80f6d7598ec7a7d'
+BUILD_1_9_0 = 'cd57b23fa4bbad65803d9788c01821ee'
 
 
 def _clustered_dl_heap_null(gen, a):
@@ -125,7 +127,15 @@ PATCHES_182[0x70014092f4] = _vfr_ratio_182
 PATCHES_182[0x7000da13f4] = _persp_matrix_182
 PATCHES_182[0x7000da13d8] = _persp_get_aspect_182
 
+# v1.9.0: verified against this build's main, not inferred from an address delta.
+# waitVsync at 0xe9487c has the same prologue; VFR::updateInterval at 0x151d3d0
+# writes +0x30/+0x3c just before 0x151d494 and then updates its time multipliers.
+# Both instruction replacements validate the original word before generation.
+PATCHES_190[0x7000e9487c] = _frame_wait_182
+PATCHES_190[0x700151d494] = _vfr_ratio_182
+
 
 def patches_for(build_id):
     """The patches for a module, by its build id (sdk and anything unknown: none)."""
-    return {BUILD_1_0_0: PATCHES, BUILD_1_6_0: PATCHES_160, BUILD_1_8_2: PATCHES_182}.get(build_id[:32], {})
+    return {BUILD_1_0_0: PATCHES, BUILD_1_6_0: PATCHES_160, BUILD_1_8_2: PATCHES_182,
+            BUILD_1_9_0: PATCHES_190}.get(build_id[:32], {})
