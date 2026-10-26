@@ -24,6 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # ROMFS regression tests compare against the original builder in c6046ab.
+          fetch-depth: 0
           submodules: recursive
       - uses: actions/setup-java@v4
         with:
