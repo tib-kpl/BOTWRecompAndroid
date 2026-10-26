@@ -74,6 +74,18 @@ int main(void) {
         assert(!same(a, b) && !memcmp(arena + a.offset, arena + b.offset, a.range));
         a = driver_cbuf_info(stage, 0, storage, uniform, 4, 6, 8, true);
         assert(a.range == (stage == 5 ? 0x500 : 256));
+        if (stage != 5) {
+            storage[0].addr++;
+            storage[15].size++;
+            // No binding table bytes in the default 256-byte graphics buffer.
+            assert(same(a, driver_cbuf_info(stage, 0, storage, uniform, 4, 6, 8, true)));
+            unsigned base = stage == 1 ? 0x510 : 0x110;
+            a = driver_cbuf_info(stage, base + 16, storage, uniform, 4, 6, 8, true);
+            storage[15].addr++;
+            assert(same(a, driver_cbuf_info(stage, base + 16, storage, uniform, 4, 6, 8, true)));
+            storage[0].addr++;
+            assert(!same(a, driver_cbuf_info(stage, base + 16, storage, uniform, 4, 6, 8, true)));
+        }
         b = driver_cbuf_info(stage, 0x900, storage, uniform, 4, 6, 8, true);
         assert(b.range == 0x800 && !same(a, b));
     }
