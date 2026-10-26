@@ -30,7 +30,8 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 *Link's Awakening*) and its Android port, **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)**.
 
 > [!WARNING]
-> **Beta.** Tested on one phone only (POCO F7 Ultra, Adreno 830, Mesa Turnip driver). Expect bugs. The plan and the
+> **Beta.** Upstream testing focused on the POCO F7 Ultra (Adreno 830, Mesa Turnip driver); this fork's Odin 2 Portal
+> measurements are linked above. Expect bugs. The plan and the
 > state of each phase are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (in Portuguese).
 
 ## Supported platform

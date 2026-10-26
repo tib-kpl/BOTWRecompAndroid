@@ -18,6 +18,9 @@ The controlled comparison used 50% internal resolution, SGSR 1, no SMAA, screen 
 
 These are scene-specific results, not a guarantee for the entire game or other handhelds.
 
+Restoring the player's usual dynamic resolution, FSR 1 and SMAA settings gave about 29–30 fps with the corrected
+driver in Performance mode in the same corridor. Those settings are separate from the controlled table above.
+
 ### Tested driver
 
 The working package is `Turnip-v27.0.0-20261025-r5.zip` from

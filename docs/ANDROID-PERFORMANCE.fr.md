@@ -19,6 +19,9 @@ le réglage 30 FPS.
 
 Ces résultats concernent cette scène ; ils ne garantissent pas la même cadence dans tout le jeu ou sur une autre console.
 
+Après rétablissement des préférences du joueur (résolution dynamique, FSR 1 et SMAA), le pilote corrigé donne environ
+29–30 FPS dans le même couloir en mode Performance. Ces réglages sont distincts de la comparaison contrôlée du tableau.
+
 ### Pilote testé
 
 L’archive utilisée est `Turnip-v27.0.0-20261025-r5.zip`, disponible dans les
