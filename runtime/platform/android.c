@@ -65,6 +65,18 @@ static void log_file_line(const char *line) {
     pthread_mutex_unlock(&g_logf_lock);
 }
 
+void android_game_loading(bool active) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return;
+    jclass c = (*env)->GetObjectClass(env, act);
+    jmethodID m = (*env)->GetStaticMethodID(env, c, "gameLoading", "(Z)V");
+    if (m) (*env)->CallStaticVoidMethod(env, c, m, (jboolean)active);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, c);
+    (*env)->DeleteLocalRef(env, act);
+}
+
 static int picked_folder_log(bool first) {  // BOTWRecompAndroidActivity.openLog: a descriptor, -1 without a usable folder
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject act = (jobject)SDL_GetAndroidActivity();

@@ -85,6 +85,56 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             REQ_DRIVER_RECOVER = 0x4c48;
     private static BOTWRecompAndroidActivity self;
     private WatchMapServer watchMap;
+    private android.widget.LinearLayout gameLoadingView;
+
+    // Called from native startup / the presenter. All View work stays on Android's UI thread,
+    // so the spinner runs even while SDL's thread is busy loading modules from the SD card.
+    public static void gameLoading(boolean active) {
+        BOTWRecompAndroidActivity activity = self;
+        if (activity == null) return;
+        activity.runOnUiThread(() -> activity.setGameLoading(active));
+    }
+
+    private void setGameLoading(boolean active) {
+        if (isFinishing() || isDestroyed()) return;
+        if (!active) {
+            if (gameLoadingView != null) {
+                android.widget.LinearLayout view = gameLoadingView;
+                gameLoadingView = null;
+                view.animate().alpha(0f).setDuration(220).withEndAction(() -> {
+                    android.view.ViewParent parent = view.getParent();
+                    if (parent instanceof android.view.ViewGroup) ((android.view.ViewGroup) parent).removeView(view);
+                }).start();
+            }
+            return;
+        }
+        if (gameLoadingView != null) return;
+        android.widget.LinearLayout panel = new android.widget.LinearLayout(this);
+        panel.setOrientation(android.widget.LinearLayout.VERTICAL);
+        panel.setGravity(android.view.Gravity.CENTER);
+        panel.setBackgroundColor(android.graphics.Color.rgb(12, 23, 35));
+        panel.setClickable(true); // Do not pass launch taps through to the game.
+        float density = getResources().getDisplayMetrics().density;
+        android.widget.ProgressBar spinner = new android.widget.ProgressBar(this);
+        spinner.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(android.graphics.Color.rgb(239, 205, 135)));
+        panel.addView(spinner, new android.widget.LinearLayout.LayoutParams((int) (48 * density), (int) (48 * density)));
+        android.widget.TextView label = new android.widget.TextView(this);
+        label.setText(R.string.game_loading);
+        label.setTextColor(android.graphics.Color.WHITE);
+        label.setTextSize(22);
+        label.setGravity(android.view.Gravity.CENTER);
+        label.setPadding((int) (24 * density), (int) (24 * density), (int) (24 * density), 0);
+        panel.addView(label);
+        android.widget.TextView detail = new android.widget.TextView(this);
+        detail.setText(R.string.game_loading_detail);
+        detail.setTextColor(android.graphics.Color.rgb(185, 200, 213));
+        detail.setTextSize(16);
+        detail.setGravity(android.view.Gravity.CENTER);
+        detail.setPadding((int) (24 * density), (int) (12 * density), (int) (24 * density), 0);
+        panel.addView(detail);
+        gameLoadingView = panel;
+        addContentView(panel, new android.view.ViewGroup.LayoutParams(-1, -1));
+    }
 
     @Override
     protected String[] getLibraries() {

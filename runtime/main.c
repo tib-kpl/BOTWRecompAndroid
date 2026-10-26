@@ -235,6 +235,11 @@ int main(int argc, char **argv) {
             extern void launcher_run(const char *root);
             launcher_run(root);
         }
+#ifdef __ANDROID__
+        // Android's UI thread keeps the loading animation alive while native startup does file IO.
+        extern void android_game_loading(bool active);
+        android_game_loading(true);
+#endif
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested
         teardown();

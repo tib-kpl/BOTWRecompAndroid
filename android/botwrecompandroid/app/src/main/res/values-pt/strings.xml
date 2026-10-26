@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="game_loading">A iniciar o jogo…</string>
+    <string name="game_loading_detail">A preparar os dados e os gráficos. Aguarde.</string>
     <string name="storage_title">Armazenamento dos dados do jogo</string>
     <string name="storage_internal">Armazenamento interno</string>
     <string name="storage_removable">Cartão SD / armazenamento removível</string>

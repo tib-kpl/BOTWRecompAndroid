@@ -1214,6 +1214,9 @@ uint64_t vk_frame_counter(void) { return g_frame_counter; }
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
 static NvnTexture *g_last_presented;
+#ifdef __ANDROID__
+static bool g_loading_finished;
+#endif
 
 const float *vk_shot_crop(void) { return g_shot_crop; }
 
@@ -1323,6 +1326,13 @@ void backend_present(NvnTexture *t) {
         if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
         bool shot = win_shot && (long)total_frames + 1 == win_shot;
         vk_frame_end(shot ? "build/window.png" : NULL);
+#ifdef __ANDROID__
+        if (!g_loading_finished) {
+            extern void android_game_loading(bool active);
+            android_game_loading(false);
+            g_loading_finished = true;
+        }
+#endif
         if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
     } else {
         renderer_submit();
@@ -1831,6 +1841,9 @@ void backend_reset(void) {
     vk_textures_reset();
     vk_exec_reset();
     g_last_presented = NULL;
+#ifdef __ANDROID__
+    g_loading_finished = false;
+#endif
 }
 void backend_guest_memory_reset(void) {}  // (exec.c re-imports the heap on first use)
 void backend_clear_window(void) {
