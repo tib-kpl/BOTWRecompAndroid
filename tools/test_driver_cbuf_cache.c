@@ -36,6 +36,7 @@ int main(void) {
     storage[15] = (Range){0x123456789abcdef0ull, 0x3456};
     uniform[15] = (Range){0xfedcba9876543210ull, 0x789a};
     for (int stage = 0; stage < 6; stage++) {
+        storage[15] = (Range){0x123456789abcdef0ull, 0x3456};
         VkDescriptorBufferInfo a = driver_cbuf_info(stage, 0x800, storage, uniform, 3, 5, 7, true);
         unsigned n = copies;
         assert(same(a, driver_cbuf_info(stage, 0x800, storage, uniform, 3, 5, 7, true)));
