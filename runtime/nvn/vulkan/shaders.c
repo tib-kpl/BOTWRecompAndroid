@@ -122,7 +122,10 @@ static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
 // their depths stopped matching (EQUAL test: black holes in foliage), and it was most of the compile time; the
 // driver optimises anyway. LARECOMP_VK_OPT=1 turns it back on (experiments).
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
-    bool optimized = getenv("LARECOMP_VK_OPT") != NULL;
+    // Fragment-only experiment leaves vertex arithmetic unchanged: optimizing the
+    // depth and colour vertex programs independently broke their EQUAL depth test.
+    bool optimized = getenv("LARECOMP_VK_OPT") != NULL ||
+                     (stage == STAGE_FRAGMENT && getenv("LARECOMP_VK_OPT_FRAGMENT") != NULL);
 #ifdef __ANDROID__
     uint64_t h = vk_shader_source_hash(src, stage, optimized);
     uint32_t api = g_vk.api ? g_vk.api : VK_API_VERSION_1_3;  // (0: no device yet - as 1.3)
