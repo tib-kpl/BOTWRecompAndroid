@@ -63,3 +63,29 @@ Avec T30, les comparaisons alternées des listes de descripteurs et d’un cache
 n’ont pas montré de gain utile. Un prototype de copies GPU incrémentales réduit les copies CPU de buffers uniformes
 d’environ 92 %, mais ralentit le résultat global d’environ 2 %. Ces variantes de cache et de copie ont été retirées.
 Le correctif d’invalidation du cache et ses tests de régression sont conservés.
+
+## BOTW 1.9.0 : pages de commandes NVN, 26 octobre 2026
+
+Essai sur l’Odin 2 Portal avec Turnip `v27.0.0-20261025-r5`, cible 60 FPS, résolution dynamique, FSR1 et SMAA.
+La valeur Android `performance_mode=2` est relevée avant et après chaque comparaison ; le propriétaire identifie
+ce profil comme High Performance. Ces résultats ne constituent pas une référence en mode Standard.
+
+Le profil CPU par échantillonnage attribue environ 4,7 % du temps à la recherche des pages de commandes et à ses
+verrous. Ces pages ne sont jamais libérées : une publication atomique de leur clé permet de lire les pages déjà
+créées sans verrou. Le verrou reste utilisé pour leur allocation. Les tests couvrent les collisions et 480 000
+recherches concurrentes par huit threads ; le test du chemin rapide passe aussi sous ThreadSanitizer.
+
+Comparaison alternée pendant une minute dans le sanctuaire, sans profilage détaillé par dessin :
+
+| Chemin | Images mesurées | Débit calculé sur les temps d’image | Compteurs CPU du processus par seconde |
+| --- | ---: | ---: | ---: |
+| Recherche verrouillée | 1 200 | 38,37 FPS | 220,43 ticks/s |
+| Lecture atomique | 1 133 | 38,99 FPS | 216,59 ticks/s |
+
+Le gain est modeste sur cet essai : environ 1,6 % de cadence, avec environ 3,3 % de ticks CPU par image en moins.
+Les quatre paires d’alternances complètes favorisent le chemin atomique. Cela ne démontre pas un gain équivalent
+partout dans le jeu ni le maintien de 60 FPS.
+
+Les essais de cache des constantes internes du pilote n’apportent pas de gain mesurable et sont retirés. Le découpage
+actuel des longues passes est conservé (environ 38,8 FPS contre 37,1 sans découpage dans son essai). Rapprocher les
+soumissions de 2 ms à 0,5 ms n’améliore pas la cadence. Aucun de ces essais ne réduit la qualité graphique.

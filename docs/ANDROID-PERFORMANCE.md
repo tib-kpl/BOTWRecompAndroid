@@ -57,3 +57,28 @@ polls separately. A long nominally nonblocking poll is useful evidence of a driv
 On T30, alternating tests of descriptor binding plans and a four-way uniform-copy cache produced no useful gain.
 An incremental GPU snapshot prototype reduced CPU uniform copies by about 92%, but was about 2% slower overall.
 The unsuccessful cache/snapshot variants were removed. The copy-cache invalidation fix and its regression tests remain.
+
+## BOTW 1.9.0: NVN command pages, 26 October 2026
+
+Odin 2 Portal, Turnip `v27.0.0-20261025-r5`, 60 fps target, dynamic resolution, FSR1 and SMAA.
+Android `performance_mode=2` was recorded before and after each comparison; the owner identifies this as High
+Performance. These measurements must not be called a Standard-mode baseline.
+
+CPU sampling attributed about 4.7% of the samples to command-page lookup and its locking. Pages are never freed,
+so publishing their keys atomically lets readers access existing pages without locking. Allocation remains locked.
+Tests cover collisions and 480,000 concurrent lookups by eight threads; the fast-path test also passes ThreadSanitizer.
+
+One-minute alternating test in the shrine, without detailed per-draw profiling:
+
+| Path | Measured frames | Throughput from frame periods | Process CPU counters per second |
+| --- | ---: | ---: | ---: |
+| Locked lookup | 1,200 | 38.37 fps | 220.43 ticks/s |
+| Atomic lookup | 1,133 | 38.99 fps | 216.59 ticks/s |
+
+The improvement is small in this test: about 1.6% higher throughput and 3.3% fewer CPU ticks per frame. All four
+complete alternating pairs favor the atomic path. This does not establish the same gain throughout the game or
+sustained 60 fps.
+
+Driver-constant cache experiments showed no measurable gain and were removed. The current long-pass split remains
+enabled (about 38.8 fps versus 37.1 without splitting in that test). Shortening submission intervals from 2 ms to
+0.5 ms did not improve throughput. None of these experiments lowers rendering quality.
