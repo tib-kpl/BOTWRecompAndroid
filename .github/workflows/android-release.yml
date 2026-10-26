@@ -52,6 +52,8 @@ jobs:
           "$RUNNER_TEMP/test_temporal_history"
           clang -std=c11 -Wall -Wextra -Werror tools/test_view_overlap.c -o "$RUNNER_TEMP/test_view_overlap"
           "$RUNNER_TEMP/test_view_overlap"
+          clang -std=c11 -Wall -Wextra -Werror tools/test_feedback_identity.c -o "$RUNNER_TEMP/test_feedback_identity"
+          "$RUNNER_TEMP/test_feedback_identity"
       - name: Install Android tools
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \

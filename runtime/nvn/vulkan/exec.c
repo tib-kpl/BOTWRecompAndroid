@@ -21,6 +21,7 @@
 #include "../../ui/menu.h"
 #include "temporal_history.h"
 #include "view_overlap.h"
+#include "feedback_identity.h"
 
 static uint64_t post_reset_gen;
 void renderer_get_scene_scale(float *sx, float *sy);
@@ -2750,7 +2751,7 @@ static void snapshots_flush_fb_dirty(const char *why) {
         if (snap_fb_dirty[i]) { snap_fb_dirty[i] = false; if (snap_ok[i]) { snap_ok[i] = false; snap_why[i] = why; } }
 }
 
-typedef struct { NvnTexture *key; TexBackend copy; } Snap;
+typedef struct { NvnTexture *key; TexBackend copy; VkImage source_image; uint64_t source_generation; } Snap;
 static Snap snaps[16];
 static int nsnaps;
 
@@ -2831,6 +2832,8 @@ static TexBackend *snapshot_image(NvnTexture *t, TexBackend *src) {
         s->key = t;
     }
     TexBackend *d = &s->copy;
+    s->source_image = src->image;
+    s->source_generation = src->image_generation;
     // Every layer and level of a 2D / array texture. BOTW's terrain builds its height array (1024x1024x8 R16, 4 levels)
     // by sampling the array while it renders into it: each layer from the previous one (fs 91fe757c), each level from
     // the level above (fs 35da1c5a), both through a sampler2DArray. A one-layer copy can't be bound there - those
@@ -3156,7 +3159,9 @@ static void resolve_feedback(Prog *pr) {
             for (int k = 0; k < nsnaps; k++) if (snaps[k].key == t && snaps[k].copy.image) existing = &snaps[k];
             VkImageAspectFlags sa = src->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : src->aspect;
             static const VkComponentMapping id = {0};
-            if (!nosnap && si >= 0 && snap_ok[si] && existing) {
+            if (!nosnap && si >= 0 && snap_ok[si] && existing &&
+                feedback_identity_matches((uint64_t)(uintptr_t)existing->source_image, existing->source_generation,
+                                          (uint64_t)(uintptr_t)src->image, src->image_generation)) {
                 feedback_tex[nfeedback] = t;
                 feedback_snap[nfeedback] = &existing->copy;
                 feedback_view[nfeedback++] = vk_image_view(&existing->copy, VK_IMAGE_VIEW_TYPE_2D, src->format, 0, 1, 0, 1, id, sa);
