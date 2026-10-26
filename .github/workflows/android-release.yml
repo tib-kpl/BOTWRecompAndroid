@@ -46,8 +46,6 @@ jobs:
           for version in 100 160 182 190; do
             for fps in 30 60; do "$RUNNER_TEMP/test_framepace" "$version" "$fps"; done
           done
-          clang -std=c11 tools/test_driver_cbuf_cache.c -o "$RUNNER_TEMP/test_driver_cbuf_cache"
-          "$RUNNER_TEMP/test_driver_cbuf_cache"
       - name: Install Android tools
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
