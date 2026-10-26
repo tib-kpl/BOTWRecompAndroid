@@ -22,6 +22,7 @@
 #include "temporal_history.h"
 #include "view_overlap.h"
 #include "feedback_identity.h"
+#include "writeback_merge.h"
 
 static uint64_t post_reset_gen;
 void renderer_get_scene_scale(float *sx, float *sy);
@@ -3692,6 +3693,11 @@ static int gc_nback;
 static pthread_mutex_t gc_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void gcopy_retire(uint64_t done) {
+    extern int vk_ab(const char *what);
+    bool grouped = vk_ab("writeback") != 0;
+    static _Atomic int measure = -1;
+    if (measure < 0) measure = getenv("LARECOMP_LOG_WRITEBACK_PERF") != NULL;
+    uint64_t t0 = measure ? SDL_GetTicksNS() : 0, bytes = 0;
     pthread_mutex_lock(&gc_lock);
     int k = 0;
     for (int i = 0; i < gc_nback; i++) {
@@ -3705,20 +3711,31 @@ static void gcopy_retire(uint64_t done) {
             // back undid the CPU's writes made since, for good - wrong shadows while moving)
             uint8_t *g = (uint8_t *)(uintptr_t)gc_back[i].addr, *sh = gc_back[i].shadow;
             const uint8_t *src = gc_back[i].src;
-            for (uint64_t b = 0; b < gc_back[i].len; b += 256) {
-                uint64_t n = gc_back[i].len - b < 256 ? gc_back[i].len - b : 256;
-                // (a block the CPU's newer data was uploaded into after this submission: the shadow is that data
-                // already while the slot may not have it yet - comparing them took the slot's older bytes for the
-                // GPU's and wrote them over the CPU's: the game's allocator lists looped, the game hung)
-                if (gc_back[i].bseq[b / 256] > gc_back[i].seq) continue;
-                if (!memcmp(src + b, sh + b, n) || memcmp(g + b, sh + b, n)) continue;  // (GPU unchanged / CPU wrote)
-                memcpy(g + b, src + b, n);
-                memcpy(sh + b, src + b, n);
-            }
+            bytes += gc_back[i].len;
+            writeback_merge(g, sh, src, gc_back[i].bseq, gc_back[i].seq, gc_back[i].len, grouped);
         } else gc_back[k++] = gc_back[i];
     }
     gc_nback = k;
     pthread_mutex_unlock(&gc_lock);
+    if (measure) {
+        // Opt-in A/B timings; ordinary play does not read the clock here.
+        static struct { uint64_t ns, bytes, calls, last; } timing[2];
+        uint64_t elapsed = SDL_GetTicksNS() - t0;
+        // Retire runs on several threads; keep diagnostic totals under the existing lock.
+        pthread_mutex_lock(&gc_lock);
+        timing[grouped].ns += elapsed;
+        timing[grouped].bytes += bytes;
+        timing[grouped].calls++;
+        uint64_t frame = renderer_present_count();
+        if (frame - timing[grouped].last >= 120) {
+            LOG("[writeback-perf] grouped %d frame %llu calls %llu MB %.2f ms %.3f\n", grouped,
+                (unsigned long long)frame, (unsigned long long)timing[grouped].calls,
+                timing[grouped].bytes / 1048576.0, timing[grouped].ns / 1e6);
+            timing[grouped].ns = timing[grouped].bytes = timing[grouped].calls = 0;
+            timing[grouped].last = frame;
+        }
+        pthread_mutex_unlock(&gc_lock);
+    }
 }
 
 
@@ -6439,7 +6456,8 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // change); LARECOMP_LOG_PACE tags each frame "ab 0/1". Switches: split (no long-pass split), ubo (constant buffers
 // read in place), sgsr (Snapdragon GSR 1 for the scene instead of the setting's upscaler), nobarrier (no barrier at
 // the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads), chunk (submissions
-// every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US), plan (precomputed descriptor binding lists).
+// every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US), plan (precomputed descriptor binding lists),
+// writeback (grouped unchanged GPU writeback checks).
 // -1: not under test.
 int vk_ab(const char *what) {
     static int n = -1;
