@@ -16,6 +16,9 @@
 > - **Préparation des futures traductions :** des catalogues séparés, des ressources de texte Android et des contrôles
 >   dans la CI facilitent l’ajout de langues. Voir le [guide de traduction](docs/TRANSLATIONS.md) (en anglais).
 >
+> - **Tests sur consoles Android :** un pilote Turnip corrigé permet de tenir 30 FPS sur l’Odin 2 Portal dans la scène
+>   testée de BOTW 1.0.0. Voir [les réglages mesurés et la version du pilote](docs/ANDROID-PERFORMANCE.fr.md).
+>
 > Le moteur de recompilation et la prise en charge existante du jeu proviennent des projets d’origine cités plus bas.
 > Les traductions décrites ici concernent l’interface de l’application ; la langue des textes du jeu dispose de son
 > propre réglage.
