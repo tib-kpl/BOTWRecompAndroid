@@ -20,6 +20,7 @@
 #include "../../paths.h"
 #include "../../ui/menu.h"
 #include "temporal_history.h"
+#include "view_overlap.h"
 
 static uint64_t post_reset_gen;
 void renderer_get_scene_scale(float *sx, float *sy);
@@ -2801,12 +2802,11 @@ static NvnTexture *shader_texture_object(int stage, ShaderTexture *st_) {
 static bool view_overlaps_rt(const NvnTexEntry *e, const NvnTextureView *rv, bool has_rv) {
     uint32_t r_lv = has_rv && (rv->setmask & 1) ? rv->base_level : 0;
     uint32_t r_ly = has_rv && (rv->setmask & 2) ? rv->min_layer : 0;
-    if (r_lv != 0 || r_ly != 0) return false;
     uint32_t lv0 = e->has_view && (e->view.setmask & 1) ? e->view.base_level : 0;
-    uint32_t nlv = e->has_view && (e->view.setmask & 1) && e->view.num_levels ? e->view.num_levels : (e->tex->levels > lv0 ? e->tex->levels - lv0 : 1);
+    uint32_t nlv = e->has_view && (e->view.setmask & 1) ? e->view.num_levels : 0;
     uint32_t ly0 = e->has_view && (e->view.setmask & 2) ? e->view.min_layer : 0;
-    uint32_t nly = e->has_view && (e->view.setmask & 2) && e->view.num_layers ? e->view.num_layers : 1;
-    return r_lv >= lv0 && r_lv < lv0 + nlv && r_ly >= ly0 && r_ly < ly0 + nly;
+    uint32_t nly = e->has_view && (e->view.setmask & 2) ? e->view.num_layers : 0;
+    return vk_sampled_view_overlaps(e->tex->levels, e->tex->layout.layers, lv0, nlv, ly0, nly, r_lv, r_ly);
 }
 
 static bool is_attachment_entry(const NvnTexEntry *e) {

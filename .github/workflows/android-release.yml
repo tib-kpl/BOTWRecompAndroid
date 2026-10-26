@@ -50,6 +50,8 @@ jobs:
           for mode in fast locked ab; do "$RUNNER_TEMP/test_command_shadow" "$mode"; done
           clang -std=c11 -Wall -Wextra -Werror tools/test_temporal_history.c -o "$RUNNER_TEMP/test_temporal_history"
           "$RUNNER_TEMP/test_temporal_history"
+          clang -std=c11 -Wall -Wextra -Werror tools/test_view_overlap.c -o "$RUNNER_TEMP/test_view_overlap"
+          "$RUNNER_TEMP/test_view_overlap"
       - name: Install Android tools
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
