@@ -14,14 +14,18 @@ Versions and setup to switch back.
 
 ## Verified on Odin 2 Portal
 
-Tested on 26 October 2026 with the 1.9.0 game files, Turnip `v27.0.0-20261025-r5`, Standard performance mode,
-dynamic internal resolution, FSR1 and SMAA:
+Tested on 26 October 2026 with the 1.9.0 game files, Turnip `v27.0.0-20261025-r5`, dynamic internal resolution,
+FSR1 and SMAA. The power profile was not recorded during the original measurements. The owner subsequently
+reported that the console had switched automatically to High Performance; an ADB check then read
+`settings system performance_mode = 2`. The original results must not be described as a Standard-mode baseline.
 
 - Title screen reports **Ver. 1.9.0** and displays French game text.
 - An existing 1.0.0 save loads in the Shrine of Resurrection; Link renders and responds to input.
 - The French runtime settings menu opens and returns to the game.
 - Once initial shaders are compiled, observed samples in the tested room are around **30 fps**. This is not a
   whole-game performance or compatibility guarantee. First-time shader compilation causes visible pauses.
+- With the 60 fps mode enabled, a 20-second sample in the tested room measured a median of **40.4 fps**
+  (38.6–41.4). The inventory returned to 30 fps. The power profile for this original sample remains unverified.
 
 The experimental 60 fps mode uses separate 1.9.0 hooks and state addresses. It adjusts the game's time step to
 actual frame duration, rather than running the game twice as fast. It targets 30 fps in menus, events and movies.
