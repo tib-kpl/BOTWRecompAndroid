@@ -16,16 +16,20 @@
 >   it easier to add more languages. See [the translation guide](docs/TRANSLATIONS.md).
 > - **Android handheld testing:** an updated Turnip driver restored steady 30 fps on the Odin 2 Portal in the tested
 >   BOTW 1.0.0 scene. See [the measured settings and driver version](docs/ANDROID-PERFORMANCE.md).
-> - **Experimental 1.9.0 update:** runtime adaptation and a separate `v190` installation, with its own saves and
->   settings. The 60 fps mode is experimental; the widescreen patch remains specific to 1.8.2.
+> - **BOTW update 1.9.0 support (experimental):** tested through the title screen, save loading and the open world
+>   on the Odin 2 Portal. Its `v190` installation keeps saves and settings separate from the older versions.
+>   Graphics and performance still need work; selecting 60 fps does not guarantee sustained 60 fps.
+> - **Handheld controls and startup:** button remapping applies to the game and app menus; a translated loading
+>   screen covers game startup. The widescreen patch remains specific to 1.8.2.
 >
 > The recompilation engine and existing game support come from the upstream projects credited below. The menu
 > translations described here concern the application interface; the game's text language has its own setting.
 >
 > See [Android CI releases](docs/ANDROID-RELEASES.md) for build and signing details.
 
-A static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0 and
-1.8.2**) for Android. This is **not emulation**: the game's ARM64 code becomes C compiled for your phone, and its
+A static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0,
+1.8.2 and 1.9.0**) for Android. **1.9.0 support is experimental.** This is **not emulation**: the game's ARM64 code
+becomes C compiled for your phone, and its
 graphics (NVN) are translated to Vulkan.
 
 It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai (a recompilation of
@@ -47,7 +51,12 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
   1.8.2 at 30 or up to 60 (about 40-47 fps in the open world with a Turnip driver).
 - **1.8.2** has Brazilian Portuguese, widescreen (Video > Aspect ratio "Unlocked": the view widens, the HUD goes to
   the screen's edges) and SavageWindRecomp's frame pacing.
-- **Video:** internal resolution, AMD FSR 1 / Snapdragon GSR 1 upscaling, output resolution, SMAA.
+- **1.9.0 (experimental):** title screen, save loading and open-world gameplay tested on the Odin 2 Portal.
+  Black lines and terrain rendering artifacts remain under investigation, including the similar
+  [upstream report #21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21). Performance depends on the scene;
+  the 60 fps option is not a promise of sustained 60 fps. Widescreen support is still limited to 1.8.2.
+- **Video:** internal resolution, AMD FSR 1 / Snapdragon GSR 1 upscaling, output resolution, SMAA and optional
+  experimental temporal stabilization (disabled by default).
 - **App:** game files set up from the phone (each version in its own folder, switched on the Game Files page), touch
   controls, controllers, mods, menus in English, French and Portuguese, Vulkan driver choice (Turnip via adrenotools) and
   driver compatibility options.
@@ -60,14 +69,23 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
 > tested and reviewed by a human.
 
 > [!NOTE]
-> **No game files are included.** You need your own legally obtained dump of *Breath of the Wild* 1.0.0, 1.6.0 or
-> 1.8.2 (`exefs` and `romfs`, extracted). Instructions on how to obtain it will not be provided.
+> **No game files are included.** You need your own legally obtained dump of *Breath of the Wild* 1.0.0, 1.6.0,
+> 1.8.2 or 1.9.0 (`exefs` and `romfs`, extracted). Instructions on how to obtain it will not be provided.
+
+### Using update 1.9.0
+
+Import matching `exefs` and `romfs` folders from your own game dump with update **1.9.0 already applied**.
+The APK imports the extracted files; it does not apply an update to an XCI or NSP directly.
+The version is detected automatically and stored in `v190` under the selected game data storage, including an SD card.
+Switch installed versions from **Settings → Files**. Each version has its own saves and settings;
+installing 1.9.0 does not migrate saves from another version.
 
 ## Controller compatibility
 
 **Built-in controllers — AYN Thor, Odin 2 and Retroid:** standard buttons, both sticks and triggers are expected
-to work through SDL3's Android gamepad support, provided the device is compatible with the APK. These handhelds
-have **not yet been tested with this fork**. Open **Settings → Controls** to check detection and remap buttons.
+to work through SDL3's Android gamepad support, provided the device is compatible with the APK. The **Odin 2 Portal
+has been tested**, including remapped confirm/back buttons in app menus; AYN Thor and Retroid remain untested.
+Open **Settings → Controls** to check detection and remap buttons for both the game and app menus.
 The default layout is Nintendo-style: **A on the right, B at the bottom**.
 
 ## Installing (beta)

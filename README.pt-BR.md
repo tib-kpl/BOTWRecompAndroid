@@ -14,19 +14,25 @@
 >   junto dos menus existentes em inglês e português. A interface segue o idioma do aplicativo no Android.
 > - **Suporte a futuras traduções:** catálogos separados, recursos de texto Android e verificações na CI facilitam
 >   a inclusão de outros idiomas. Veja o [guia de tradução](docs/TRANSLATIONS.md).
+> - **Atualização BOTW 1.9.0 (experimental):** tela de título, carregamento de saves e mundo aberto testados no
+>   Odin 2 Portal. A instalação em `v190` tem seus próprios saves e configurações. Os gráficos e o desempenho ainda
+>   precisam de melhorias; selecionar 60 fps não garante 60 fps constantes.
+> - **Controles e inicialização:** o remapeamento vale para o jogo e os menus do app; uma tela de carregamento
+>   traduzida acompanha a inicialização. O patch widescreen continua exclusivo da versão 1.8.2.
 >
 > O motor de recompilação e o suporte existente ao jogo vêm dos projetos de origem creditados abaixo. As traduções
 > dos menus descritas aqui são da interface do aplicativo; o idioma dos textos do jogo tem sua própria configuração.
 
-Uma recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões **1.0.0, 1.6.0 e
-1.8.2**) para Android. **Não é emulação**: o código ARM64 do jogo vira C compilado para o seu celular, e os gráficos
+Uma recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões **1.0.0, 1.6.0,
+1.8.2 e 1.9.0**) para Android. **O suporte à 1.9.0 é experimental.** **Não é emulação**: o código ARM64 do jogo vira C compilado para o seu celular, e os gráficos
 (NVN) são traduzidos para Vulkan.
 
 O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai (uma recompilação de
 *Link's Awakening*), e do seu porte para Android, o **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)**.
 
 > [!WARNING]
-> **Beta.** Testado num celular só (POCO F7 Ultra, Adreno 830, driver Mesa Turnip). Espere bugs. O plano e o estado
+> **Beta.** Os testes do projeto original se concentram no POCO F7 Ultra (Adreno 830, driver Mesa Turnip).
+> Este fork também é testado no Odin 2 Portal. Espere bugs. O plano e o estado
 > de cada fase estão em [docs/BOTW-PORT.md](docs/BOTW-PORT.md).
 
 ## Plataforma suportada
@@ -40,7 +46,12 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
   60 (cerca de 40-47 fps no mundo aberto com um driver Turnip).
 - **1.8.2** tem português do Brasil, widescreen (Vídeo > Proporção da tela "Livre": a visão alarga, o HUD vai para as
   bordas da tela) e o ritmo de quadros do SavageWindRecomp.
-- **Vídeo:** resolução interna, upscaling AMD FSR 1 / Snapdragon GSR 1, resolução de saída, SMAA.
+- **1.9.0 (experimental):** tela de título, carregamento de saves e mundo aberto testados no Odin 2 Portal.
+  Linhas pretas e problemas de renderização do terreno continuam em investigação, com um
+  [relato semelhante no projeto original, nº 21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21).
+  O desempenho varia conforme a cena; a opção de 60 fps não garante 60 fps constantes. Widescreen apenas na 1.8.2.
+- **Vídeo:** resolução interna, upscaling AMD FSR 1 / Snapdragon GSR 1, resolução de saída, SMAA e estabilização
+  temporal experimental opcional (desativada por padrão).
 - **App:** configuração dos arquivos do jogo pelo celular (cada versão na sua pasta, trocadas na página Arquivos do
   Jogo), controles de toque, controles físicos, mods, menus em inglês, francês e português, escolha do driver Vulkan (Turnip
   pelo adrenotools) e opções de compatibilidade do driver.
@@ -54,14 +65,23 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
 
 > [!NOTE]
 > **Nenhum arquivo do jogo vem incluído.** Você precisa do seu próprio dump, obtido legalmente, de *Breath of the
-> Wild* 1.0.0, 1.6.0 ou 1.8.2 (`exefs` e `romfs`, extraídos). Não serão dadas instruções de como obtê-lo.
+> Wild* 1.0.0, 1.6.0, 1.8.2 ou 1.9.0 (`exefs` e `romfs`, extraídos). Não serão dadas instruções de como obtê-lo.
+
+### Usando a atualização 1.9.0
+
+Importe as pastas `exefs` e `romfs` correspondentes do seu jogo com a atualização **1.9.0 já aplicada**.
+O APK importa arquivos extraídos; não aplica uma atualização diretamente a um XCI ou NSP.
+A versão é detectada automaticamente e instalada em `v190` no armazenamento escolhido, inclusive no cartão SD.
+Selecione as versões instaladas em **Configurações → Arquivos**. Cada versão tem saves e configurações
+separados; instalar a 1.9.0 não migra saves de outra versão.
 
 ## Compatibilidade dos controles
 
 **Controles integrados — AYN Thor, Odin 2 e Retroid:** os botões padrão, os dois analógicos e os gatilhos devem
-funcionar pelo suporte a gamepads Android do SDL3, desde que o aparelho seja compatível com o APK. Esses portáteis
-**ainda não foram testados com este fork**. Abra **Configurações → Controles** para verificar a detecção e remapear
-os botões. A disposição padrão é a da Nintendo: **A à direita, B embaixo**.
+funcionar pelo suporte a gamepads Android do SDL3, desde que o aparelho seja compatível com o APK. O **Odin 2 Portal
+foi testado**, incluindo confirmar/voltar remapeados nos menus do app; AYN Thor e Retroid ainda não foram testados.
+Abra **Configurações → Controles** para verificar a detecção e remapear os botões do jogo e dos menus do app.
+A disposição padrão é a da Nintendo: **A à direita, B embaixo**.
 
 ## Instalando (beta)
 

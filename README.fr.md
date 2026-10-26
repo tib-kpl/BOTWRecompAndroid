@@ -18,8 +18,11 @@
 >
 > - **Tests sur consoles Android :** un pilote Turnip corrigé permet de tenir 30 FPS sur l’Odin 2 Portal dans la scène
 >   testée de BOTW 1.0.0. Voir [les réglages mesurés et la version du pilote](docs/ANDROID-PERFORMANCE.fr.md).
-> - **Patch 1.9.0 expérimental :** adaptation du moteur et installation séparée dans `v190`, avec ses propres
->   sauvegardes et paramètres. Le mode 60 FPS est expérimental ; l’écran large reste réservé à la 1.8.2.
+> - **Prise en charge du patch BOTW 1.9.0 (expérimentale) :** écran titre, chargement des sauvegardes et monde ouvert
+>   testés sur l’Odin 2 Portal. L’installation dans `v190` conserve ses propres sauvegardes et paramètres.
+>   Le rendu et les performances restent à améliorer ; choisir 60 FPS ne garantit pas de les maintenir.
+> - **Commandes et démarrage :** les associations de boutons sont utilisées dans le jeu et les menus de l’application ;
+>   un écran de chargement traduit accompagne le lancement. L’écran large reste réservé à la 1.8.2.
 >
 > Le moteur de recompilation et la prise en charge existante du jeu proviennent des projets d’origine cités plus bas.
 > Les traductions décrites ici concernent l’interface de l’application ; la langue des textes du jeu dispose de son
@@ -28,15 +31,17 @@
 > Voir [les releases Android en CI](docs/ANDROID-RELEASES.md) pour les détails de compilation et de signature
 > (documentation en anglais).
 
-Une recompilation statique de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0 et
-1.8.2**) pour Android. Il ne s’agit **pas d’émulation** : le code ARM64 du jeu est transformé en C, compilé pour votre
+Une recompilation statique de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0,
+1.8.2 et 1.9.0**) pour Android. **La prise en charge de la 1.9.0 est expérimentale.** Il ne s’agit **pas d’émulation** :
+le code ARM64 du jeu est transformé en C, compilé pour votre
 téléphone, et ses commandes graphiques (NVN) sont traduites en Vulkan.
 
 Le projet repose sur le moteur de **[LAS Recomp](https://github.com/peiikai/LASRecomp)** de peiikai, une recompilation
 de *Link’s Awakening*, et sur son portage Android, **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)**.
 
 > [!WARNING]
-> **Bêta.** Le projet d’origine a été testé sur un seul téléphone (POCO F7 Ultra, Adreno 830, pilote Mesa Turnip).
+> **Bêta.** Les essais du projet d’origine se concentrent sur le POCO F7 Ultra (Adreno 830, pilote Mesa Turnip).
+> Ce fork est également testé sur l’Odin 2 Portal ; les mesures sont référencées plus haut.
 > Des bugs sont à prévoir. Le plan et l’avancement des différentes phases sont dans
 > [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (en portugais).
 
@@ -52,7 +57,13 @@ avec le SDK/NDK Android.
   30 images/s ; version 1.8.2 à 30 ou jusqu’à 60 images/s (environ 40 à 47 en monde ouvert avec un pilote Turnip).
 - **Version 1.8.2 :** portugais du Brésil, écran large (Vidéo → Format d’image → « Déverrouillé » : le champ de vision
   s’élargit et l’interface se déplace vers les bords de l’écran) et gestion du rythme des images de SavageWindRecomp.
-- **Vidéo :** résolution interne, mise à l’échelle AMD FSR 1 / Snapdragon GSR 1, résolution de sortie et SMAA.
+- **Version 1.9.0 (expérimentale) :** écran titre, chargement des sauvegardes et jeu en monde ouvert testés sur
+  l’Odin 2 Portal. Les lignes noires et les défauts de rendu du terrain sont encore en cours d’analyse, avec un
+  [signalement similaire dans le projet d’origine, nº 21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21).
+  Les performances varient selon la scène ; l’option 60 FPS ne garantit pas 60 FPS constants.
+  L’écran large reste limité à la 1.8.2.
+- **Vidéo :** résolution interne, mise à l’échelle AMD FSR 1 / Snapdragon GSR 1, résolution de sortie, SMAA et
+  stabilisation temporelle expérimentale facultative (désactivée par défaut).
 - **Application :** importation des fichiers du jeu depuis le téléphone, avec un dossier par version et sélection
   dans la page Fichiers du jeu ; commandes tactiles, manettes, mods, menus anglais, français et portugais, choix du
   pilote Vulkan (Turnip via adrenotools) et options de compatibilité des pilotes.
@@ -67,15 +78,24 @@ avec le SDK/NDK Android.
 
 > [!NOTE]
 > **Aucun fichier du jeu n’est inclus.** Vous devez disposer de votre propre copie extraite légalement de
-> *Breath of the Wild* 1.0.0, 1.6.0 ou 1.8.2, avec les dossiers `exefs` et `romfs`. Aucune instruction permettant
+> *Breath of the Wild* 1.0.0, 1.6.0, 1.8.2 ou 1.9.0, avec les dossiers `exefs` et `romfs`. Aucune instruction permettant
 > d’obtenir ces fichiers ne sera fournie.
+
+### Utiliser le patch 1.9.0
+
+Importez les dossiers `exefs` et `romfs` correspondants de votre copie du jeu, avec le patch **1.9.0 déjà appliqué**.
+L’APK importe les fichiers extraits ; il n’applique pas directement un patch à un XCI ou un NSP.
+La version est détectée automatiquement et installée dans `v190` sur le stockage choisi, y compris la carte SD.
+Les versions installées se sélectionnent dans **Paramètres → Fichiers**. Chaque version conserve ses propres
+sauvegardes et paramètres ; installer la 1.9.0 ne migre pas les sauvegardes d’une autre version.
 
 ## Compatibilité des manettes
 
 **Commandes intégrées — AYN Thor, Odin 2 et Retroid :** les boutons standard, les deux sticks et les gâchettes
 devraient fonctionner grâce à la prise en charge des manettes Android de SDL3, si l’appareil est compatible avec
-l’APK. Ces consoles **n’ont pas encore été testées avec ce fork**. Ouvrez **Paramètres → Commandes** pour vérifier
-la détection et réaffecter les boutons. La disposition par défaut est celle de Nintendo : **A à droite, B en bas**.
+l’APK. **L’Odin 2 Portal a été testée**, y compris les boutons de validation et de retour réaffectés dans les menus
+de l’application ; l’AYN Thor et les Retroid restent à tester. Ouvrez **Paramètres → Commandes** pour vérifier la
+détection et réaffecter les boutons du jeu et des menus. La disposition par défaut est celle de Nintendo : **A à droite, B en bas**.
 
 ## Installation (bêta)
 
