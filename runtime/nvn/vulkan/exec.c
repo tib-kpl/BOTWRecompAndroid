@@ -2032,6 +2032,7 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
 
 // ================================================================== programs
 #define MAX_BIND 96
+static bool is_ubo(VkDescriptorType t) { return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; }
 #ifdef __ANDROID__
 // Reflection is immutable once a program is published. Partition its bindings once, rather than scanning both
 // stages twice per draw. Only metadata is reused: live buffers, texture views and UBO contents are still resolved.
@@ -2042,9 +2043,9 @@ static void descriptor_plan(const VkBindingInfo *binds, int count, uint32_t set,
         const VkBindingInfo *b = &binds[i];
         if (b->set != set) continue;
         if ((b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) ||
-            (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding < 17) || b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+            (is_ubo(b->type) && b->binding < 17) || b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
             plan->regular[plan->nregular++] = (uint8_t)i;
-        else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+        else if (is_ubo(b->type) &&
                  (b->binding == 18 || b->binding == 19 || b->binding == GMAP_BUFFER_INDEX))
             plan->deferred[plan->ndeferred++] = (uint8_t)i;
     }
@@ -4454,7 +4455,6 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
 // viewport decision), or NULL.
 static float g_mirror_w;  // mirror mode's composite: its render target width (rscale[65].x; 0 otherwise)
 
-static bool is_ubo(VkDescriptorType t) { return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; }
 
 // dyn / ndyn: the set's dynamic uniform buffer offsets, in binding order (its bindings of that type: compile_program)
 static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t set, int stage, ShaderInfo *si, const float *rscale_row0,

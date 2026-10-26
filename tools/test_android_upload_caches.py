@@ -16,15 +16,29 @@ execution = (ROOT / 'runtime/nvn/vulkan/exec.c').read_text()
 texture_helpers = textures[textures.index('static uint8_t *upload_scratch;'):textures.index('uint64_t prof_tex_checks,')]
 arena_helper = execution[execution.index('static uint64_t ga_load_copy('):execution.index('static bool gres_prepare(')]
 heap_fallback = execution[execution.index('bool vk_heap_place('):execution.index('#endif', execution.index('bool vk_heap_place('))]
+ubo_helper = execution[execution.index('static bool is_ubo('):execution.index('\n', execution.index('static bool is_ubo('))]
+plan_start = execution.index('typedef struct { uint8_t regular[MAX_BIND]')
+descriptor_helpers = execution[plan_start:execution.index('\n#endif', plan_start)]
 preamble = r"""
 typedef unsigned long long uint64_t;
 typedef unsigned int size_t;
 typedef unsigned int uintptr_t;
 typedef unsigned char uint8_t;
+typedef unsigned int uint32_t;
 typedef _Bool bool;
 #define true 1
 #define false 0
 #define NULL ((void *)0)
+#define MAX_BIND 96
+#define GMAP_BUFFER_INDEX 20
+typedef enum {
+    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+    VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+} VkDescriptorType;
+typedef struct { uint32_t set, binding; VkDescriptorType type; } VkBindingInfo;
 static unsigned char heap[2 << 20];
 static unsigned used;
 static int fail_alloc;
@@ -72,6 +86,32 @@ tests = r"""
 #define CHECK(c) do { count++; if (!(c)) return count; } while (0)
 int test(void) {
     int count = 0;
+    // Layout creation converts UBOs to dynamic UBOs before building these plans. Neither kind may disappear.
+    VkBindingInfo binds[] = {
+        {0, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC},
+        {1, 4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC},
+        {0, 18, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC},
+        {0, 32, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER},
+        {0, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {0, 19, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
+        {0, GMAP_BUFFER_INDEX, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC},
+        {0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
+        {0, 17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC},
+        {0, 32, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+    };
+    DescriptorPlan plan;
+    descriptor_plan(binds, sizeof binds / sizeof binds[0], 0, &plan);
+    CHECK(plan.nregular == 4 && plan.ndeferred == 3);
+    CHECK(plan.regular[0] == 0 && plan.regular[1] == 3 && plan.regular[2] == 4 && plan.regular[3] == 7);
+    CHECK(plan.deferred[0] == 2 && plan.deferred[1] == 5 && plan.deferred[2] == 6);
+    descriptor_plan(binds, sizeof binds / sizeof binds[0], 1, &plan);
+    CHECK(plan.nregular == 1 && plan.regular[0] == 1 && plan.ndeferred == 0);
+    descriptor_plan(binds, 0, 0, &plan);
+    CHECK(plan.nregular == 0 && plan.ndeferred == 0);
+    VkBindingInfo full[MAX_BIND];
+    for (int i = 0; i < MAX_BIND; i++) full[i] = (VkBindingInfo){0, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC};
+    descriptor_plan(full, MAX_BIND, 0, &plan);
+    CHECK(plan.nregular == MAX_BIND && plan.regular[MAX_BIND - 1] == MAX_BIND - 1);
     // An advertised placement extension can still be disabled or fail. Copy-mode caches must remain available.
     gcopy_mode = true;
     CHECK(!vk_heap_place(1024) && tracking_calls == 1);
@@ -130,9 +170,9 @@ int test(void) {
 }
 """
 source = OUT / 'upload_caches.c'
-source.write_text(preamble + texture_helpers + arena_helper + heap_fallback + tests)
+source.write_text(preamble + ubo_helper + descriptor_helpers + texture_helpers + arena_helper + heap_fallback + tests)
 subprocess.run([str(BIN / 'clang.exe'), '-target', 'wasm32', '-ffreestanding', '-fno-builtin', '-O2', '-c', str(source), '-o', str(OUT / 'upload_caches.o')], check=True)
 subprocess.run([str(BIN / 'ld.lld.exe'), '-flavor', 'wasm', '--no-entry', '--export=test', str(OUT / 'upload_caches.o'), '-o', str(OUT / 'upload_caches.wasm')], check=True)
 runner = OUT / 'upload_caches.cjs'
-runner.write_text("const fs = require('fs'); WebAssembly.instantiate(fs.readFileSync(process.argv[2]), {}).then(({instance}) => { const failure = instance.exports.test(); if (failure) throw new Error('Upload cache check ' + failure + ' failed'); console.log('Upload caches: 22 checks passed (actual C helpers, mocked allocation/submissions)'); }).catch(e => { console.error(e); process.exitCode = 1; });")
+runner.write_text("const fs = require('fs'); WebAssembly.instantiate(fs.readFileSync(process.argv[2]), {}).then(({instance}) => { const failure = instance.exports.test(); if (failure) throw new Error('Upload cache / descriptor check ' + failure + ' failed'); console.log('Upload caches and descriptor plans: 28 checks passed (actual C helpers, mocked allocation/submissions)'); }).catch(e => { console.error(e); process.exitCode = 1; });")
 subprocess.run(['node', str(runner), str(OUT / 'upload_caches.wasm')], check=True)
