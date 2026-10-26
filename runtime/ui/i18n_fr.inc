@@ -528,6 +528,8 @@
 {"The sticks are drawn only while a finger holds them, for a cleaner screen.",
  "Les sticks ne sont dessinés que lorsqu'un doigt les tient, pour un écran plus dégagé."},
 {"Temporal stabilization (experimental)", "Stabilisation temporelle (expérimentale)"},
+{"Controller bindings apply to the game and app menus: A selects and B goes back. Android Back, the on-screen menu button, physical Back + Start and Home / Guide still open the menu independently of your bindings. The game's button icons follow your bindings.",
+ "Le remappage de la manette s’applique au jeu et aux menus de l’application : A valide et B revient en arrière. Le retour Android, le bouton de menu tactile, les boutons physiques Back + Start et Home / Guide ouvrent toujours le menu indépendamment du remappage. Les icônes du jeu suivent vos associations."},
 {"Blends compatible pixels from consecutive images to reduce shimmer. Works with SMAA or on its own. Rejects large changes and clamps history to nearby current colours to limit trails. May soften moving details and costs GPU time. This is a screen-space filter, not full TAA or FSR 2: it has no engine motion vectors or camera jitter. Disabled by default.",
  "Mélange les pixels compatibles d’images successives pour réduire le scintillement. Fonctionne avec SMAA ou seul. Rejette les changements importants et limite l’historique aux couleurs voisines actuelles pour réduire les traînées. Peut adoucir les détails en mouvement et utilise du temps GPU. Ce filtre d’image n’est pas un TAA complet ni FSR 2 : il ne dispose pas des vecteurs de mouvement du moteur ni d’un décalage de caméra. Désactivé par défaut."},
 {"Larger stick areas",

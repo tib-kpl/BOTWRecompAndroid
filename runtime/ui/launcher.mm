@@ -28,6 +28,7 @@
 #include "imgui_internal.h"  // (SetKeyOwner)
 #include "option_rows.h"
 #include "osk.h"
+#include "pad_navigation.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -1059,28 +1060,13 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
     return clicked;
 }
 
-// Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, Nintendo layout - the right face
-// button (A) confirms, the bottom one (B) goes back; d-pad / left stick move. (ImGui's own SDL gamepad handling is
-// switched off: it used the Xbox layout and, per the user, didn't work on the start screen.)
-static ImGuiKey launcher_pad_key(Uint8 b) {
-    switch (b) {
-    case SDL_GAMEPAD_BUTTON_EAST: return ImGuiKey_GamepadFaceDown;   // A: activate
-    case SDL_GAMEPAD_BUTTON_SOUTH: return ImGuiKey_GamepadFaceRight; // B: back
-    case SDL_GAMEPAD_BUTTON_NORTH: return ImGuiKey_GamepadFaceUp;
-    case SDL_GAMEPAD_BUTTON_WEST: return ImGuiKey_GamepadFaceLeft;
-    case SDL_GAMEPAD_BUTTON_DPAD_UP: return ImGuiKey_GamepadDpadUp;
-    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return ImGuiKey_GamepadDpadDown;
-    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return ImGuiKey_GamepadDpadLeft;
-    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return ImGuiKey_GamepadDpadRight;
-    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return ImGuiKey_GamepadL1;
-    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return ImGuiKey_GamepadR1;
-    case SDL_GAMEPAD_BUTTON_START: return ImGuiKey_GamepadStart;
-    case SDL_GAMEPAD_BUTTON_BACK: return ImGuiKey_GamepadBack;
-    default: return ImGuiKey_None;
-    }
-}
+// Controllers, as in menu.mm: SDL events translated through the user's game bindings.
+// The logical A confirms, B goes back; d-pad / left stick move. ImGui's SDL gamepad handling stays off.
+static PadNavigation g_launcher_pad_navigation;
 
 static void launcher_pad_open_all(void) {
+    g_launcher_pad_navigation.clear();
+    ImGui::GetIO().ClearInputKeys();
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     for (int i = 0; ids && i < n; i++) SDL_OpenGamepad(ids[i]);
@@ -1096,7 +1082,7 @@ static bool launcher_pad_event(const SDL_Event &e) {
         io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
-        ImGuiKey k = launcher_pad_key(e.gbutton.button);
+        ImGuiKey k = g_launcher_pad_navigation.button(e.gbutton.button, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
 #ifdef __ANDROID__
         // ImGui ignores A while its nav cursor is hidden, as it starts out (PLAY focused at launch): A did nothing until
         // the d-pad had moved the selection. A controller press shows it, so this very press acts
@@ -1107,6 +1093,11 @@ static bool launcher_pad_event(const SDL_Event &e) {
     }
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
         float v = e.gaxis.value / 32767.0f;
+        if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) {
+            auto a = g_launcher_pad_navigation.trigger(e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? PADB_LTRIGGER : PADB_RTRIGGER, v);
+            if (a.key != ImGuiKey_None) io.AddKeyAnalogEvent(a.key, a.value > 0.1f, a.value);
+            return true;
+        }
         // the left stick also works as the d-pad (ImGui moves between items with the d-pad only; the stick scrolls):
         // pressed past half way, released under 0.3
         if (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX || e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
@@ -1130,6 +1121,10 @@ static bool launcher_pad_event(const SDL_Event &e) {
         }
         return true;
     }
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        g_launcher_pad_navigation.clear();
+        io.ClearInputKeys();
+        return false;  // SDL's backend still handles closing the removed device
     default: return false;
     }
 }

@@ -17,6 +17,7 @@
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
 #include "osk.h"
+#include "pad_navigation.h"
 #ifdef __APPLE__
 #include "imgui_impl_metal.h"
 #else
@@ -40,7 +41,7 @@ static std::atomic<bool> g_text_busy{false};  // a text field / the on-screen ke
 static std::atomic<bool> g_want_fullscreen_apply{false};
 
 struct QEvent {
-    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT } kind;
+    enum { KEY, ANALOG, MOUSE_POS, MOUSE_BUTTON, WHEEL, TEXT, RESET_KEYS } kind;
     ImGuiKey key;
     bool down;
     bool touch;  // (MOUSE_POS / MOUSE_BUTTON) SDL's mouse events made from a finger
@@ -51,6 +52,8 @@ struct QEvent {
 static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<QEvent> q_events;
 static float g_pixel_density = 1;
+static PadNavigation g_pad_navigation;
+static std::atomic<bool> g_reset_pad_navigation{true};
 
 static void push(const QEvent &e) {
     pthread_mutex_lock(&q_lock);
@@ -77,6 +80,8 @@ extern "C" void menu_request_close(void) { set_open(false); }  // (ui/touch_cont
 static void set_open(bool open) {
     if (open == g_open.load()) return;
     g_open.store(open);
+    g_reset_pad_navigation = true;
+    QEvent reset = {}; reset.kind = QEvent::RESET_KEYS; push(reset);
     input_reset();  // nothing held while the menu had focus leaks into the game
     bind_capture_cancel();
     if (open) {
@@ -120,25 +125,6 @@ static ImGuiKey key_from_scancode(SDL_Scancode sc) {
     }
 }
 
-// Nintendo layout: the right face button (A) confirms, the bottom one (B) goes back.
-static ImGuiKey key_from_pad(Uint8 b) {
-    switch (b) {
-    case SDL_GAMEPAD_BUTTON_EAST: return ImGuiKey_GamepadFaceDown;   // activate
-    case SDL_GAMEPAD_BUTTON_SOUTH: return ImGuiKey_GamepadFaceRight; // cancel / back
-    case SDL_GAMEPAD_BUTTON_NORTH: return ImGuiKey_GamepadFaceUp;
-    case SDL_GAMEPAD_BUTTON_WEST: return ImGuiKey_GamepadFaceLeft;
-    case SDL_GAMEPAD_BUTTON_DPAD_UP: return ImGuiKey_GamepadDpadUp;
-    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return ImGuiKey_GamepadDpadDown;
-    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return ImGuiKey_GamepadDpadLeft;
-    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return ImGuiKey_GamepadDpadRight;
-    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return ImGuiKey_GamepadL1;
-    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return ImGuiKey_GamepadR1;
-    case SDL_GAMEPAD_BUTTON_START: return ImGuiKey_GamepadStart;
-    case SDL_GAMEPAD_BUTTON_BACK: return ImGuiKey_GamepadBack;
-    default: return ImGuiKey_None;
-    }
-}
-
 // ---- software keyboard (runtime/hle/swkbd.c: the game's name entry etc.) --------------------------------------
 // The game thread waits in menu_keyboard_run (re-presenting the last frame); this dialog takes the text: typed
 // directly when the player last used a keyboard, an on-screen keyboard (d-pad + A, B deletes, Start / + OK) when
@@ -152,6 +138,7 @@ static bool capturing() { return g_open.load() || g_kbd.load() == 1; }
 extern "C" bool menu_input_captured(void) { return capturing(); }
 
 bool menu_handle_event(const SDL_Event *e) {
+    if (g_reset_pad_navigation.exchange(false)) g_pad_navigation.clear();
     static bool back_down, start_down;
     {   // LARECOMP_LOG_POINTER=1 (debugging touch in the menu): the pointer events the menu gets
         static int logp = -1;
@@ -169,13 +156,19 @@ bool menu_handle_event(const SDL_Event *e) {
         if (e->key.scancode == SDL_SCANCODE_RETURN || e->key.scancode == SDL_SCANCODE_KP_ENTER) { g_kbd = 2; return true; }
         if (e->key.scancode == SDL_SCANCODE_ESCAPE) { g_kbd = 3; return true; }
     }
-    if (g_kbd.load() == 1 && e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+    if (g_kbd.load() == 1 && e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+        bound_pad_navigation_key(e->gbutton.button) == ImGuiKey_GamepadStart) {
         g_kbd = 2;
         return true;
     }
     // typing (a text field, the on-screen keyboard, the name entry): keys are text, not menu shortcuts
     bool typing = g_kbd.load() == 1 || (g_open.load() && g_text_busy.load());
     switch (e->type) {
+    case SDL_EVENT_GAMEPAD_REMOVED: {
+        g_pad_navigation.clear();
+        QEvent reset = {}; reset.kind = QEvent::RESET_KEYS; push(reset);
+        return false;
+    }
     case SDL_EVENT_KEY_DOWN:
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
                                (e->key.scancode == SDL_SCANCODE_ESCAPE && !g_open.load()))) {
@@ -217,7 +210,7 @@ bool menu_handle_event(const SDL_Event *e) {
             return true;
         }
         if (!capturing()) return false;
-        ImGuiKey k = key_from_pad(e->gbutton.button);
+        ImGuiKey k = g_pad_navigation.button(e->gbutton.button, down);
         if (k != ImGuiKey_None) { QEvent q = {}; q.kind = QEvent::KEY; q.key = k; q.down = down; push(q); }
         return true;
     }
@@ -235,8 +228,11 @@ bool menu_handle_event(const SDL_Event *e) {
             q.key = ImGuiKey_GamepadLStickUp; q.value = v < -0.3f ? -v : 0; push(q);
             q.key = ImGuiKey_GamepadLStickDown; q.value = v > 0.3f ? v : 0; push(q);
             break;
-        case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: q.key = ImGuiKey_GamepadL2; q.value = v; push(q); break;
-        case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: q.key = ImGuiKey_GamepadR2; q.value = v; push(q); break;
+        case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: {
+            auto a = g_pad_navigation.trigger(e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? PADB_LTRIGGER : PADB_RTRIGGER, v);
+            if (a.key != ImGuiKey_None) { q.key = a.key; q.value = a.value; push(q); }
+            break;
+        }
         default: break;
         }
         return true;
@@ -437,6 +433,7 @@ static void drain_events(ImGuiIO &io) {
         switch (q.kind) {
         case QEvent::KEY: io.AddKeyEvent(q.key, q.down); break;
         case QEvent::ANALOG: io.AddKeyAnalogEvent(q.key, q.value > 0.1f, q.value); break;
+        case QEvent::RESET_KEYS: io.ClearInputKeys(); break;
         // (a finger: ImGui's touch source - it gives the item a frame under the pointer before the press; a tab,
         // which needs to have been hovered the frame before (overlap), ignored quick taps as a mouse's clicks)
         case QEvent::MOUSE_POS:

@@ -178,15 +178,13 @@ extern "C" void controls_bindings_draw(float scale) {
     }
     ImGui::PushTextWrapPos(0);
 #ifdef __ANDROID__
-    ImGui::TextDisabled("%s", tr("Bindings apply to the game only. Menus keep the fixed layout (right face button select, bottom "
-                        "face button back), and the in-game menu always opens with the back button or the menu button "
-                        "on the screen, or the controller's Back + Start held together, or its Home / Guide button - so "
-                        "this page can't be locked out. The game's button icons follow the controller bindings."));
+    ImGui::TextDisabled("%s", tr("Controller bindings apply to the game and app menus: A selects and B goes back. "
+                        "Android Back, the on-screen menu button, physical Back + Start and Home / Guide still open "
+                        "the menu independently of your bindings. The game's button icons follow your bindings."));
 #else
-    ImGui::TextDisabled("Bindings apply to the game only. Menus keep the fixed layout (right face button / Enter "
-                        "select, bottom face button / Esc back), and the in-game menu always opens with F1 or Esc, or "
-                        "the controller's Back + Start held together, or its Home / Guide button - so this page can't be "
-                        "locked out. The game's button icons follow the controller bindings.");
+    ImGui::TextDisabled("Controller bindings apply to the game and app menus: A selects and B goes back. "
+                        "Enter / Esc still select / cancel in menus. F1, Esc, physical Back + Start and Home / Guide "
+                        "still open the menu independently of your bindings. The game's button icons follow your bindings.");
 #endif
     ImGui::PopTextWrapPos();
 }

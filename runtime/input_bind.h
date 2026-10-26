@@ -1,7 +1,7 @@
 // Control remapping (runtime/hle/bindings.c): which controller button / key drives each Switch input. Edited from
 // the in-game menu's Controls tab and the start screen (runtime/ui/controls_ui.mm), saved in larecomp.ini.
-// Menus (the overlay, the start screen) never use these: they keep the fixed default layout, so no binding can lock
-// the player out.
+// Controller bindings also drive launcher / overlay navigation. F1, Escape, Android Back, touch and the physical
+// Back+Start / Guide menu shortcuts remain available independently of the bindings.
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
