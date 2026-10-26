@@ -31,19 +31,26 @@ def main():
     reference = catalog(ROOT / 'runtime/ui/i18n_pt.inc')
     for path in sorted((ROOT / 'runtime/ui').glob('i18n_*.inc')):
         entries = catalog(path)
-        assert reference.keys() <= entries.keys(), f'{path}: missing keys: {reference.keys() - entries.keys()}'
-        print(f'{path.name}: {len(entries)} menu translations OK')
+        missing = reference.keys() - entries.keys()
+        # Keep the fork's original French/Portuguese catalogs complete. New upstream languages can use tr()'s
+        # English fallback for fork-only additions such as SD storage selection.
+        if path.name in {'i18n_fr.inc', 'i18n_pt.inc'}:
+            assert not missing, f'{path}: missing keys: {missing}'
+        print(f'{path.name}: {len(entries)} menu translations OK ({len(missing)} English fallbacks)')
     res = ROOT / 'android/botwrecompandroid/app/src/main/res'
     defaults = {s.attrib['name']: s.text or '' for s in ET.parse(res / 'values/strings.xml').getroot()}
     for path in sorted(res.glob('values-*/strings.xml')):
         nodes = ET.parse(path).getroot()
         translated = {s.attrib['name']: s.text or '' for s in nodes}
         assert len(translated) == len(nodes), f'{path}: duplicate resource keys'
-        assert defaults.keys() == translated.keys(), f'{path}: Android resource keys differ from English'
+        assert translated.keys() <= defaults.keys(), f'{path}: unknown Android resource keys'
+        if path.parent.name in {'values-fr', 'values-pt'}:
+            assert defaults.keys() == translated.keys(), f'{path}: Android resource keys differ from English'
         for key, value in translated.items():
             assert value.strip(), f'{path}: empty {key}'
             assert placeholders(value) == placeholders(defaults[key]), f'{path}: format mismatch for {key}'
-        print(f'{path.parent.name}: {len(translated)} Android translations OK')
+        print(f'{path.parent.name}: {len(translated)} Android translations OK '
+              f'({len(defaults.keys() - translated.keys())} English fallbacks)')
 
 
 if __name__ == '__main__':

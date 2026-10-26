@@ -42,6 +42,7 @@ Settings g_settings = {
                   {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
     .touch_scale = 1.0f,
     .touch_opacity = 1.0f,
+    .touch_drag_sens = 1.0f,
     .gpu_heap = -1,
     .inplace_reads = -1,
     .turnip_lrz = -1,
@@ -71,29 +72,47 @@ const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English"
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)", "Portuguese (Brazil)"};
 
-const char *settings_host_language(void) {
+const char *settings_menu_language(void) {
 #ifdef __ANDROID__
-    static char language[16];
-    if (!language[0]) {
+    static const char *lang;
+    if (!lang) {
+        char l[16] = "", country[16] = "";
         const char *e = getenv("LARECOMP_HOST_LANG");
-        if (e && *e) snprintf(language, sizeof language, "%s", e);
-        else {  // (the phone's first preferred language, through SDL)
+        if (e && *e) {
+            snprintf(l, sizeof l, "%s", e);
+            for (char *p = l; *p; p++) if (*p == '_') *p = '-';
+            char *dash = strchr(l, '-');
+            if (dash) snprintf(country, sizeof country, "%s", dash + 1), *dash = 0;
+            char *dot = strchr(l, '.');
+            if (dot) *dot = 0;
+        } else {  // (the phone's first preferred language, through SDL)
             int n = 0;
-            SDL_Locale **l = SDL_GetPreferredLocales(&n);
-            snprintf(language, sizeof language, "%s", l && n > 0 && l[0]->language ? l[0]->language : "en");
-            SDL_free(l);
+            SDL_Locale **loc = SDL_GetPreferredLocales(&n);
+            if (loc && n > 0 && loc[0]->language) {
+                snprintf(l, sizeof l, "%s", loc[0]->language);
+                if (loc[0]->country) snprintf(country, sizeof country, "%s", loc[0]->country);
+            }
+            SDL_free(loc);
         }
-        // Normalize a BCP-47 or POSIX locale to its base language (fr-CA / fr_FR -> fr).
-        for (char *p = language; *p; p++) {
-            if (*p == '-' || *p == '_' || *p == '.') { *p = 0; break; }
-            if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
-        }
+        for (char *p = l; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
+        for (char *p = country; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
+        static const char *const own[] = {"pt", "es", "fr", "de", "it", "nl", "ru", "ja", "ko"};
+        lang = "en";
+        for (size_t i = 0; i < sizeof own / sizeof *own; i++)
+            if (!strcmp(l, own[i])) lang = own[i];
+        if (!strcmp(l, "zh"))  // (Taiwan, Hong Kong, Macau: traditional characters)
+            lang = !strcmp(country, "tw") || !strcmp(country, "hk") || !strcmp(country, "mo") || !strncmp(country, "hant", 4)
+                       ? "zh-Hant" : "zh-Hans";
     }
-    return language;
+    return lang;
 #else
     return "en";
 #endif
 }
+
+bool settings_host_portuguese(void) { return !strcmp(settings_menu_language(), "pt"); }
+
+const char *settings_host_language(void) { return settings_menu_language(); }
 
 // LANG_AUTO: the host's own language (LANG=es_ES.UTF-8 -> es), en-US when it is none of the game's. Linux only:
 // macOS / Windows apps get no locale variables from the system, so Auto is English there (pick one in settings).
@@ -211,6 +230,10 @@ void settings_load(void) {
         else if (!strcmp(key, "gpu_model")) snprintf(g_settings.gpu_model, sizeof g_settings.gpu_model, "%s", val);
         else if (!strcmp(key, "touch_scale")) g_settings.touch_scale = (float)atof(val);
         else if (!strcmp(key, "touch_opacity")) g_settings.touch_opacity = (float)atof(val);
+        else if (!strcmp(key, "touch_drag_camera")) g_settings.touch_drag_camera = atoi(val) != 0;
+        else if (!strcmp(key, "touch_drag_sens")) g_settings.touch_drag_sens = (float)atof(val);
+        else if (!strcmp(key, "touch_sticks_hidden")) g_settings.touch_sticks_hidden = atoi(val) != 0;
+        else if (!strcmp(key, "touch_half_areas")) g_settings.touch_half_areas = atoi(val) != 0;
         else if (!strcmp(key, "touch_layout")) {  // x,y per control (a share of the screen; negative: default)
             char *q = val;
             for (int i = 0; i < TOUCH_NCTL * 2 && *q; i++) {
@@ -279,6 +302,9 @@ void settings_save(void) {
     fprintf(f, "gpu_heap = %s\ninplace_reads = %s\nturnip_lrz = %s\nlog_file = %d\ngpu_model = %s\n", TRI(g_settings.gpu_heap),
             TRI(g_settings.inplace_reads), TRI(g_settings.turnip_lrz), g_settings.log_file, g_settings.gpu_model);
 #undef TRI
+    fprintf(f, "touch_drag_camera = %d\ntouch_drag_sens = %.2f\ntouch_sticks_hidden = %d\ntouch_half_areas = %d\n",
+            g_settings.touch_drag_camera, g_settings.touch_drag_sens, g_settings.touch_sticks_hidden,
+            g_settings.touch_half_areas);
     fprintf(f, "touch_scale = %.2f\ntouch_opacity = %.2f\ntouch_layout = ", g_settings.touch_scale, g_settings.touch_opacity);
     for (int i = 0; i < TOUCH_NCTL; i++)
         fprintf(f, "%s%.4f,%.4f", i ? "," : "", g_settings.touch_pos[i][0], g_settings.touch_pos[i][1]);

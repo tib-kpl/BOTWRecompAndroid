@@ -33,7 +33,7 @@ jobs:
       - name: Check translations
         run: |
           python3 tools/check_translations.py
-          c++ -std=c++17 -D__ANDROID__ -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+          c++ -std=c++17 -D__ANDROID__ -DI18N_NO_FONTS -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
             tools/test_i18n.cpp -o "$RUNNER_TEMP/test_i18n"
           "$RUNNER_TEMP/test_i18n"
       - name: Install Android tools

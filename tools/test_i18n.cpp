@@ -18,7 +18,15 @@ int main() {
     }
     g_menu_language.store(catalog_for_language("pt-BR"));
     assert(!strcmp(tr("PLAY"), "JOGAR"));
-    for (const char *locale : {"en", "de-DE", "french", ""}) {
+    for (const char *locale : {"de-DE", "es-ES", "it-IT", "nl-NL", "ru-RU", "ja-JP", "ko-KR", "zh-CN", "zh-TW"}) {
+        g_menu_language.store(catalog_for_language(locale));
+        assert(strcmp(tr("PLAY"), "PLAY"));
+    }
+    assert(catalog_for_language("zh_Hant_TW") == catalog_for_language("zh-Hant"));
+    assert(catalog_for_language("zh-Hans-TW") == catalog_for_language("zh-Hans"));
+    assert(catalog_for_language("zh-HK") == catalog_for_language("zh-Hant"));
+    assert(catalog_for_language("zh-Hans") != catalog_for_language("zh-Hant"));
+    for (const char *locale : {"en", "sv-SE", "french", ""}) {
         g_menu_language.store(catalog_for_language(locale));
         assert(!strcmp(tr("PLAY"), "PLAY"));
     }
