@@ -15,16 +15,19 @@
 // never changes the ray result, character position, or height tiles. Ordinary profiling leaves it off.
 static int foot_trace;
 static _Atomic unsigned foot_hits, height_hits;
+static _Thread_local unsigned foot_queries_left;
 static bool foot_pointer(uint64_t p) { return p >= GUEST_LO && p < GUEST_HI - 0x1000; }
 static void foot_trace_hit(uint64_t a) {
     if (g_game_version != 190) return;
     bool foot = a == MAIN_BASE + 0x11d0e34, height = a == MAIN_BASE + 0x1448fec;
     if (!foot && !height) return;
+    if (height && !foot_queries_left) return;
     Cpu *c = kernel_current_cpu();
     if (!c || !foot_pointer(c->x[0]) || !foot_pointer(c->x[1])) return;
     unsigned n = atomic_fetch_add_explicit(foot ? &foot_hits : &height_hits, 1, memory_order_relaxed);
     if (n >= 32) return;
     if (foot) {
+        foot_queries_left = foot_pointer(c->x[2]) && (LD32(c->x[2] + 0x80) & 0x80000000u) ? 3 : 0;
         float ray, xyz[3], limit;
         memcpy(&ray, &c->v[0], 4);
         memcpy(xyz, (void *)(uintptr_t)c->x[1], sizeof xyz);
@@ -32,6 +35,7 @@ static void foot_trace_hit(uint64_t a) {
         LOG("[foot190] actor %llx ray %.6f xyz %.6f %.6f %.6f limit %.6f\n",
             (unsigned long long)c->x[0], ray, xyz[0], xyz[1], xyz[2], limit);
     } else {
+        foot_queries_left--;
         uint64_t root = LD64(c->x[0]);
         uint32_t bank = LD32(c->x[0] + 8), level = (uint32_t)c->x[2];
         if (!foot_pointer(root) || bank > 16 || level > 7) return;

@@ -1750,7 +1750,9 @@ static void begin_pass(void) {
                       ? vk_format(st.rt.cview[i].format) : b->format;
         uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
         uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
-        if (getenv("LARECOMP_LOG_HEIGHT_TILES") && (t->flags & 0x50) && t->width >= 128) {
+        static int log_height_tiles = -1;
+        if (log_height_tiles < 0) log_height_tiles = getenv("LARECOMP_LOG_HEIGHT_TILES") != NULL;
+        if (log_height_tiles && (t->flags & 0x50) && t->width >= 128) {
             static uint64_t seen[64]; static int nseen;
             bool known = false;
             for (int k = 0; k < nseen; k++) known |= seen[k] == t->addr;
