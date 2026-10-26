@@ -3212,31 +3212,24 @@ void vk_ubo_inline_mark(uint64_t addr, uint64_t size) {
 static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out);  // (below gmem_buf)
 #endif
 
+#include "driver_cbuf_cache.h"
+
 // Constant buffer k of a stage (renderer.m bind_cbufs), copied into transient memory.
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     static const uint8_t zeros[0x10000];
     if (k == 0) {
-        uint32_t drv[0x800 / 4] = {0};
-        if (stage == 5) {
-            drv[0x200 / 4] = gx; drv[0x204 / 4] = gy; drv[0x208 / 4] = gz;
-            for (int i = 0; i < 16; i++) {
-                uint32_t *u = &drv[(0x210 + 16 * i) / 4];
-                u[0] = (uint32_t)st.ubuf[5][i].addr; u[1] = (uint32_t)(st.ubuf[5][i].addr >> 32); u[2] = (uint32_t)st.ubuf[5][i].size;
-                uint32_t *e = &drv[(0x310 + 16 * i) / 4];
-                e[0] = (uint32_t)st.sbuf[5][i].addr; e[1] = (uint32_t)(st.sbuf[5][i].addr >> 32); e[2] = (uint32_t)st.sbuf[5][i].size;
-            }
-        } else {
-            uint32_t base = 0x110 + 0x100 * (stage == 1 ? 4 : 0);
-            for (int i = 0; i < 16; i++) {
-                uint32_t *e = &drv[(base + 16 * i) / 4];
-                e[0] = (uint32_t)st.sbuf[stage][i].addr;
-                e[1] = (uint32_t)(st.sbuf[stage][i].addr >> 32);
-                e[2] = (uint32_t)st.sbuf[stage][i].size;
-            }
+        bool cached = false;
+#ifdef __ANDROID__
+        static int enabled = -1;
+        if (enabled < 0) {
+            const char *e = getenv("LARECOMP_VK_DRIVER_CBUF_CACHE");
+            enabled = !e || atoi(e) != 0;
         }
-        uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
-        if (size < 0x500 && stage == 5) size = 0x500;
-        return ubo_span(copy_dedupe(stage == 5 ? DEDUPE_DRV_C : stage == 1 ? DEDUPE_DRV_F : DEDUPE_DRV_V, drv, size, 256), size);
+        extern int vk_ab(const char *what);
+        int ab = vk_ab("drivercb");
+        cached = ab >= 0 ? ab != 0 : enabled != 0;
+#endif
+        return driver_cbuf_info(stage, si->cbuf_size[0], st.sbuf[stage], st.ubuf[stage], gx, gy, gz, cached);
     }
     if (k == 1) {  // compiler constants stored after the shader code
         NvnShaderStage *ss = &st.program->stages[stage];
