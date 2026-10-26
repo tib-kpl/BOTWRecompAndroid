@@ -25,6 +25,7 @@ static uint64_t stat_inplace_breaks;  // (passes ended so a draw reads a target 
 static uint64_t stat_upload_bytes;
 static uint64_t stat_cb_bytes[2], stat_cb_n[2], stat_cb_copied;  // (LARECOMP_LOG_CBUF_BYTES: game constant buffers bound,
                                                                  // fixed [0] / dynamically indexed [1], and bytes copied)
+static uint64_t stat_cb_hits, stat_cb_misses, stat_cb_collisions;
 static uint64_t stat_pipe_binds, stat_set_binds;  // (graphics draws: pipelines / descriptor sets bound)
 // LARECOMP_VK_PROF=1: render-thread time per category in the fps log (exec = whole command lists, draw = draw(),
 // sets = descriptor sets incl. cbuf copies, vtx = index scan + vertex copies, submit = vkQueueSubmit2)
@@ -974,7 +975,8 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
 
 // Guest memory copied once per submission: draws binding the same range share the copy.
 #define GCOPY_TAB 4096
-static struct { uint64_t addr, size, seq; VkSpan span; } gcopy[GCOPY_TAB];
+static struct { uint64_t addr, size, seq, listed, used; VkSpan span; } gcopy[GCOPY_TAB];
+static uint64_t gcopy_clock;
 static uint16_t gcopy_active[GCOPY_TAB];
 static int gcopy_nactive;
 static uint64_t gcopy_active_seq;
@@ -992,11 +994,39 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     uint64_t seq = vk_pending_seq() + (gcopy_gen << 40), h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
     if (gcopy_active_seq != seq) { gcopy_active_seq = seq; gcopy_nactive = 0; }
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (GCOPY_TAB - 1);
-    if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size == size) return gcopy[slot].span;
-    if (gcopy[slot].seq != seq && gcopy_nactive < GCOPY_TAB) gcopy_active[gcopy_nactive++] = (uint16_t)slot;
+#ifdef __ANDROID__
+    static int assoc = -1;
+    if (assoc < 0) { const char *e = getenv("LARECOMP_VK_CBUF_ASSOC"); assoc = e && atoi(e) != 0; }
+    extern int vk_ab(const char *what);
+    int ab = vk_ab("cbuf");
+    if (ab >= 0 ? ab != 0 : assoc != 0) {
+        // Four candidates in the same bucket: a colliding range need not evict a frequently reused copy.
+        uint32_t base = slot & ~3u, victim = base;
+        for (uint32_t i = base; i < base + 4; i++) {
+            if (gcopy[i].seq == seq && gcopy[i].addr == addr && gcopy[i].size == size) { slot = i; goto found_copy; }
+            if (gcopy[victim].seq == seq && (gcopy[i].seq != seq || gcopy[i].used < gcopy[victim].used)) victim = i;
+        }
+        slot = victim;
+    }
+found_copy:
+#endif
+    if (gcopy[slot].seq == seq && gcopy[slot].addr == addr && gcopy[slot].size == size) {
+        stat_cb_hits++;
+        gcopy[slot].used = ++gcopy_clock;
+        return gcopy[slot].span;
+    }
+    stat_cb_misses++;
+    if (gcopy[slot].seq == seq) stat_cb_collisions++;
+    // Track each slot once per submission, including after invalidation or collision replacement. Duplicate slots
+    // used to fill the active list before all live copies were registered, so an inline write could miss one.
+    if (gcopy[slot].listed != seq) {
+        gcopy_active[gcopy_nactive++] = (uint16_t)slot;
+        gcopy[slot].listed = seq;
+    }
     VkSpan s = vk_transient_copy((const void *)(uintptr_t)addr, size, 256);
     stat_cb_copied += size;
     gcopy[slot].addr = addr; gcopy[slot].size = size; gcopy[slot].seq = seq; gcopy[slot].span = s;
+    gcopy[slot].used = ++gcopy_clock;
     return s;
 }
 
@@ -1200,10 +1230,12 @@ const char *renderer_stats(void) {
              (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
     stat_feedback_copies = stat_feedback_reads = stat_inplace_breaks = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
     if (getenv("LARECOMP_LOG_CBUF_BYTES")) {
-        LOG("[cbuf] fixed %llu x %.1f KB, dynamic %llu x %.1f KB; copied %.1f MB\n", (unsigned long long)stat_cb_n[0],
+        LOG("[cbuf] fixed %llu x %.1f KB, dynamic %llu x %.1f KB; copied %.1f MB; cache %llu hits %llu misses %llu collisions\n", (unsigned long long)stat_cb_n[0],
             stat_cb_n[0] ? stat_cb_bytes[0] / 1024.0 / stat_cb_n[0] : 0, (unsigned long long)stat_cb_n[1],
-            stat_cb_n[1] ? stat_cb_bytes[1] / 1024.0 / stat_cb_n[1] : 0, stat_cb_copied / 1048576.0);
+            stat_cb_n[1] ? stat_cb_bytes[1] / 1024.0 / stat_cb_n[1] : 0, stat_cb_copied / 1048576.0,
+            (unsigned long long)stat_cb_hits, (unsigned long long)stat_cb_misses, (unsigned long long)stat_cb_collisions);
         stat_cb_bytes[0] = stat_cb_bytes[1] = stat_cb_n[0] = stat_cb_n[1] = stat_cb_copied = 0;
+        stat_cb_hits = stat_cb_misses = stat_cb_collisions = 0;
     }
     {   // (GPU memory in use, every heap, and the game's textures with an image)
         VmaBudget bud[VK_MAX_MEMORY_HEAPS];
@@ -6363,7 +6395,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // read in place), sgsr (Snapdragon GSR 1 for the scene instead of the setting's upscaler), nobarrier (no barrier at
 // the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads), chunk (submissions
 // every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US), plan (precomputed descriptor binding lists).
-// -1: not under test.
+// cbuf: four-way constant-buffer copy cache instead of the direct-mapped cache. -1: not under test.
 int vk_ab(const char *what) {
     static int n = -1;
     static char w[32];

@@ -43,6 +43,8 @@ jobs:
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_LINUX=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
           echo "$ANDROID_HOME/cmake/$CMAKE_VERSION/bin" >> "$GITHUB_PATH"
+      - name: Test Android upload caches and descriptor plans
+        run: python3 tools/test_android_upload_caches.py "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
       - uses: actions/cache/restore@v4
         id: deps
         with:

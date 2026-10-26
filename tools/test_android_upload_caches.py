@@ -11,6 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 OUT = ROOT / 'build' / 'optimization-tests'
 OUT.mkdir(parents=True, exist_ok=True)
 BIN = pathlib.Path(sys.argv[1])
+EXE = '.exe' if sys.platform == 'win32' else ''
 textures = (ROOT / 'runtime/nvn/vulkan/textures.c').read_text()
 execution = (ROOT / 'runtime/nvn/vulkan/exec.c').read_text()
 texture_helpers = textures[textures.index('static uint8_t *upload_scratch;'):textures.index('uint64_t prof_tex_checks,')]
@@ -19,11 +20,14 @@ heap_fallback = execution[execution.index('bool vk_heap_place('):execution.index
 ubo_helper = execution[execution.index('static bool is_ubo('):execution.index('\n', execution.index('static bool is_ubo('))]
 plan_start = execution.index('typedef struct { uint8_t regular[MAX_BIND]')
 descriptor_helpers = execution[plan_start:execution.index('\n#endif', plan_start)]
+copy_start = execution.index('// Guest memory copied once per submission:')
+copy_helpers = execution[copy_start:execution.index('// ================================================================== worker threads', copy_start)]
 preamble = r"""
 typedef unsigned long long uint64_t;
 typedef unsigned int size_t;
 typedef unsigned int uintptr_t;
 typedef unsigned char uint8_t;
+typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 typedef _Bool bool;
 #define true 1
@@ -62,8 +66,10 @@ void *realloc(void *old, size_t n) {
 void abort(void) { __builtin_trap(); }
 char *getenv(const char *name) { return NULL; }
 int atoi(const char *s) { return 0; }
+static int test_ab = -1;
+int vk_ab(const char *what) { return test_ab; }
 typedef struct { uint64_t data_hash; } TexBackend;
-static uint8_t guest[2048], arena[4096];
+static uint8_t guest[65536], arena[4096];
 #define HEAP_BASE ((uintptr_t)guest)
 #define HEAP_MAX sizeof guest
 static bool gcopy_mode, place_result;
@@ -80,6 +86,18 @@ static uint64_t vk_pending_seq(void) { return seq; }
 static uint64_t ga_ring(uint64_t n) {
     if (top + n > sizeof arena) return ~0ull;
     uint64_t off = top; top += n; return off;
+}
+typedef struct { uint8_t *ptr; } VkSpan;
+static uint8_t snapshots[1 << 18];
+static unsigned snapshot_used, snapshot_copies;
+static uint64_t stat_cb_copied, stat_cb_hits, stat_cb_misses, stat_cb_collisions;
+VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
+    if (snapshot_used + size > sizeof snapshots) abort();
+    VkSpan s = {snapshots + snapshot_used};
+    memcpy(s.ptr, data, size);
+    snapshot_used += size;
+    snapshot_copies++;
+    return s;
 }
 """
 tests = r"""
@@ -112,6 +130,54 @@ int test(void) {
     for (int i = 0; i < MAX_BIND; i++) full[i] = (VkBindingInfo){0, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC};
     descriptor_plan(full, MAX_BIND, 0, &plan);
     CHECK(plan.nregular == MAX_BIND && plan.regular[MAX_BIND - 1] == MAX_BIND - 1);
+
+    // Distinct guest ranges with the same direct-mapped slot must remain independent snapshots.
+    uint64_t keys[5], wanted = 0;
+    unsigned found = 0;
+    for (unsigned i = 0; i + 16 <= sizeof guest && found < 5; i++) {
+        uint64_t addr = (uintptr_t)(guest + i);
+        uint64_t hash = (addr * 0x9E3779B97F4A7C15ull) ^ (16ull * 0xC2B2AE3D27D4EB4Full);
+        uint64_t slot = (uint32_t)(hash ^ (hash >> 32)) & (GCOPY_TAB - 1);
+        if (!found) wanted = slot;
+        if (slot == wanted) keys[found++] = addr;
+    }
+    CHECK(found == 5);
+    seq = 100;
+    test_ab = 0;
+    VkSpan first = guest_copy(keys[0], 16);
+    CHECK(guest_copy(keys[0], 16).ptr == first.ptr && snapshot_copies == 1);
+    guest_copy(keys[1], 16);
+    CHECK(guest_copy(keys[0], 16).ptr != first.ptr && snapshot_copies == 3);
+    CHECK(gcopy_nactive == 1);
+    // Repeated inline updates must not exhaust registration and leave a later copy untracked.
+    for (int i = 0; i < GCOPY_TAB + 8; i++) {
+        guest_copy_invalidate(keys[0], keys[0] + 1);
+        guest_copy(keys[0], 16);
+    }
+    CHECK(gcopy_nactive == 1);
+    VkSpan later = guest_copy((uintptr_t)(guest + 100), 16);
+    guest[100] = 77;
+    guest_copy_invalidate((uintptr_t)(guest + 100), (uintptr_t)(guest + 101));
+    VkSpan changed = guest_copy((uintptr_t)(guest + 100), 16);
+    CHECK(changed.ptr != later.ptr && changed.ptr[0] == 77 && later.ptr[0] == 0);
+    seq++;
+    test_ab = 1;
+    VkSpan kept[4];
+    for (int i = 0; i < 4; i++) kept[i] = guest_copy(keys[i], 16);
+    unsigned copies = snapshot_copies;
+    for (int i = 0; i < 4; i++) CHECK(guest_copy(keys[i], 16).ptr == kept[i].ptr);
+    CHECK(snapshot_copies == copies && gcopy_nactive == 4);
+    guest_copy(keys[4], 16); // a full bucket evicts one entry, never corrupts a live snapshot
+    CHECK(gcopy_nactive == 4 && guest_copy(keys[3], 16).ptr == kept[3].ptr);
+    VkSpan before = guest_copy(keys[3], 16);
+    *(uint8_t *)(uintptr_t)keys[3] = 99;
+    guest_copy_invalidate(keys[3], keys[3] + 1);
+    VkSpan after = guest_copy(keys[3], 16);
+    CHECK(after.ptr != before.ptr && after.ptr[0] == 99 && before.ptr[0] == 0);
+    seq++;
+    CHECK(guest_copy(keys[3], 16).ptr != after.ptr);
+    guest_copy_flush();
+    CHECK(guest_copy(keys[3], 16).ptr != after.ptr);
     // An advertised placement extension can still be disabled or fail. Copy-mode caches must remain available.
     gcopy_mode = true;
     CHECK(!vk_heap_place(1024) && tracking_calls == 1);
@@ -170,9 +236,9 @@ int test(void) {
 }
 """
 source = OUT / 'upload_caches.c'
-source.write_text(preamble + ubo_helper + descriptor_helpers + texture_helpers + arena_helper + heap_fallback + tests)
-subprocess.run([str(BIN / 'clang.exe'), '-target', 'wasm32', '-ffreestanding', '-fno-builtin', '-O2', '-c', str(source), '-o', str(OUT / 'upload_caches.o')], check=True)
-subprocess.run([str(BIN / 'ld.lld.exe'), '-flavor', 'wasm', '--no-entry', '--export=test', str(OUT / 'upload_caches.o'), '-o', str(OUT / 'upload_caches.wasm')], check=True)
+source.write_text(preamble + ubo_helper + descriptor_helpers + texture_helpers + arena_helper + heap_fallback + copy_helpers + tests)
+subprocess.run([str(BIN / ('clang' + EXE)), '-target', 'wasm32', '-D__ANDROID__', '-ffreestanding', '-fno-builtin', '-O2', '-c', str(source), '-o', str(OUT / 'upload_caches.o')], check=True)
+subprocess.run([str(BIN / ('ld.lld' + EXE)), '-flavor', 'wasm', '--no-entry', '--export=test', str(OUT / 'upload_caches.o'), '-o', str(OUT / 'upload_caches.wasm')], check=True)
 runner = OUT / 'upload_caches.cjs'
-runner.write_text("const fs = require('fs'); WebAssembly.instantiate(fs.readFileSync(process.argv[2]), {}).then(({instance}) => { const failure = instance.exports.test(); if (failure) throw new Error('Upload cache / descriptor check ' + failure + ' failed'); console.log('Upload caches and descriptor plans: 28 checks passed (actual C helpers, mocked allocation/submissions)'); }).catch(e => { console.error(e); process.exitCode = 1; });")
+runner.write_text("const fs = require('fs'); WebAssembly.instantiate(fs.readFileSync(process.argv[2]), {}).then(({instance}) => { const failure = instance.exports.test(); if (failure) throw new Error('Upload cache / descriptor check ' + failure + ' failed'); console.log('Upload caches and descriptor plans: checks passed (actual C helpers, mocked allocation/submissions)'); }).catch(e => { console.error(e); process.exitCode = 1; });")
 subprocess.run(['node', str(runner), str(OUT / 'upload_caches.wasm')], check=True)
