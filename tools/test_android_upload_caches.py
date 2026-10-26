@@ -87,18 +87,69 @@ static uint64_t ga_ring(uint64_t n) {
     if (top + n > sizeof arena) return ~0ull;
     uint64_t off = top; top += n; return off;
 }
-typedef struct { uint8_t *ptr; } VkSpan;
-static uint8_t snapshots[1 << 18];
+typedef uint8_t *VkBuffer;
+typedef int VkCommandBuffer;
+typedef struct { VkBuffer buf; uint64_t off; void *ptr; } VkSpan;
+typedef struct { unsigned sType, srcStageMask, srcAccessMask, dstStageMask, dstAccessMask; } VkMemoryBarrier2;
+typedef struct { unsigned sType, memoryBarrierCount; VkMemoryBarrier2 *pMemoryBarriers; } VkDependencyInfo;
+typedef struct { uint64_t srcOffset, dstOffset, size; } VkBufferCopy;
+#define VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 1
+#define VK_STRUCTURE_TYPE_DEPENDENCY_INFO 2
+#define VK_PIPELINE_STAGE_2_HOST_BIT 1
+#define VK_PIPELINE_STAGE_2_TRANSFER_BIT 2
+#define VK_ACCESS_2_HOST_WRITE_BIT 1
+#define VK_ACCESS_2_TRANSFER_WRITE_BIT 2
+#define VK_ACCESS_2_TRANSFER_READ_BIT 4
+static uint8_t snapshots[4 << 20];
 static unsigned snapshot_used, snapshot_copies;
 static uint64_t stat_cb_copied, stat_cb_hits, stat_cb_misses, stat_cb_collisions;
-VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
+static uint64_t stat_cb_gpu_copied, stat_cb_patched, stat_cb_clones;
+VkSpan vk_transient(uint64_t size, uint64_t align) {
+    snapshot_used = (snapshot_used + 255) & ~255u;
     if (snapshot_used + size > sizeof snapshots) abort();
-    VkSpan s = {snapshots + snapshot_used};
-    memcpy(s.ptr, data, size);
+    VkSpan s = {snapshots, snapshot_used, snapshots + snapshot_used};
     snapshot_used += size;
+    return s;
+}
+VkSpan vk_transient_copy(const void *data, uint64_t size, uint64_t align) {
+    VkSpan s = vk_transient(size, align);
+    memcpy(s.ptr, data, size);
     snapshot_copies++;
     return s;
 }
+// GPU copies and updates execute later, after the guest may already have changed again. Updates must capture data.
+static struct { uint8_t *dst; const uint8_t *src; uint64_t size; uint8_t data[65536]; } gpu_ops[32];
+static unsigned gpu_nops, gpu_barriers;
+VkCommandBuffer vk_upload_cmd(void) { return 1; }
+void vkCmdPipelineBarrier2(VkCommandBuffer cb, VkDependencyInfo *d) {
+    if (!(d->pMemoryBarriers->srcStageMask & VK_PIPELINE_STAGE_2_HOST_BIT) ||
+        !(d->pMemoryBarriers->srcAccessMask & VK_ACCESS_2_TRANSFER_WRITE_BIT) ||
+        !(d->pMemoryBarriers->dstAccessMask & VK_ACCESS_2_TRANSFER_READ_BIT)) abort();
+    gpu_barriers++;
+}
+void vkCmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, unsigned count, VkBufferCopy *copy) {
+    if (!count || !gpu_barriers) abort();
+    for (unsigned i = 0; i < count; i++) {
+        if (gpu_nops == 32 || ((copy[i].srcOffset | copy[i].dstOffset | copy[i].size) & 3)) abort();
+        unsigned n = gpu_nops++;
+        gpu_ops[n].dst = dst + copy[i].dstOffset;
+        gpu_ops[n].src = src + copy[i].srcOffset;
+        gpu_ops[n].size = copy[i].size;
+    }
+}
+void vkCmdUpdateBuffer(VkCommandBuffer cb, VkBuffer dst, uint64_t off, uint64_t size, const void *data) {
+    if (gpu_nops == 32 || !size || size > 65536 || ((off | size) & 3)) abort();
+    unsigned n = gpu_nops++;
+    gpu_ops[n].dst = dst + off;
+    memcpy(gpu_ops[n].data, data, size);
+    gpu_ops[n].src = gpu_ops[n].data;
+    gpu_ops[n].size = size;
+}
+static void execute_gpu(void) {
+    for (unsigned i = 0; i < gpu_nops; i++) memcpy(gpu_ops[i].dst, gpu_ops[i].src, gpu_ops[i].size);
+    gpu_nops = 0;
+}
+
 """
 tests = r"""
 #define CHECK(c) do { count++; if (!(c)) return count; } while (0)
@@ -159,25 +210,73 @@ int test(void) {
     guest[100] = 77;
     guest_copy_invalidate((uintptr_t)(guest + 100), (uintptr_t)(guest + 101));
     VkSpan changed = guest_copy((uintptr_t)(guest + 100), 16);
-    CHECK(changed.ptr != later.ptr && changed.ptr[0] == 77 && later.ptr[0] == 0);
+    CHECK(changed.ptr != later.ptr && ((uint8_t *)changed.ptr)[0] == 77 && ((uint8_t *)later.ptr)[0] == 0);
     seq++;
     test_ab = 1;
-    VkSpan kept[4];
-    for (int i = 0; i < 4; i++) kept[i] = guest_copy(keys[i], 16);
+    uint8_t *block = guest + 16384;
+    for (int i = 0; i < 4096; i++) block[i] = (uint8_t)(i * 13);
+    VkSpan parent = guest_copy((uintptr_t)block, 4096);
     unsigned copies = snapshot_copies;
-    for (int i = 0; i < 4; i++) CHECK(guest_copy(keys[i], 16).ptr == kept[i].ptr);
-    CHECK(snapshot_copies == copies && gcopy_nactive == 4);
-    guest_copy(keys[4], 16); // a full bucket evicts one entry, never corrupts a live snapshot
-    CHECK(gcopy_nactive == 4 && guest_copy(keys[3], 16).ptr == kept[3].ptr);
-    VkSpan before = guest_copy(keys[3], 16);
-    *(uint8_t *)(uintptr_t)keys[3] = 99;
-    guest_copy_invalidate(keys[3], keys[3] + 1);
-    VkSpan after = guest_copy(keys[3], 16);
-    CHECK(after.ptr != before.ptr && after.ptr[0] == 99 && before.ptr[0] == 0);
+    block[7] = 42;
+    guest_copy_invalidate((uintptr_t)(block + 7), (uintptr_t)(block + 8));
+    VkSpan child = guest_copy((uintptr_t)block, 4096);
+    uint8_t expected_child[4096], expected_grandchild[4096];
+    memcpy(expected_child, block, 4096);
+    CHECK(stat_cb_clones == 1 && snapshot_copies == copies && stat_cb_patched == 4);
+    // A second snapshot clones the first before either copy has run. Multiple updates accumulate, not disappear.
+    block[101] = 77; block[205] = 88;
+    guest_copy_invalidate((uintptr_t)(block + 101), (uintptr_t)(block + 102));
+    guest_copy_invalidate((uintptr_t)(block + 205), (uintptr_t)(block + 206));
+    VkSpan grandchild = guest_copy((uintptr_t)block, 4096);
+    memcpy(expected_grandchild, block, 4096);
+    block[7] = 99; block[101] = 11; // updates already recorded must not read these newer host bytes
+    CHECK(stat_cb_clones == 2 && gpu_barriers == 2 && snapshot_copies == copies);
+    execute_gpu();
+    CHECK(!memcmp(child.ptr, expected_child, 4096) && !memcmp(grandchild.ptr, expected_grandchild, 4096));
+    CHECK(((uint8_t *)parent.ptr)[7] == (uint8_t)(7 * 13));
+    guest_copy_invalidate((uintptr_t)(block + 7), (uintptr_t)(block + 102));
+    VkSpan revised = guest_copy((uintptr_t)block, 4096);
+    execute_gpu();
+    CHECK(!memcmp(revised.ptr, block, 4096) && ((uint8_t *)child.ptr)[7] == 42);
+    // Updates outside the range leave its snapshot intact.
+    guest_copy_invalidate((uintptr_t)(block - 4), (uintptr_t)block);
+    CHECK(guest_copy((uintptr_t)block, 4096).ptr == revised.ptr);
+    // Large dirty ranges take a full CPU snapshot; so do new submissions and disabled experiments.
+    for (int i = 0; i < 2048; i++) block[i]++;
+    guest_copy_invalidate((uintptr_t)block, (uintptr_t)(block + 2048));
+    copies = snapshot_copies;
+    uint64_t clones = stat_cb_clones;
+    VkSpan large_update = guest_copy((uintptr_t)block, 4096);
+    CHECK(snapshot_copies == copies + 1 && stat_cb_clones == clones && !memcmp(large_update.ptr, block, 4096));
     seq++;
-    CHECK(guest_copy(keys[3], 16).ptr != after.ptr);
+    CHECK(guest_copy((uintptr_t)block, 4096).ptr != large_update.ptr && stat_cb_clones == clones);
+    test_ab = 0;
+    block[0]++;
+    guest_copy_invalidate((uintptr_t)block, (uintptr_t)(block + 1));
+    copies = snapshot_copies;
+    guest_copy((uintptr_t)block, 4096);
+    CHECK(snapshot_copies == copies + 1 && stat_cb_clones == clones);
+    test_ab = 1;
+    // The full 64 KB supported buffer, with updates at both boundaries (one unchanged copy region each).
+    seq++;
+    VkSpan whole = guest_copy((uintptr_t)guest, 65536);
+    guest[65535] = 37;
+    guest_copy_invalidate((uintptr_t)(guest + 65535), (uintptr_t)(guest + 65536));
+    VkSpan end_patch = guest_copy((uintptr_t)guest, 65536);
+    execute_gpu();
+    CHECK(!memcmp(end_patch.ptr, guest, 65536) && ((uint8_t *)whole.ptr)[65535] == 0);
+    guest[0] = 73;
+    guest_copy_invalidate((uintptr_t)guest, (uintptr_t)(guest + 1));
+    VkSpan begin_patch = guest_copy((uintptr_t)guest, 65536);
+    execute_gpu();
+    CHECK(!memcmp(begin_patch.ptr, guest, 65536) && ((uint8_t *)end_patch.ptr)[0] != 73);
+    clones = stat_cb_clones;
+    VkSpan unaligned = guest_copy((uintptr_t)(guest + 1), 4096);
+    guest[1]++;
+    guest_copy_invalidate((uintptr_t)(guest + 1), (uintptr_t)(guest + 2));
+    CHECK(guest_copy((uintptr_t)(guest + 1), 4096).ptr != unaligned.ptr && stat_cb_clones == clones);
     guest_copy_flush();
-    CHECK(guest_copy(keys[3], 16).ptr != after.ptr);
+    CHECK(guest_copy((uintptr_t)guest, 65536).ptr != begin_patch.ptr && stat_cb_clones == clones);
     // An advertised placement extension can still be disabled or fail. Copy-mode caches must remain available.
     gcopy_mode = true;
     CHECK(!vk_heap_place(1024) && tracking_calls == 1);
