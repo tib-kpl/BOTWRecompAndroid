@@ -42,10 +42,10 @@ extern volatile int g_movie_playing;  // runtime/hle/movie.c: video decoders run
 // a canonical address of 1.8.2's main (0x7000000000 + offset) where the guest window is
 #define GA(a) ((uint64_t)(a) - 0x7000000000ull + GUEST_LO)
 #define VF(T, base, off) (*(T *)(uintptr_t)((base) + (off)))
-// 1.9.0's addresses: pause getter 0xd15c1c, screen lookup 0xd5fdc0,
+// 1.9.0's addresses: pause checks in 0x1280f80/0x12822f0, screen lookup 0xd5fdc0,
 // event check 0x110df98, controller derivative update 0xeb0ef0.
 #define GAME_ADDR(v182, v190) (GUEST_LO + (g_game_version == 190 ? (v190) : (v182)))
-#define PAUSE_STATE GAME_ADDR(0x1cb48a4ull, 0x1e15ca0ull)  // u32: 0 playing, 2 paused
+#define PAUSE_STATE GAME_ADDR(0x1cb48a4ull, 0x1e44ef8ull)  // u32: 0 playing, 2 paused
 #define SCREEN_HOLDER GAME_ADDR(0x1c05d88ull, 0x1d66d58ull)
 #define EVENT_MANAGER GAME_ADDR(0x1cd8db8ull, 0x1e3a638ull)
 
@@ -217,6 +217,7 @@ void rt_vfr_update(uint64_t vfr) {
     last_iv = iv;
     if (log_every > 0 && nframe++ % (uint64_t)log_every == 0)
         LOG("[framepace] target %d fps, %.2f ms since the last update (avg %.2f), ratio %.3f, interval %u, owed "
-            "%.2f ms%s%s\n", framepace_target(), s * 1e3, smooth * 1e3, ratio, iv, (real - given) * 1e3,
-            paused ? ", paused" : "", g_movie_playing > 0 ? ", movie" : "");
+            "%.2f ms%s%s, state %u, title %d, event %d\n", framepace_target(), s * 1e3, smooth * 1e3, ratio, iv,
+            (real - given) * 1e3, paused ? ", paused" : "", g_movie_playing > 0 ? ", movie" : "",
+            *(uint32_t *)(uintptr_t)PAUSE_STATE, framepace_on_title(), in_event());
 }
