@@ -181,7 +181,9 @@ void rt_paths_init(void) {
     }
     char root[1024];
     const char *env = getenv("LARECOMP_DATA_ROOT");
+    const char *storage = getenv("LARECOMP_STORAGE_ROOT");
     if (env && *env) snprintf(root, sizeof root, "%s", env);
+    else if (storage && *storage) snprintf(root, sizeof root, "%s", storage);
     else if (is_dir("extracted")) snprintf(root, sizeof root, "%s", g_start), g_dev = true;  // dev / portable: as before
     else {
 #ifdef _WIN32

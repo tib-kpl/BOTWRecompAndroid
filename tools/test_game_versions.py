@@ -69,6 +69,16 @@ int main(int argc, char **argv) {
     assert(!rt_version_root(999,file,sizeof file));
     assert(!rt_version_game_lib(999,lib,sizeof lib));
     assert(rt_select_game_version(999)); assert(selected_version(main)==100);
+    // Android's chosen SD/internal volume must still honor the selected version at normal startup.
+    assert(rt_select_game_version(190));
+    setenv("LARECOMP_STORAGE_ROOT",main,1); unsetenv("LARECOMP_DATA_ROOT");
+    rt_paths_init(); assert(rt_game_version()==190);
+    snprintf(version,sizeof version,"%s/v190",main);
+    assert(!strcmp(rt_data_root(),version));
+    // An explicit adb version override takes precedence over both Android preferences.
+    setenv("LARECOMP_DATA_ROOT",main,1);
+    rt_paths_init(); assert(rt_game_version()==100);
+    assert(!strcmp(rt_data_root(),main));
     puts("Native game version identification, isolated paths, settings and save seeds OK");
 }
 ''')

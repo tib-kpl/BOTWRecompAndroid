@@ -97,7 +97,9 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             // Match native menus to Android's selected app language, including per-app language settings.
             setenv("LARECOMP_HOST_LANG", getResources().getConfiguration().getLocales().get(0).toLanguageTag());
             File dataRoot = gameDataDirectory(this);
-            setenv("LARECOMP_DATA_ROOT", dataRoot.getAbsolutePath());
+            // Storage is the main root; native startup still applies the version selected in game_version.txt.
+            // LARECOMP_DATA_ROOT remains an explicit per-version override for adb test launches.
+            setenv("LARECOMP_STORAGE_ROOT", dataRoot.getAbsolutePath());
             Log.i(TAG, "game data: " + dataRoot.getAbsolutePath());
             File buildCache = new File(getCacheDir(), "gamebuild");
             if (!buildCache.isDirectory() && !buildCache.mkdirs()) throw new IOException("Could not create compiler cache");
