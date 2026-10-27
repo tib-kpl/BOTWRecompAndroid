@@ -172,7 +172,8 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
         if (protected) {
             shaderc_compile_options_set_optimization_level(o, shaderc_optimization_level_performance);
             shaderc_compilation_result_t opt = shaderc_compile_into_spv(comp, input, strlen(input), kind_of(stage), name, "main", o);
-            if (shaderc_result_get_compilation_status(opt) == shaderc_compilation_status_success) {
+            if (shaderc_result_get_compilation_status(opt) == shaderc_compilation_status_success &&
+                precise_vertex_protected((const uint32_t *)shaderc_result_get_bytes(opt), shaderc_result_get_length(opt) / 4)) {
                 shaderc_result_release(r); r = opt; used = true;
             } else shaderc_result_release(opt);
         }
