@@ -2,12 +2,14 @@
 #include <pthread.h>
 #include <shaderc/shaderc.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include "shaders.h"
 #include "shader_cache.h"
 #include "temporal_shader.h"
+#include "precise_vertex.h"
 
 void vk_shaders_init(void) {  // (compilers are per thread: check shaderc works at all)
     shaderc_compiler_t c = shaderc_compiler_initialize();
@@ -67,13 +69,7 @@ static void cache_store(uint64_t h, const uint32_t *spv, size_t nwords) {
 // any difference in fusing leaves holes (foliage flickered black). GLSL's `precise gl_Position` only covers what
 // glslang traces back from the position, which the translated register code defeats.
 static bool float_arith(const uint32_t *w, uint32_t wc, uint32_t op) {
-    switch (op) {
-    case 127: case 129: case 131: case 133: case 136:  // FNegate FAdd FSub FMul FDiv
-    case 142: case 143: case 144: case 145: case 146: case 148:  // vector/matrix products, Dot
-        return true;
-    case 12: return wc >= 5 && w[4] == 50;  // ExtInst GLSL.std.450 Fma
-    default: return false;
-    }
+    return precise_vertex_float_arith(w, wc, op);
 }
 
 static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
@@ -137,10 +133,11 @@ static void strip_names(uint32_t *spv, size_t *nwords) {
 }
 
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
+    bool precise = stage == STAGE_VERTEX && getenv("LARECOMP_VK_OPT_PRECISE") != NULL;
     // Fragment-only experiment leaves vertex arithmetic unchanged: optimizing the
     // depth and colour vertex programs independently broke their EQUAL depth test.
     bool optimized = getenv("LARECOMP_VK_OPT") != NULL ||
-                     (stage == STAGE_FRAGMENT && getenv("LARECOMP_VK_OPT_FRAGMENT") != NULL);
+                     (stage == STAGE_FRAGMENT && getenv("LARECOMP_VK_OPT_FRAGMENT") != NULL) || precise;
 #ifdef __ANDROID__
     uint64_t h = vk_shader_source_hash(src, stage, optimized);
     uint32_t api = g_vk.api ? g_vk.api : VK_API_VERSION_1_3;  // (0: no device yet - as 1.3)
@@ -148,6 +145,7 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
 #else
     uint64_t h = src_hash(src, stage);
 #endif
+    if (precise) h ^= 0x5052454349534501ull; // Separate checked precision-before-optimization policy, revision 1.
     bool nocache = getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
     uint32_t *out = nocache ? NULL : cache_load(h, nwords);
     if (out) return out;
@@ -162,9 +160,32 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
 #else
     shaderc_compile_options_set_target_env(o, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
 #endif
-    shaderc_compile_options_set_optimization_level(o, optimized ? shaderc_optimization_level_performance
+    shaderc_compile_options_set_optimization_level(o, optimized && !precise ? shaderc_optimization_level_performance
                                                                                   : shaderc_optimization_level_zero);
-    shaderc_compilation_result_t r = shaderc_compile_into_spv(comp, src, strlen(src), kind_of(stage), name, "main", o);
+    char *qualified = precise ? precise_vertex_source(src) : NULL;
+    const char *input = qualified ? qualified : src;
+    shaderc_compilation_result_t r = shaderc_compile_into_spv(comp, input, strlen(input), kind_of(stage), name, "main", o);
+    if (precise) {
+        bool protected = qualified && shaderc_result_get_compilation_status(r) == shaderc_compilation_status_success &&
+            precise_vertex_protected((const uint32_t *)shaderc_result_get_bytes(r), shaderc_result_get_length(r) / 4);
+        bool used = false;
+        if (protected) {
+            shaderc_compile_options_set_optimization_level(o, shaderc_optimization_level_performance);
+            shaderc_compilation_result_t opt = shaderc_compile_into_spv(comp, input, strlen(input), kind_of(stage), name, "main", o);
+            if (shaderc_result_get_compilation_status(opt) == shaderc_compilation_status_success) {
+                shaderc_result_release(r); r = opt; used = true;
+            } else shaderc_result_release(opt);
+        }
+        if (!used) {
+            shaderc_result_release(r);
+            shaderc_compile_options_set_optimization_level(o, shaderc_optimization_level_zero);
+            r = shaderc_compile_into_spv(comp, src, strlen(src), kind_of(stage), name, "main", o);
+        }
+        static _Atomic unsigned messages;
+        if (atomic_fetch_add_explicit(&messages, 1, memory_order_relaxed) < 32)
+            LOG("[shader-precise] %s: %s\n", name, used ? "protected optimization" : "baseline fallback");
+    }
+    free(qualified);
     shaderc_compile_options_release(o);
     if (shaderc_result_get_compilation_status(r) != shaderc_compilation_status_success) {
         static int nlog;

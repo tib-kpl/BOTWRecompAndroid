@@ -72,6 +72,7 @@ jobs:
         run: |
           python3 tools/test_android_upload_caches.py "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
           python3 tools/test_temporal_shader.py "$ANDROID_NDK/shader-tools/linux-x86_64/glslc"
+          python3 tools/test_precise_vertex.py --cc clang --glslc "$ANDROID_NDK/shader-tools/linux-x86_64/glslc"
       - uses: actions/cache/restore@v4
         id: deps
         with:
