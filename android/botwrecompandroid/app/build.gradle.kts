@@ -54,7 +54,7 @@ android {
 
     // aapt's default without "<dir>_*": the game code's builder needs Python's folders named _* (zipfile/_path, ...)
     androidResources {
-        generateLocaleConfig = true
+        // App languages are declared explicitly by res/xml/locales_config.xml in the manifest.
         ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~"
     }
 
