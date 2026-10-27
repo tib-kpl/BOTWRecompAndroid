@@ -23,6 +23,7 @@
 #include "view_overlap.h"
 #include "feedback_identity.h"
 #include "writeback_merge.h"
+#include "writeback_queue.h"
 
 static uint64_t post_reset_gen;
 void renderer_get_scene_scale(float *sx, float *sy);
@@ -3687,7 +3688,6 @@ static void gfast_finish(VkCommandBuffer cb) {
 // What a storing shader wrote goes back to guest memory once its submission is done (gcopy_retire: from vk_transient
 // before the ring reuses a chunk, and after every wait). Without this, global loads read zero: the game's text is
 // drawn by a vertex shader that reads its vertices that way (nothing of it showed).
-typedef struct { const uint8_t *src; uint64_t addr, len, seq; uint8_t *shadow; const uint64_t *bseq; } GcBack;  // (arena)
 static GcBack gc_back[256];
 static int gc_nback;
 static pthread_mutex_t gc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -4004,9 +4004,10 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
             // also reads what its compute shaders wrote as uniform buffers, vertices and textures, which come from
             // guest memory (gcopy_retire, at the game's waits)
             pthread_mutex_lock(&gc_lock);
-            if (gc_nback < 256)
-                gc_back[gc_nback++] = (GcBack){ga_ptr + e->off + (lo - e->lo), HEAP_BASE + lo, hi - lo, vk_pending_seq(),
-                                               e->shadow + (lo - e->lo), e->bseq + (lo - e->lo) / 256};
+            extern int vk_ab(const char *what);
+            writeback_queue_add(gc_back, &gc_nback, 256,
+                                (GcBack){ga_ptr + e->off + (lo - e->lo), HEAP_BASE + lo, hi - lo, vk_pending_seq(),
+                                         e->shadow + (lo - e->lo), e->bseq + (lo - e->lo) / 256}, vk_ab("wbqueue") != 0);
             pthread_mutex_unlock(&gc_lock);
             continue;
         }
@@ -6457,7 +6458,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // read in place), sgsr (Snapdragon GSR 1 for the scene instead of the setting's upscaler), nobarrier (no barrier at
 // the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads), chunk (submissions
 // every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US), plan (precomputed descriptor binding lists),
-// writeback (grouped unchanged GPU writeback checks).
+// writeback (grouped unchanged GPU writeback checks), wbqueue (deduplicate identical resident writebacks in one submission).
 // -1: not under test.
 int vk_ab(const char *what) {
     static int n = -1;

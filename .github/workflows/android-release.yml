@@ -56,6 +56,8 @@ jobs:
           "$RUNNER_TEMP/test_feedback_identity"
           clang -std=c11 -Wall -Wextra -Werror tools/test_writeback_merge.c -o "$RUNNER_TEMP/test_writeback_merge"
           "$RUNNER_TEMP/test_writeback_merge"
+          clang -std=c11 -Wall -Wextra -Werror tools/test_writeback_queue.c -o "$RUNNER_TEMP/test_writeback_queue"
+          "$RUNNER_TEMP/test_writeback_queue"
           c++ -std=c++17 -Wall -Wextra -Werror -Ithird_party/imgui tools/test_pad_navigation.cpp -o "$RUNNER_TEMP/test_pad_navigation"
           "$RUNNER_TEMP/test_pad_navigation"
       - name: Install Android tools
