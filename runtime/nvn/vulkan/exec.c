@@ -6706,7 +6706,8 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
 // read in place), sgsr (Snapdragon GSR 1 for the scene instead of the setting's upscaler), nobarrier (no barrier at
 // the start of a pass: unsafe, what they cost), copy (feedback copies instead of in-place reads), chunk (submissions
 // every 0.5 ms of translation instead of LARECOMP_VK_CHUNK_US), plan (precomputed descriptor binding lists),
-// writeback (grouped unchanged GPU writeback checks), wbqueue (deduplicate identical resident writebacks in one submission).
+// writeback (grouped unchanged GPU writeback checks), wbqueue (deduplicate identical resident writebacks in one submission),
+// split1 (1 ms long-pass splitting versus the configured/default threshold).
 // -1: not under test.
 int vk_ab(const char *what) {
     int n = ab_n;
@@ -6731,8 +6732,9 @@ static void split_long_pass(void) {
     }
     extern bool vk_async_on(void);
     static unsigned n;  // (the clock every 32 draws: a clock read per draw showed up in the profile)
+    long threshold = AB("split1") == 1 ? 1000 : split;
     if (split > 0 && in_pass && !(++n & 31) && AB("split") != 1 && vk_async_on() && last_submit_ns &&
-        SDL_GetTicksNS() - last_submit_ns > (uint64_t)split * 1000)
+        SDL_GetTicksNS() - last_submit_ns > (uint64_t)threshold * 1000)
         renderer_submit();
 #endif
 }

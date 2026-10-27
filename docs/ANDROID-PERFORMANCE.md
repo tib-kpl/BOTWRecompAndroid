@@ -111,3 +111,41 @@ not image resolution. Queue identity tests and ownership-merge tests pass, inclu
 This does **not** demonstrate sustained 60 fps or fix the known terrain/black-line artifacts. GPU work remains
 around 30 ms per frame in this scene. Fragment-only shader optimization and LRZ tests have not established a
 separate reliable gain; they are not enabled by this optimization. Direct GPU heap access is still being evaluated.
+
+## Measurements after the upstream 0.2.1 merge
+
+Release 49/51, rebuilt BOTW 1.9.0 game module, the same Odin 2 Portal outdoor test save, High Performance,
+corrected Turnip driver, fixed **1920×1080 internal rendering and output**. Tests use a separate save directory.
+
+Upstream's synchronization-lag option improves throughput in this scene. A warmed same-process test alternating
+every 120 frames, retaining complete phases only, measured 26.28 fps with lag off (840 frames) and 30.81 fps with
+lag on (840 frames). This is an upstream option, not an additional optimization from this fork. It can affect
+GPU writeback timing; the test does not establish that character/terrain rendering issues are fixed.
+
+Removing inter-pass barriers in a diagnostic A/B measured 26.24 versus 26.50 fps. That approximately 1% difference
+does not justify removing required synchronization. Normal barriers remain enabled.
+
+`LARECOMP_VK_OPT_PRECISE=1` is a **developer experiment, off by default**. It adds GLSL precision qualifiers to
+vertex registers, outputs and helper return values before requesting shaderc performance optimization. Both the
+unoptimized and optimized modules must retain NoContraction on rounding arithmetic; otherwise compilation falls
+back to the original source and policy. Explicit Fma and negation are exempt from this check. The experiment has
+its own shader-cache namespace. These checks do not replace visual validation of different depth/colour programs.
+
+The synthetic tests cover register bitcasts, helper returns, predicates, explicit Fma, and malformed SPIR-V.
+Local checks of 233 captured vertex programs accepted 231 with the legacy SDK compiler; one used an unsupported
+shadow-LOD overload and one failed its optimizer. This compiler result does not establish coverage on every device.
+The initial steady 600-frame windows measured 25.68 fps normally and 25.70 fps with the experiment; a subsequent
+normal reference measured 26.63 fps. These separate-process runs establish **no reliable performance gain**.
+The experiment remains disabled in ordinary launches.
+
+A separate per-pass profile recorded 218 intervals totalling approximately 34.07 ms: 29.44 ms in render passes,
+2.88 ms in feedback copies, 0.74 ms in compute dispatches, 0.81 ms in presentation and 0.20 ms between submissions.
+Timestamp instrumentation affects this frame; it is not a steady-state FPS measurement. Pass labels report the
+guest's requested sizes (often 1600×900), while the fixed rendering scale produces 1920×1080 scene output.
+The GPU still needs roughly 31–33 ms in ordinary frames in this scene, compared with a 16.67 ms budget for 60 fps.
+There is no demonstrated sustained 60 fps result.
+
+At fixed 1080p, another same-process test compared the existing 3 ms long-pass split with no splitting.
+Four complete 120-frame phases per mode measured 26.10 fps with splitting and 23.39 fps without it; all four
+neighbouring pairs favour splitting. The existing default is retained. This confirms the scheduling benefit at
+this resolution; it is not a new optimization or an additive gain over the other measurements above.
