@@ -24,10 +24,15 @@ int main(void) {
     const size_t sizes[] = {0, 1, 255, 256, 257, 4095, 4096, 4097, 8192, N};
     for (unsigned trial = 0; trial < 1000; trial++) {
         size_t len = sizes[trial % (sizeof sizes / sizeof sizes[0])];
+        unsigned pattern = (trial / (sizeof sizes / sizeof sizes[0])) % 5;
         for (size_t b = 0; b < N; b++) g[b] = s[b] = v[b] = (uint8_t)next();
         for (size_t b = 0; b < len; b += 256) {
             seq[b / 256] = next() % 12;
             unsigned state = next() % 4;
+            if (pattern == 0) state = 0; // Entire unchanged pages: grouped fast path.
+            if (pattern == 1) state = 1; // Every block changed by GPU.
+            if (pattern == 2) state = 3; // Conflicting CPU and GPU writes.
+            if (pattern == 3) state = b % 4096 == 0 ? 1 : 0; // Sparse GPU changes.
             size_t n = len - b < 256 ? len - b : 256;
             if (state & 1) v[b + next() % n] ^= 123; // GPU changed.
             if (state & 2) g[b + next() % n] ^= 67;  // CPU changed: must win.
