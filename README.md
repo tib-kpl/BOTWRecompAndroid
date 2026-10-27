@@ -11,7 +11,8 @@
 > - **Automatic APK releases:** every successful push to `main` builds a signed Android APK and publishes it as a
 >   prerelease on [this fork's Releases page](https://github.com/tib-kpl/BOTWRecompAndroid/releases).
 > - **French menus:** French translations for the launcher, settings, controls, Android dialogs and shortcuts,
->   alongside the existing English and Portuguese menus. The interface follows the Android app language.
+>   alongside the existing English and Portuguese menus. The app menus follow the game's Language setting;
+>   Auto follows the Android app language.
 > - **Support for future translations:** separate translation catalogs, Android string resources and CI checks make
 >   it easier to add more languages. See [the translation guide](docs/TRANSLATIONS.md).
 > - **Android handheld testing:** an updated Turnip driver restored steady 30 fps on the Odin 2 Portal in the tested
@@ -20,7 +21,7 @@
 >   on the Odin 2 Portal. Its `v190` installation keeps saves and settings separate from the older versions.
 >   Graphics and performance still need work; selecting 60 fps does not guarantee sustained 60 fps.
 > - **Handheld controls and startup:** button remapping applies to the game and app menus; a translated loading
->   screen covers game startup. The widescreen patch remains specific to 1.8.2.
+>   screen covers game startup. Upstream widescreen support is integrated for 1.8.2 and experimental 1.9.0.
 >
 > The recompilation engine and existing game support come from the upstream projects credited below. The menu
 > translations described here concern the application interface; the game's text language has its own setting.
@@ -52,17 +53,24 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
 - **1.8.2** has Brazilian Portuguese, widescreen (Video > Aspect ratio "Unlocked": the view widens, the HUD goes to
   the screen's edges) and SavageWindRecomp's frame pacing.
 - **1.9.0 (experimental):** title screen, save loading and open-world gameplay tested on the Odin 2 Portal.
-  Black lines and terrain rendering artifacts remain under investigation, including the similar
-  [upstream report #21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21). Performance depends on the scene;
-  the 60 fps option is not a promise of sustained 60 fps. Widescreen support is still limited to 1.8.2.
-- **Video:** internal resolution, AMD FSR 1 / Snapdragon GSR 1 upscaling, output resolution, SMAA and optional
+  The upstream terrain-crack fix for [report #21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21) is integrated,
+  pending validation on the Odin. Performance depends on the scene; the 60 fps option is not a promise of sustained
+  60 fps. Upstream widescreen support is also integrated for this version.
+- **Video:** internal resolution, AMD FSR 1 / Snapdragon GSR 1 upscaling, output resolution, SMAA, FXAA and optional
   experimental temporal stabilization (disabled by default).
 - **App:** game files set up from the phone (each version in its own folder, switched on the Game Files page), touch
   controls, controllers, mods, menus in English, French and Portuguese, Vulkan driver choice (Turnip via adrenotools) and
   driver compatibility options.
+- **New upstream features:** Expansion Pass import for 1.6.0 / 1.8.2 / 1.9.0, save import/export as ZIP files,
+  background game-code compilation, gyroscope bias correction and controller stick dead zones.
+  Video → Sync lag can improve speed but delay GPU readbacks; turn it off if Link's legs sink into the ground.
 - **Known gaps:** setting the game up on the phone compiles the game code there, and that has not been timed or
   tested with BOTW yet (expect a long wait and a hot phone); GPUs other than Adreno 8xx take slower, safer paths;
   thumbnails of saves made in the app are black; the audio still uses a simplified mixer.
+- **Known issue: stretched terrain after a Sheikah Tower.** Right after a tower's activation cutscene, the terrain
+  can show vertical "curtains" or spikes (cliffs and distant mountains stretched up into the sky). It happens with
+  every Vulkan driver and is being investigated. **Workaround:** once the tower is activated, load the save (the
+  autosave from right after the activation is fine) and the terrain is drawn correctly again.
 
 > [!IMPORTANT]
 > Like LAS Recomp, this project is made almost entirely with AI (Claude, by Anthropic, through Claude Code), directed,
@@ -78,7 +86,10 @@ Import matching `exefs` and `romfs` folders from your own game dump with update 
 The APK imports the extracted files; it does not apply an update to an XCI or NSP directly.
 The version is detected automatically and stored in `v190` under the selected game data storage, including an SD card.
 Switch installed versions from **Settings → Files**. Each version has its own saves and settings;
-installing 1.9.0 does not migrate saves from another version.
+when first created, a version folder can be seeded from 1.0.0's saves and settings without replacing existing ones.
+
+After an update to the recompiler, existing game code may need to be rebuilt from your extracted files.
+The upstream merge for 0.2.1 changes the generator and game-code compatibility ID.
 
 ## Controller compatibility
 

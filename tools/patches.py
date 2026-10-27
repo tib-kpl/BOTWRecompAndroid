@@ -127,15 +127,13 @@ PATCHES_182[0x70014092f4] = _vfr_ratio_182
 PATCHES_182[0x7000da13f4] = _persp_matrix_182
 PATCHES_182[0x7000da13d8] = _persp_get_aspect_182
 
-# v1.9.0: verified against this build's main, not inferred from an address delta.
-# waitVsync at 0xe9487c has the same prologue; VFR::updateInterval at 0x151d3d0
-# writes +0x30/+0x3c just before 0x151d494 and then updates its time multipliers.
-# Both instruction replacements validate the original word before generation.
+# v1.9.0: the same code at other addresses (tools/port_addrs.py, from 1.8.2's; the words checked as above)
 PATCHES_190[0x7000e9487c] = _frame_wait_182
 PATCHES_190[0x700151d494] = _vfr_ratio_182
+PATCHES_190[0x7000eb4a44] = _persp_matrix_182
+PATCHES_190[0x7000eb4a28] = _persp_get_aspect_182
 
 
 def patches_for(build_id):
     """The patches for a module, by its build id (sdk and anything unknown: none)."""
-    return {BUILD_1_0_0: PATCHES, BUILD_1_6_0: PATCHES_160, BUILD_1_8_2: PATCHES_182,
-            BUILD_1_9_0: PATCHES_190}.get(build_id[:32], {})
+    return {BUILD_1_0_0: PATCHES, BUILD_1_6_0: PATCHES_160, BUILD_1_8_2: PATCHES_182, BUILD_1_9_0: PATCHES_190}.get(build_id[:32], {})

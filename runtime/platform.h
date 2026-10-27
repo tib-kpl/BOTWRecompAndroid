@@ -52,7 +52,7 @@ void plat_terminate(void);  // end the process now, skipping DLL teardown (exit 
 // Child processes (game code generator, game-file extraction). stdout + stderr go to log_path (NULL = /dev/null).
 typedef intptr_t PlatProc;  // 0 = failed to start
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log);
-int plat_proc_wait(PlatProc p, bool block);  // exit code, or -1 while still running (block = false)
+int plat_proc_wait(PlatProc p, bool block);  // exit code (128+n: stopped by signal n), or -1 while still running (block = false)
 void plat_proc_kill(PlatProc p);             // end it and what it started (then it's gone: no wait)
 bool plat_remove_tree(const char *dir);      // rm -rf
 #ifdef _WIN32

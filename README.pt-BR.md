@@ -11,14 +11,15 @@
 > - **Releases automáticas de APK:** cada push bem-sucedido para `main` gera um APK Android assinado e o publica como
 >   pré-release na [página Releases deste fork](https://github.com/tib-kpl/BOTWRecompAndroid/releases).
 > - **Menus em francês:** traduções para a tela inicial, configurações, controles, diálogos e atalhos Android,
->   junto dos menus existentes em inglês e português. A interface segue o idioma do aplicativo no Android.
+>   junto dos menus existentes em inglês e português. Os menus seguem a opção Idioma do jogo;
+>   Auto usa o idioma do aplicativo no Android.
 > - **Suporte a futuras traduções:** catálogos separados, recursos de texto Android e verificações na CI facilitam
 >   a inclusão de outros idiomas. Veja o [guia de tradução](docs/TRANSLATIONS.md).
 > - **Atualização BOTW 1.9.0 (experimental):** tela de título, carregamento de saves e mundo aberto testados no
 >   Odin 2 Portal. A instalação em `v190` tem seus próprios saves e configurações. Os gráficos e o desempenho ainda
 >   precisam de melhorias; selecionar 60 fps não garante 60 fps constantes.
 > - **Controles e inicialização:** o remapeamento vale para o jogo e os menus do app; uma tela de carregamento
->   traduzida acompanha a inicialização. O patch widescreen continua exclusivo da versão 1.8.2.
+>   traduzida acompanha a inicialização. O suporte widescreen do projeto original está integrado para 1.8.2 e 1.9.0 experimental.
 >
 > O motor de recompilação e o suporte existente ao jogo vêm dos projetos de origem creditados abaixo. As traduções
 > dos menus descritas aqui são da interface do aplicativo; o idioma dos textos do jogo tem sua própria configuração.
@@ -47,14 +48,17 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
 - **1.8.2** tem português do Brasil, widescreen (Vídeo > Proporção da tela "Livre": a visão alarga, o HUD vai para as
   bordas da tela) e o ritmo de quadros do SavageWindRecomp.
 - **1.9.0 (experimental):** tela de título, carregamento de saves e mundo aberto testados no Odin 2 Portal.
-  Linhas pretas e problemas de renderização do terreno continuam em investigação, com um
-  [relato semelhante no projeto original, nº 21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21).
-  O desempenho varia conforme a cena; a opção de 60 fps não garante 60 fps constantes. Widescreen apenas na 1.8.2.
-- **Vídeo:** resolução interna, upscaling AMD FSR 1 / Snapdragon GSR 1, resolução de saída, SMAA e estabilização
+  A correção do projeto original para as fissuras do terreno do
+  [relato nº 21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21) está integrada, mas ainda precisa ser validada no Odin.
+  O desempenho varia conforme a cena; a opção de 60 fps não garante 60 fps constantes. Widescreen também integrado nesta versão.
+- **Vídeo:** resolução interna, upscaling AMD FSR 1 / Snapdragon GSR 1, resolução de saída, SMAA, FXAA e estabilização
   temporal experimental opcional (desativada por padrão).
 - **App:** configuração dos arquivos do jogo pelo celular (cada versão na sua pasta, trocadas na página Arquivos do
   Jogo), controles de toque, controles físicos, mods, menus em inglês, francês e português, escolha do driver Vulkan (Turnip
   pelo adrenotools) e opções de compatibilidade do driver.
+- **Novidades do projeto original:** importação do passe de expansão para 1.6.0 / 1.8.2 / 1.9.0, importação/exportação
+  de saves em ZIP, compilação em segundo plano, correção do viés do giroscópio e zona morta dos analógicos.
+  Vídeo → Sync lag pode melhorar a velocidade, mas atrasar os resultados da GPU; desative se as pernas de Link afundarem no chão.
 - **Lacunas conhecidas:** configurar o jogo pelo celular compila o código do jogo nele, e isso ainda não foi medido nem
   testado com o BOTW (espere uma demora longa e o celular quente); GPUs que não são Adreno 8xx usam caminhos mais
   lentos e seguros; as miniaturas dos saves feitos no app ficam pretas; o áudio ainda usa um mixer simplificado.
@@ -73,7 +77,10 @@ Importe as pastas `exefs` e `romfs` correspondentes do seu jogo com a atualizaç
 O APK importa arquivos extraídos; não aplica uma atualização diretamente a um XCI ou NSP.
 A versão é detectada automaticamente e instalada em `v190` no armazenamento escolhido, inclusive no cartão SD.
 Selecione as versões instaladas em **Configurações → Arquivos**. Cada versão tem saves e configurações
-separados; instalar a 1.9.0 não migra saves de outra versão.
+separados. Ao criar uma pasta de versão, o app pode copiar os saves e configurações da 1.0.0 sem substituir os existentes.
+
+Uma atualização do recompilador pode exigir recompilar o código do jogo a partir dos seus arquivos extraídos.
+A fusão do projeto original 0.2.1 altera o gerador e seu identificador de compatibilidade.
 
 ## Compatibilidade dos controles
 

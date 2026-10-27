@@ -1,5 +1,6 @@
 #include "settings.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,6 +55,9 @@ Settings g_settings = {
 #endif
 #ifdef __ANDROID__
     .upscaler = UPSCALE_SGSR1,  // (one pass: ~1 ms on the Adreno 830 to 2560x1440, FSR 1's two ~2.7 ms; 40 fps against 38)
+    .sync_lag = true,           // (a few more fps; the CPU's reads of GPU results a frame old: nvn/objects.c nvnSyncWait)
+    .out_lines = OUT_AUTO,      // (POCO F7 Ultra, 3200x1440, 1.8.2's Great Plateau: GPU 22.8 ms a frame at the screen's,
+                                // 18.6 at 1080 lines with a larger scene - the final image's passes over 2.2x the pixels)
 #else
     .upscaler = UPSCALE_SHARP,  // (MetalFX on macOS, AMD FSR 1 on Windows)
 #endif
@@ -72,12 +76,21 @@ const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English"
                                                    "Italian", "Dutch", "Russian", "Korean", "Chinese (Simplified)",
                                                    "Chinese (Traditional)", "Portuguese (Brazil)"};
 
+// The app's own menus (ui/i18n.mm): the game's Language when one is chosen - one setting for both, read once (the menus
+// change when the app starts again) - else the phone's first preferred language, which is the app's own when Android
+// 13+ has one set for it (res/xml/locales_config.xml)
 const char *settings_menu_language(void) {
 #ifdef __ANDROID__
     static const char *lang;
     if (!lang) {
         char l[16] = "", country[16] = "";
         const char *e = getenv("LARECOMP_HOST_LANG");
+        int chosen = g_settings.language;
+        if (!(e && *e) && chosen > LANG_AUTO && chosen < N_LANGUAGES) {
+            static const char *const menu[N_LANGUAGES] = {"en", "ja", "en", "es", "fr", "de", "it", "nl", "ru", "ko",
+                                                          "zh-Hans", "zh-Hant", "pt"};  // (g_language_codes' order)
+            return lang = menu[chosen];
+        }
         if (e && *e) {
             snprintf(l, sizeof l, "%s", e);
             for (char *p = l; *p; p++) if (*p == '_') *p = '-';
@@ -121,8 +134,17 @@ static const char *host_language(void) {
     return "en-US";
 #endif
 #ifdef __ANDROID__
-    // (Android: no locale variables; the system's language is a property, "pt-BR", "es-US", "zh-Hant-TW")
+    // (Android: no locale variables. The app's preferred language first - the phone's, or the app's own one set in
+    // Android 13+'s per-app languages - then the system's as a property, "pt-BR", "es-US", "zh-Hant-TW")
     static char prop[PROP_VALUE_MAX];
+    if (!prop[0]) {
+        int n = 0;
+        SDL_Locale **loc = SDL_GetPreferredLocales(&n);
+        if (loc && n > 0 && loc[0]->language)
+            snprintf(prop, sizeof prop, "%s%s%s", loc[0]->language, loc[0]->country ? "-" : "",
+                     loc[0]->country ? loc[0]->country : "");
+        SDL_free(loc);
+    }
     if (!prop[0] && __system_property_get("persist.sys.locale", prop) <= 0) __system_property_get("ro.product.locale", prop);
     const char *e = prop;
 #else
@@ -184,6 +206,7 @@ void settings_reset_defaults(void) {
     g_settings.overlay_style = d->overlay_style;
     g_settings.fps_mode = d->fps_mode;
     g_settings.shader_int32 = d->shader_int32;
+    g_settings.sync_lag = d->sync_lag;
 #endif
 }
 
@@ -199,7 +222,7 @@ void settings_load(void) {
 #else
     char line[256];
 #endif
-    bool tip_key = false, aspect_key = false;
+    bool tip_key = false, aspect_key = false, output_key = false;
     while (fgets(line, sizeof line, f)) {
         char key[64];
 #ifdef __ANDROID__
@@ -224,6 +247,7 @@ void settings_load(void) {
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
         else if (!strcmp(key, "shader_int32")) g_settings.shader_int32 = atoi(val) != 0;
+        else if (!strcmp(key, "sync_lag")) g_settings.sync_lag = atoi(val) != 0;
         else if (!strcmp(key, "gpu_heap")) g_settings.gpu_heap = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "inplace_reads")) g_settings.inplace_reads = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "turnip_lrz")) g_settings.turnip_lrz = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
@@ -233,6 +257,7 @@ void settings_load(void) {
         else if (!strcmp(key, "touch_opacity")) g_settings.touch_opacity = (float)atof(val);
         else if (!strcmp(key, "touch_drag_camera")) g_settings.touch_drag_camera = atoi(val) != 0;
         else if (!strcmp(key, "touch_drag_sens")) g_settings.touch_drag_sens = (float)atof(val);
+        else if (!strcmp(key, "stick_deadzone")) g_settings.stick_deadzone = fminf(fmaxf((float)atof(val), 0), 0.4f);
         else if (!strcmp(key, "touch_sticks_hidden")) g_settings.touch_sticks_hidden = atoi(val) != 0;
         else if (!strcmp(key, "touch_half_areas")) g_settings.touch_half_areas = atoi(val) != 0;
         else if (!strcmp(key, "touch_layout")) {  // x,y per control (a share of the screen; negative: default)
@@ -255,11 +280,16 @@ void settings_load(void) {
                                 : !strcmp(val, "sgsr1") ? UPSCALE_SGSR1
 #endif
                                 : UPSCALE_SHARP;
-        else if (!strcmp(key, "output_resolution")) {  // ("screen", or the final image's lines: 1080 / 900 / 720)
+        else if (!strcmp(key, "output")) {  // ("auto", "screen", or the final image's lines: 1080 / 900 / 720)
             int n = atoi(val);
-            g_settings.out_lines = n == 1080 || n == 900 || n == 720 ? n : 0;
+            g_settings.out_lines = !strcmp(val, "auto") ? OUT_AUTO : n == 1080 || n == 900 || n == 720 ? n : 0;
+            output_key = true;
         }
-        else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "output_resolution") && !output_key) {  // (0.1.11 and before: "screen" was only the default,
+            int n = atoi(val);                                         // written by every save - read as Auto now)
+            g_settings.out_lines = n == 1080 || n == 900 || n == 720 ? n : g_defaults.out_lines;
+        }
+        else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : !strcmp(val, "fxaa") ? AA_FXAA : AA_SMAA;
         else if (!strcmp(key, "temporal_aa")) g_settings.temporal_aa = atoi(val) != 0;
         else if (!strcmp(key, "language")) {  // ("auto" or one of the game's codes; anything else: auto)
             g_settings.language = LANG_AUTO;
@@ -298,7 +328,7 @@ void settings_save(void) {
 #ifdef __ANDROID__
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
     fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");
-    fprintf(f, "shader_int32 = %d\n", g_settings.shader_int32);
+    fprintf(f, "shader_int32 = %d\nsync_lag = %d\n", g_settings.shader_int32, g_settings.sync_lag);
     static const char *const tri[] = {"auto", "0", "1"};  // (-1 / 0 / 1)
 #define TRI(v) tri[(v) < 0 ? 0 : (v) ? 2 : 1]
     fprintf(f, "gpu_heap = %s\ninplace_reads = %s\nturnip_lrz = %s\nlog_file = %d\ngpu_model = %s\n", TRI(g_settings.gpu_heap),
@@ -307,6 +337,7 @@ void settings_save(void) {
     fprintf(f, "touch_drag_camera = %d\ntouch_drag_sens = %.2f\ntouch_sticks_hidden = %d\ntouch_half_areas = %d\n",
             g_settings.touch_drag_camera, g_settings.touch_drag_sens, g_settings.touch_sticks_hidden,
             g_settings.touch_half_areas);
+    fprintf(f, "stick_deadzone = %.2f\n", g_settings.stick_deadzone);
     fprintf(f, "touch_scale = %.2f\ntouch_opacity = %.2f\ntouch_layout = ", g_settings.touch_scale, g_settings.touch_opacity);
     for (int i = 0; i < TOUCH_NCTL; i++)
         fprintf(f, "%s%.4f,%.4f", i ? "," : "", g_settings.touch_pos[i][0], g_settings.touch_pos[i][1]);
@@ -314,9 +345,9 @@ void settings_save(void) {
 #endif
     fprintf(f, "upscaler = %s\n", g_settings.upscaler == UPSCALE_METALFX ? "metalfx" : g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" :
                                    g_settings.upscaler == UPSCALE_SGSR1 ? "sgsr1" : "bilinear");
-    if (g_settings.out_lines > 0) fprintf(f, "output_resolution = %d\n", g_settings.out_lines);
-    else fprintf(f, "output_resolution = screen\n");
-    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    if (g_settings.out_lines > 0) fprintf(f, "output = %d\n", g_settings.out_lines);
+    else fprintf(f, "output = %s\n", g_settings.out_lines == OUT_AUTO ? "auto" : "screen");
+    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : g_settings.antialias == AA_FXAA ? "fxaa" : "off");
     fprintf(f, "temporal_aa = %d\n", g_settings.temporal_aa);
     if (g_settings.res_mode == RES_DYNAMIC) fprintf(f, "resolution = dynamic\n");
     else if (g_settings.res_mode == RES_Q75) fprintf(f, "resolution = 75%%\n");

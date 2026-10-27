@@ -110,8 +110,7 @@ static uint32_t device_integer_v55(uint32_t which) {
 
 NVN(nvnDeviceGetInteger) {
     uint32_t which = (uint32_t)A(1);
-    // Both recent releases require NVN 55.15 (checked in their device initialization).
-    uint32_t v = (g_game_version == 182 || g_game_version == 190) ? device_integer_v55(which) : device_integer(which);
+    uint32_t v = g_game_version >= 182 ? device_integer_v55(which) : device_integer(which);
     if (g_game_version == 160 && which <= 1) v = which ? 311 : 53;  // (v1.6.0 needs NVN 53.x, minor >= 311: its SDK 7.3.2)
     *(int32_t *)AP(2) = (int32_t)v;
 }
@@ -256,10 +255,11 @@ static NvnSync *sync_of(uint64_t guest) {
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);
 #ifdef __ANDROID__
+static uint64_t g_newest_fence_lseq;  // (sync lag, nvnSyncWait: the render thread's request of the newest fence placed)
 NVN(nvnQueueFenceSync) {
     NvnSync *s = sync_of(A(1));
     s->signaled = 1;
-    if (vk_async_on()) s->lseq = vk_async_fence(A(1));  // (its submission is known once the render thread gets there)
+    if (vk_async_on()) s->lseq = g_newest_fence_lseq = vk_async_fence(A(1));  // (its submission: once the render thread gets there)
     else s->seq = renderer_fence_seq();
     extern uint64_t renderer_present_count(void);
     s->frame = renderer_present_count();
@@ -284,6 +284,8 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     if (whole < 0) whole = getenv("LARECOMP_SYNC_ALL") ? 1 : 0;
 #ifdef __ANDROID__
     uint64_t t0 = plat_now_ns();
+    extern void vk_tl(const char *what, uint64_t a, uint64_t b);  // (vulkan/exec.c: LARECOMP_FRAME_TIMELINE)
+    vk_tl("game: SyncWait begin (fence id, submission)", sync_of(A(0))->lseq, sync_of(A(0))->seq);
     kernel_blocking_begin();  // (a long wait: core 0 to the game's other threads, kernel.c)
     if (vk_async_on()) {  // the render thread's translation of the fence first (vulkan/async.c)
         if (flush || whole) vk_async_drain();
@@ -291,11 +293,83 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     }
     uint64_t t1 = plat_now_ns();
 #endif
+#ifdef __ANDROID__
+    // Sync lag (MacNativeGames PR #680, for TOTK): every frame the game waits for the fence it placed with the frame it
+    // has just sent, so its next frame never overlaps the GPU's work on this one (~2.7 ms a frame of an idle GPU while
+    // it records, LARECOMP_FRAME_TIMELINE). For that newest fence the wait goes to the GPU's end of the previous frame's
+    // newest fence instead - one frame of lag at most. Its translation is waited for above (vk_async_wait_id): every copy
+    // of the frame's constants and textures is made before the game writes them again, and the lists were copied when
+    // sent (vulkan/async.c snap_list). What the GPU reads in place (vertices in the heap) or writes for the CPU
+    // (readbacks, queries) may be a frame apart - and in play they were: the water turned white and the cliffs showed
+    // stretched "curtains" (2026-10-26, POCO F7 Ultra; BOTW reads GPU results back right after this wait - the water's
+    // colour from a tiny render target, MacNativeGames PR #239). The water came from write-backs dropped when their slots
+    // were full (the curtains show without the lag too, README); since they wait for the GPU instead (vulkan wb_queue)
+    // the water is right with the lag (Turnip V38, 2026-10-26: in-run A/B 46.6 -> 53.6 fps on 1.8.2's Great Plateau).
+    // But the CPU reads GPU results right after this wait, and with the lag they are a frame old: Link's legs sank into
+    // the ground standing still (2026-10-27, 1.9.0; not with the lag off). Every write-back the CPU reads - the terrain
+    // heights, the 1x1 linear targets, the depth bounds, the exposure - is copied in the frame's last one or two of ~10
+    // submissions (LARECOMP_LOG_WB_FRAME), so waiting for them leaves nothing to overlap: 38.1 -> 37.8 fps with that
+    // guard, 42.3 -> 44.4 without (same run each, POCO, 1.9.0's Plateau). So the lag is the player's choice: Video >
+    // Sync lag (settings.sync_lag, on by default: a few more fps, the legs may sink).
+    // LARECOMP_SYNC_LAG=<n> (measurements, over the setting): 0 off, 1 on, 2 the wait also covers the newest frame's last
+    // store to global memory (vk_last_gmem_store_seq), 3 the wait covers its write-backs (vk_last_writeback_seq);
+    // LARECOMP_AB=<frames>:synclag alternates.
+    static int env_lag = -2;
+    if (env_lag == -2) env_lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : -1;
+    int lag = env_lag >= 0 ? env_lag : g_settings.sync_lag ? 1 : 0;
+    extern int vk_ab(const char *what);
+    int ab = vk_ab("synclag");
+    bool lag_now = vk_async_on() && !flush && !whole && (ab >= 0 ? ab == 1 : lag > 0);
+    static uint64_t prev_newest_seq;  // (kept with the lag off too: turned on, it waits one frame back, not more)
+    bool newest = vk_async_on() && sync_of(A(0))->lseq == g_newest_fence_lseq;
+    uint64_t newest_prev = prev_newest_seq;
+    if (newest) prev_newest_seq = sync_of(A(0))->seq;
+    if (lag_now && newest) {
+        uint64_t seq = sync_of(A(0))->seq, target = newest_prev < seq ? newest_prev : seq;
+        // (3: the newest frame's write-backs waited for - they land once their submission is done, vulkan/exec.c wb_apply)
+        extern uint64_t vk_last_writeback_seq(void);
+        static uint64_t n, wb_n, wb_pos, st_n, st_pos;  // (LARECOMP_LOG_SYNC_LAG: how often, how far into the frame)
+        static int log = -1;
+        if (log < 0) log = getenv("LARECOMP_LOG_SYNC_LAG") != NULL;
+        n++;
+        uint64_t wb = vk_last_writeback_seq();
+        {   // (LARECOMP_LOG_WB_FRAME=<n>: the newest frame's submissions, beside vulkan/exec.c's [wb-frame] lines)
+            static int every = -1;
+            if (every < 0) every = getenv("LARECOMP_LOG_WB_FRAME") ? atoi(getenv("LARECOMP_LOG_WB_FRAME")) : 0;
+            extern uint64_t renderer_present_count(void);
+            if (every > 0 && renderer_present_count() % (uint64_t)every == 0)
+                LOG("[synclag-frame] %llu: submissions %llu..%llu\n", (unsigned long long)renderer_present_count(),
+                    (unsigned long long)newest_prev, (unsigned long long)seq);
+        }
+        if (wb > target && lag == 3) {
+            wb_n++;
+            if (seq > newest_prev) wb_pos += 100 * ((wb < seq ? wb : seq) - newest_prev) / (seq - newest_prev);
+            target = wb < seq ? wb : seq;
+        }
+        if (lag == 2) {  // (the stores guarded)
+            extern uint64_t vk_last_gmem_store_seq(void);
+            uint64_t st = vk_last_gmem_store_seq();
+            if (st > target) {
+                st_n++;
+                if (seq > newest_prev) st_pos += 100 * ((st < seq ? st : seq) - newest_prev) / (seq - newest_prev);
+                target = st < seq ? st : seq;
+            }
+        }
+        if (log && n % 120 == 0) {
+            LOG("[synclag] of 120 frames: %llu waited for a write-back (at %llu%% of the newest frame's submissions), %llu for "
+                "a store (at %llu%%)\n", (unsigned long long)wb_n, (unsigned long long)(wb_n ? wb_pos / wb_n : 0),
+                (unsigned long long)st_n, (unsigned long long)(st_n ? st_pos / st_n : 0));
+            wb_n = wb_pos = st_n = st_pos = 0;
+        }
+        renderer_wait_seq(target);
+    } else
+#endif
     if (flush) renderer_flush();
     else if (whole) renderer_sync();
     else renderer_wait_seq(sync_of(A(0))->seq);  // only the submission that holds this fence
 #ifdef __ANDROID__
     kernel_blocking_end();
+    vk_tl("game: SyncWait end", sync_of(A(0))->lseq, sync_of(A(0))->seq);
     // LARECOMP_LOG_SYNC: waits over a millisecond in the world (frame 1500 on, 40 of them) - how old the fence was,
     // the waits for its translation and its GPU work
     static int log = -1, logged;
@@ -1303,10 +1377,10 @@ NVN(nvnWindowSetPresentInterval) {
     static int force = -1;  // (LARECOMP_FORCE_INTERVAL=<n>, diagnosis: the game's choice replaced - slow motion if it doesn't fit)
     if (force < 0) force = getenv("LARECOMP_FORCE_INTERVAL") ? atoi(getenv("LARECOMP_FORCE_INTERVAL")) : 0;
     if (force > 0) c->x[1] = (uint64_t)force;
-    // BOTW 1.8.2's frame loop (lr 0x7001012a34, x19 = the framework; [fw+0x234] the highest interval it may pick):
-    // never 3 while the runtime sets the game's clock (runtime/hle/framepace.c), as SavageWindRecomp does
-    uint64_t interval_caller = GUEST_LO + (g_game_version == 190 ? 0x11267c4ull : 0x1012a34ull);
-    if (framepace_on() && c->x[30] == interval_caller) {
+    // BOTW 1.8.2's frame loop (lr 0x7001012a34, 1.9.0: 0x70011267c4; x19 = the framework; [fw+0x234] the highest
+    // interval it may pick): never 3 while the runtime sets the game's clock (runtime/hle/framepace.c), as
+    // SavageWindRecomp does
+    if (framepace_on() && c->x[30] == GUEST_LO + (g_game_version == 190 ? 0x11267c4ull : 0x1012a34ull)) {
         uint32_t *max_iv = (uint32_t *)(uintptr_t)(c->x[19] + 0x234);
         if (*max_iv > 2) *max_iv = 2;
     }

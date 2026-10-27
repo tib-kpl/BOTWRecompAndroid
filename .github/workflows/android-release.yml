@@ -41,6 +41,7 @@ jobs:
       - name: Test game versions and ROMFS validation
         run: |
           python3 tools/test_game_versions.py
+          python3 tools/test_gamebuild_hot.py --cc clang
           python3 tools/test_romfs_build.py
           clang -std=gnu11 -D__ANDROID__ tools/test_framepace.c -lm -o "$RUNNER_TEMP/test_framepace"
           for version in 100 160 182 190; do

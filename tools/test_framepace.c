@@ -29,7 +29,7 @@ int main(int argc, char **argv) {
     uint64_t *holder = calloc(1, 8), *screens = calloc(2, 8);
     uint8_t *manager = calloc(1, 0x40), *event = calloc(1, 0x1d300);
     *holder = (uintptr_t)manager;
-    *(uint64_t *)(uintptr_t)SCREEN_HOLDER = (uintptr_t)holder;
+    *(uint64_t *)(uintptr_t)UI_SCREENS = (uintptr_t)holder;
     VF(uint32_t, (uintptr_t)manager, 0x28) = 2;
     VF(uint64_t, (uintptr_t)manager, 0x30) = (uintptr_t)screens;
     screens[1] = 1;
@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
     *(uint32_t *)(uintptr_t)PAUSE_STATE = 0;
     assert(!framepace_on_title() && !framepace_in_menu());
     assert(framepace_target() == fps);
-    *(uint64_t *)(uintptr_t)EVENT_MANAGER = (uintptr_t)event;
+    *(uint64_t *)(uintptr_t)GV(0x7001cd8db8ull, 0x7001e3a638ull) = (uintptr_t)event;
     VF(uint64_t, (uintptr_t)event, 0x1d2b8) = 1;
     assert(framepace_target() == 30);
     VF(uint64_t, (uintptr_t)event, 0x1d2b8) = 0;

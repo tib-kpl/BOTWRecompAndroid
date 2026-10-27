@@ -12,4 +12,7 @@
     <string name="driver_system">使用系统驱动</string>
     <string name="driver_close">关闭</string>
     <string name="driver_error_intro">图形驱动无法运行游戏。为你的 GPU 安装 Turnip 驱动（.zip）通常可以解决：点按“安装驱动”。\n\n详细信息：</string>
+    <string name="build_channel">游戏代码构建</string>
+    <string name="build_title">正在构建游戏代码</string>
+    <string name="build_text">关闭屏幕后构建仍会继续。请让手机保持充电。</string>
 </resources>

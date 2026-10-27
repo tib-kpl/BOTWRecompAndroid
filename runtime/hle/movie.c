@@ -237,6 +237,12 @@ static void ex_set_data_source(Cpu *c) {
     while (rel && *rel == '/') rel++;
     char host[1024];
     snprintf(host, sizeof host, "%s/%s", g_romfs_dir, rel ? rel : "");
+    {   // the DLC's ("aoc:/Movie/..."): loose beside its data image (services/fs.c fs_aoc_image: <dir>/aoc.bin -> <dir>/romfs)
+        extern const char *fs_aoc_image(void);
+        const char *aoc = path && !strncmp(path, "aoc:", 4) ? fs_aoc_image() : NULL;
+        const char *slash = aoc ? strrchr(aoc, '/') : NULL;
+        if (slash) snprintf(host, sizeof host, "%.*s/romfs/%s", (int)(slash - aoc), aoc, rel ? rel : "");
+    }
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
         LOG("[movie] cannot open %s\n", host);
@@ -448,8 +454,20 @@ typedef struct {
     int64_t eos_time;
     bool stopped;  // Stop / destroyed: no more events (see dec_stop)
     bool playing;  // a started video decoder, counted in g_movie_playing
+    uint32_t seen;  // the milestones logged (milestone)
     pthread_mutex_t lock;
 } Decoder;
+
+// Each decoder's first start, input, decoded frame, output... logged once, always: a movie that freezes the game
+// (the Great Plateau tower's on an Adreno 840, issue #22) shows in a user's log how far it got.
+enum { MS_START = 1, MS_ACQ_IN = 2, MS_SEND = 4, MS_FRAME = 8, MS_ACQ_OUT = 16, MS_GET_OUT = 32, MS_REL_OUT = 64,
+       MS_EOS = 128, MS_SEND_ERR = 256 };
+static bool milestone(Decoder *d, uint32_t bit) {
+    if (__atomic_fetch_or(&d->seen, bit, __ATOMIC_RELAXED) & bit) return false;
+    return true;
+}
+#define MILESTONE(d, bit, ...) \
+    do { if (milestone(d, bit)) LOG("[movie] %s decoder: " __VA_ARGS__); } while (0)
 
 // Input / output buffers live in the HLE heap, which only a reboot frees: buffers of destroyed decoders are kept
 // for the next movie (the title's attract loop replays the opening, ~37 MB of buffers per showing).
@@ -548,6 +566,7 @@ static void dec_start(Cpu *c) {
     d->stopped = false;
     if (d->video && !d->playing) d->playing = true, __atomic_add_fetch(&g_movie_playing, 1, __ATOMIC_RELAXED);
     pthread_mutex_unlock(&d->lock);
+    MILESTONE(d, MS_START, "started\n", d->video ? "video" : "audio");
     dec_signal(c, d, 0);  // all input buffers are free
     c->x[0] = 0;
 }
@@ -606,6 +625,7 @@ static void dec_acquire_input(Cpu *c) {
     if (idx >= 0) d->in_busy[idx] = true;
     pthread_mutex_unlock(&d->lock);
     if (idx < 0) { c->x[0] = 1; return; }
+    MILESTONE(d, MS_ACQ_IN, "first input buffer to the game\n", d->video ? "video" : "audio");
     *(int32_t *)(uintptr_t)c->x[1] = idx;
     if (c->x[2]) *(int32_t *)(uintptr_t)c->x[2] = free_n;
     c->x[0] = 0;
@@ -694,8 +714,11 @@ static void dec_send_input(Cpu *c) {
         d->pkt->data = d->in_mem[idx] + off;
         d->pkt->size = size;
         d->pkt->pts = time;
-        avcodec_send_packet(d->ctx, d->pkt);
+        int r = avcodec_send_packet(d->ctx, d->pkt);
+        MILESTONE(d, MS_SEND, "first packet: %d bytes, flags %x\n", d->video ? "video" : "audio", size, flags);
+        if (r < 0) MILESTONE(d, MS_SEND_ERR, "the decoder refused a packet (%d)\n", d->video ? "video" : "audio", r);
     }
+    if (flags & MOVIE_EOS) MILESTONE(d, MS_EOS, "end of the stream\n", d->video ? "video" : "audio");
     if (flags & MOVIE_EOS) avcodec_send_packet(d->ctx, NULL);
     bool produced = false;
     while (avcodec_receive_frame(d->ctx, d->frame) == 0) {
@@ -710,6 +733,8 @@ static void dec_send_input(Cpu *c) {
             }
         }
         n_frames++;
+        MILESTONE(d, MS_FRAME, "first frame decoded (%dx%d, format %d)\n", d->video ? "video" : "audio",
+                  d->frame->width, d->frame->height, d->frame->format);
         produced = true;
     }
     if (flags & MOVIE_EOS) { d->eos_pending = true; d->eos_time = time; }
@@ -730,6 +755,7 @@ static void dec_acquire_output(Cpu *c) {
     memmove(d->ready, d->ready + 1, --d->nready * sizeof *d->ready);
     int remaining = d->nready;
     pthread_mutex_unlock(&d->lock);
+    MILESTONE(d, MS_ACQ_OUT, "first output to the game\n", d->video ? "video" : "audio");
     *(int32_t *)(uintptr_t)c->x[1] = r.idx;
     if (c->x[2]) *(int64_t *)(uintptr_t)c->x[2] = r.time;
     if (c->x[3]) *(uint32_t *)(uintptr_t)c->x[3] = r.flags;
@@ -743,6 +769,8 @@ static void dec_get_output_buffer(Cpu *c) {
     int i = (int)c->x[1];
     MBuffer *b = BUF(c->x[2]);
     if (i < 0 || i >= NOUT) { c->x[0] = 1; return; }
+    MILESTONE(d, MS_GET_OUT, "first output buffer: base %llx capacity %llu offset %d\n", d->video ? "video" : "audio",
+              (unsigned long long)b->base, (unsigned long long)b->capacity, b->offset);
     if (d->video && b->base && b->capacity == 8) {
         // texture output mode: the buffer points at the game's NVNtexture; write RGBA into it
         NvnTexture *t = *(NvnTexture **)(uintptr_t)b->base;
@@ -799,6 +827,7 @@ static void dec_get_output_buffer(Cpu *c) {
 static void dec_release_output(Cpu *c) {
     Decoder *d = self_state(c);
     n_rel_out++;
+    MILESTONE(d, MS_REL_OUT, "first output released\n", d->video ? "video" : "audio");
     dec_signal(c, d, 0);  // input may be accepted again
     int i = (int)c->x[1];
     pthread_mutex_lock(&d->lock);

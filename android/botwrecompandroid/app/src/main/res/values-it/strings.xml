@@ -12,4 +12,7 @@
     <string name="driver_system">Usa il driver di sistema</string>
     <string name="driver_close">Chiudi</string>
     <string name="driver_error_intro">Il driver grafico non è riuscito a eseguire il gioco. Un driver Turnip per la tua GPU (.zip) di solito risolve: tocca Installa un driver.\n\nDettagli:</string>
+    <string name="build_channel">Compilazione del codice del gioco</string>
+    <string name="build_title">Compilazione del codice del gioco</string>
+    <string name="build_text">BOTWRecompAndroid continua a schermo spento. Lascia il telefono in carica.</string>
 </resources>

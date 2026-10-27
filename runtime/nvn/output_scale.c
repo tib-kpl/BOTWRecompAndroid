@@ -84,13 +84,15 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     if (!reshape) shape = 1.0;
     // the final image: the window's resolution, in units of the Switch's 1080 lines
     double h = fmax(reshape ? dh / 1080.0 : fit, 0.1);
-    double sx = h * shape, sy = h;
+    double sx = h * shape, sy = h, h_screen = h;
+    bool out_auto = false;
     {   // Video tab "Output resolution" (g_settings.out_lines): the final image at most that many lines, scaled up to the
         // window when presented - the game's last passes and the scene's upscale over fewer pixels, the HUD softer
         // (LARECOMP_OUT_LINES=<n> for tests: the same, over the setting)
         static double env_lines = -1;
         if (env_lines < 0) env_lines = getenv("LARECOMP_OUT_LINES") ? atof(getenv("LARECOMP_OUT_LINES")) : 0;
-        double out_lines = env_lines > 0 ? env_lines : g_settings.out_lines;
+        out_auto = env_lines <= 0 && g_settings.out_lines == OUT_AUTO;  // (Auto: 1080 lines at most)
+        double out_lines = env_lines > 0 ? env_lines : out_auto ? 1080 : g_settings.out_lines;
         if (out_lines > 0 && sy * 1080.0 > out_lines) { double k = out_lines / (sy * 1080.0); sx *= k; sy *= k; }
     }
     h = sy;  // (Match display below: the final image's size, which is the screen's unless Output resolution is lower)
@@ -105,10 +107,14 @@ void output_scale(double dw, double dh, bool reshape_allowed, double now, double
     else if (mode >= 1 && mode <= 8) hs = mode;
     else {
         hs = h * 1080.0 / SCENE_LINES;  // Match display
-        if (mode == RES_DYNAMIC) { dyn_update(now, gpu_ms); hs *= g_dyn; }
-        else if (mode == RES_Q75) hs *= 0.75;
-        else if (mode == RES_Q25) hs *= 0.25;
-        else if (mode == RES_Q50) hs *= 0.5;
+        // (Auto output: the shares below are of the screen's lines, as they were before it - only the final image is
+        // smaller - and at most the scene's size in it: 50% on a 1440-line screen stays 720 lines, 75% is 1080)
+        double base = out_auto ? h_screen * 1080.0 / SCENE_LINES : hs, share = 1.0;
+        if (mode == RES_DYNAMIC) { dyn_update(now, gpu_ms); share = g_dyn; }
+        else if (mode == RES_Q75) share = 0.75;
+        else if (mode == RES_Q25) share = 0.25;
+        else if (mode == RES_Q50) share = 0.5;
+        if (mode != RES_MATCH) hs = fmin(base * share, hs);
     }
     hs = fmax(hs, 0.1);
     o->scene_sx = hs * shape; o->scene_sy = hs;

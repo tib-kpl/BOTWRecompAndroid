@@ -551,6 +551,17 @@ int vk_texture_count(void) {
     }
     return g_nlive;
 }
+// (diagnosis, exec.c vk_dump_watch_frame) the live texture over guest address addr with the most levels x layers
+NvnTexture *vk_texture_at(uint64_t addr) {
+    NvnTexture *best = NULL;
+    for (int i = 0; i < g_nlive; i++) {
+        NvnTexture *t = g_live[i];
+        if (t->addr != addr || !t->backend) continue;
+        if (!best || t->levels * t->layout.layers > best->levels * best->layout.layers) best = t;
+    }
+    return best;
+}
+
 static void live_add(NvnTexture *t, TexBackend *b) {
     if (g_nlive == g_cap_live) { g_cap_live = g_cap_live ? g_cap_live * 2 : 1024; g_live = realloc(g_live, g_cap_live * sizeof *g_live); }
     g_live[g_nlive++] = t;
@@ -795,12 +806,42 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         if (sh == b->sample_hash) return;
     }
     prof_tex_full++; prof_tex_full_bytes += total; if (b->dynamic) prof_tex_dyn++;
-    uint64_t h = hash_full(mem, total);
+    uint64_t h = hash_full(mem, total), last_full = b->full_frame, old_sample = b->sample_hash;
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
     if (b->uploaded && h == b->data_hash && !restyle) return;
+    if (b->uploaded && h != b->data_hash && !b->dynamic && !always_full) {
+        // LARECOMP_LOG_TEX_MISS=1 (diagnosis): a change the sampled check didn't see, found by the periodic full hash -
+        // the texture showed its old contents meanwhile (the stretched-terrain curtains after a tower: gone with
+        // LARECOMP_TEX_FULLHASH=1, 2026-10-26)
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_TEX_MISS") != NULL;
+        if (on && n++ < 200)
+            LOG("[texmiss] frame %llu: %ux%ux%u fmt %#x flags %#x target %u levels %u at %llx+%llx changed, found %llu frames "
+                "after the last full hash; the samples %s\n", (unsigned long long)frame, t->width, t->height, t->depth,
+                t->format, t->flags, t->target, t->levels, (unsigned long long)t->addr, (unsigned long long)total,
+                (unsigned long long)(frame - last_full), b->sample_hash == old_sample ? "unchanged (missed)" : "changed");
+    }
     if (b->uploaded && h != b->data_hash) b->dynamic = true;
     if (b->tp > 0) b->tp_gen = texpatch_generation();
+    {   // LARECOMP_LOG_STALE_UPLOAD=1 (diagnosis): an upload from guest memory that a render target the GPU drew into
+        // covers - its object's own image, where the drawing never reaches memory: the texture reads what was there
+        // before (MacNativeGames PR #511: BOTW's terrain height map, drawn through one object and sampled through
+        // another, kept zeros - Link's feet under the ground). Each pair once, 60 at most.
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_STALE_UPLOAD") != NULL;
+        for (int i = 0; on && n < 60 && i < g_nlive; i++) {
+            NvnTexture *e = g_live[i];
+            if (e == t || !e->addr || !e->backend || !((TexBackend *)e->backend)->gpu_owned) continue;
+            uint64_t ee = e->addr + tegra_total_size(&e->layout);
+            if (e->addr >= t->addr + total || ee <= t->addr) continue;
+            n++;
+            LOG("[stale] frame %llu: %ux%u fmt %#x flags %#x at %llx+%llx uploaded from memory under the drawn target "
+                "%ux%u fmt %#x flags %#x at %llx+%llx\n", (unsigned long long)frame, t->width, t->height, t->format, t->flags,
+                (unsigned long long)t->addr, (unsigned long long)total, e->width, e->height, e->format, e->flags,
+                (unsigned long long)e->addr, (unsigned long long)(ee - e->addr));
+        }
+    }
     b->data_hash = h;
     b->uploaded = true;
 #ifdef __ANDROID__
@@ -930,6 +971,23 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (b->pending_rgba) upload_pending(b);
+    if (for_render && !b->gpu_owned && t->addr) {  // (LARECOMP_LOG_STALE_UPLOAD: textures uploaded before, over it)
+        static int on = -1, n;
+        if (on < 0) on = getenv("LARECOMP_LOG_STALE_UPLOAD") != NULL;
+        uint64_t te = t->addr + tegra_total_size(&t->layout);
+        for (int i = 0; on && n < 60 && i < g_nlive; i++) {
+            NvnTexture *e = g_live[i];
+            TexBackend *eb = e->backend;
+            if (e == t || !e->addr || !eb || eb->gpu_owned || !eb->uploaded) continue;
+            uint64_t ee = e->addr + tegra_total_size(&e->layout);
+            if (e->addr >= te || ee <= t->addr) continue;
+            n++;
+            LOG("[stale] frame %llu: target %ux%u fmt %#x flags %#x at %llx+%llx first drawn over %ux%u fmt %#x flags %#x "
+                "at %llx+%llx, uploaded from memory\n", (unsigned long long)vk_frame_counter(), t->width, t->height, t->format,
+                t->flags, (unsigned long long)t->addr, (unsigned long long)(te - t->addr), e->width, e->height, e->format,
+                e->flags, (unsigned long long)e->addr, (unsigned long long)(ee - e->addr));
+        }
+    }
     if (for_render) b->gpu_owned = true;
     else if (!b->gpu_owned) {
         extern uint64_t prof_up_ns;
@@ -1072,6 +1130,9 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
                 const char *e = getenv("LARECOMP_3D_RT");
                 rt3d = e ? atoi(e) : vk_driver_is_qualcomm() ? 0 : 2;
             }
+            static int n3d;  // (which games draw so: TOTK's first frames on Qualcomm's driver lost the device too)
+            if (n3d++ < 4) LOG("[vk] 3D target %ux%ux%u level %u: %s\n", t->width, t->height, b->depth, lv0,
+                               rt3d == 0 || (rt3d == 1 && lv0 > 0) ? "skipped (LARECOMP_3D_RT)" : "a slice as 2D");
             if (rt3d == 0 || (rt3d == 1 && lv0 > 0)) return VK_NULL_HANDLE;
             uint32_t d = b->depth >> lv0, z = v && (v->setmask & 2) ? v->min_layer : 0;
             if (!d) d = 1;

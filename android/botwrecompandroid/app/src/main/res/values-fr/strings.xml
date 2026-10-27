@@ -29,4 +29,7 @@
     <string name="action_save">Enregistrer</string>
     <string name="watch_code_copied">Code copié</string>
     <string name="watch_crop_error">Saisissez quatre valeurs de 0 à 100 séparées par des virgules, avec gauche &lt; droite et haut &lt; bas. Utilisez un point pour les décimales.</string>
+    <string name="build_channel">Compilation du code du jeu</string>
+    <string name="build_title">Compilation du code du jeu</string>
+    <string name="build_text">BOTWRecompAndroid continue avec l\'écran éteint. Laissez le téléphone en charge.</string>
 </resources>

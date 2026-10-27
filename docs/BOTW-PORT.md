@@ -632,6 +632,25 @@ Medição no planalto (2026-10-21, save do usuário perto da igreja, POCO F7 Ult
   ~37 -> ~18,5 ms. O fps fica em ~15-17: tradução e GPU em série (o jogo espera a fence do quadro recém-enviado).
 - Folga hoje: render ~16 ms livres, GPU ~10 ms. Para 60 fps seria preciso GPU <= ~14 ms (~40% menos) e um patch
   no jogo (o sead nunca escolhe menos de 2 vsyncs, e a lógica do jogo conta com 30).
+- **Do TOTKRecompAndroid (2026-10-26), duas correções do motor:**
+  - **Memória local dos shaders do tamanho que eles usam.** O tradutor declarava `uint lmem[256]` e zerava as 256
+    palavras em toda invocação, mesmo num shader que só guarda um registrador lá (`STL` / `LDL` em `[0x0]`, spill do
+    compilador da Nintendo): 1 KB por thread vai para a memória privada, e o laço escreve 256 vezes por pixel. No
+    TOTK um draw de material levava 95-102 ms de GPU por isso. Agora o vetor tem o tamanho que os acessos pedem (os
+    de endereço constante: as palavras que alcançam; com endereço em registrador: o do SPH, ou 256 sem SPH), uma
+    potência de 2 (`lmask_`). Fuzz GLSL (4.000 programas, mesma semente): 3.051 compilados, as mesmas 31 falhas de
+    `textureGather` que o tradutor anterior dá; o teste de operações do TOTK dá as mesmas 16 falhas que antes (as
+    correções que só o TOTK tem, como o deslocamento com sinal do `LDC`).
+  - **`gen.py`: a rede de segurança das tabelas de salto só nos inícios de bloco.** Toda função com tabela ganhava um
+    switch com um case por instrução (caso a emulação da tabela perdesse um alvo): uma aresta para cada instrução.
+    Agora só os alvos de desvio, os das tabelas e cada instrução depois de um salto, retorno ou trap; uma função com
+    tabela não resolvida mantém todas, como antes. 1.8.2, os mesmos 603 arquivos: **202 -> 74 min de CPU**, o mais
+    lento 13,3 -> 5,2 min, a compilação inteira no PC em 7 min; nenhum arquivo acima de 15.000 rótulos (-O0). Também:
+    a limpeza dos arquivos de uma geração anterior só reconhecia nomes de 3 dígitos.
+  - Muda o id do código do jogo: o de cada versão compila de novo. **No celular (POCO F7 Ultra, Turnip, 2026-10-26):**
+    o 0.1.11-beta com as duas (sem nada mais) recompilou o código da 1.8.2 pela tela de arquivos do jogo em **12 min**
+    (717 s, até 8 compiladores, tudo a -O1, nenhum arquivo a -O0) e o jogo carregou uma cópia do save no Grande
+    Platô: 150 s andando pelo campo a ~30 fps, a imagem certa, nenhum erro.
 
 - Threads do Havok e dos jobs do jogo nos núcleos (o LAS precisou emular o núcleo 0 do Switch), thread de render,
   resolução interna, ritmo de quadros (o jogo roda a 30 fps no Switch).
@@ -694,13 +713,138 @@ Pedidos ainda não começados, o mais recente no fim.
   mesclados na Baloo 2 (`i18n_merge_fonts`); os textos do lado Java em `res/values-<idioma>`. Conferir no POCO:
   altura e alinhamento dos glifos mesclados (escala 0,6 da Baloo, a ajustar), largura dos textos mais longos
   (alemão, russo) nas linhas do menu, e que o NotoSansCJK existe no HyperOS.
-- **Build do código do jogo mais leve** (issues #18 e #25, 2026-10-25): numa tablet de 12 GB (1.6.0) o app fechou
-  após ~20 min de build, na tela, sem erro no log; num Nubia Z60 Ultra (16 GB) o build demorou demais, puxou 11 W e
-  esquentou, e reabrir o app começa tudo de novo. Hoje são `min(núcleos, RAM em GB - 2)` compiladores de uma vez
-  (`launcher.mm build_game_code`: 8 nos dois). Falta:
-  - Começar um compilador novo só com memória livre (MemAvailable) e menos de uma vez num celular quente.
-  - Continuar de onde parou: manter os objetos já compilados entre aberturas do app.
-  - Registrar no log por que o Android fechou o app da última vez (`ApplicationExitInfo`: LOW_MEMORY etc.).
+- **Build do código do jogo mais leve** (issues #18 e #25, 2026-10-25) - feito na 0.1.11 (2f68d60, aabd205):
+  compiladores novos só com memória livre, metade num celular quente, o build continua de onde parou, e o log diz
+  por que o Android fechou o app. Escolher a pasta de novo ainda apagava os objetos (`.gamebuild`): corrigido em
+  201e99b, ainda não lançado. No #25 (ZF8 Ultra) a 0.1.11 ainda esquentou demais: falta o log do build.
+- **Próxima versão: o que as issues já esperam** (2026-10-26). No `main`, não lançados, e prometidos como "a próxima
+  versão":
+  - 201e99b: cada arquivo uma vez quando o provedor de arquivos lista em dobro (#31/#38: Huawei, 79.356 arquivos, uma
+    imagem de 28,84 GB de uma pasta de 14,44 GB) e a pasta escolhida de novo mantém o código compilado (#25).
+  - 526fc76 + 0464be0: relatório de crash um por vez, com os registradores e a cadeia de quadros do jogo (x29) antes
+    do backtrace do host (#24, #30).
+  - 4a27085: os marcos de cada vídeo (primeiro pacote, primeiro quadro decodificado, primeira saída ao jogo) (#22).
+  - De 26/10, também prontos:
+    - Saída Automática (60ac287);
+    - o GLSL mais barato do SavageWindRecomp (9f94aba: menos travadas de shader na primeira vez);
+    - as esperas com limite e o áudio do TOTK (0b86617);
+    - a altura de bloco do NVN (e82107e);
+    - o MapMemory que confere endereços e a mensagem de build com a causa (4a27085).
+    - As notas precisam explicar que os shaders compilam de novo uma vez e que a Saída vira Automática.
+  - Antes de lançar, testar no POCO: a verificação do setup num caso que falha (uma cópia em
+    `/sdcard/Download/botwtest` com o `Version.txt` trocado; nunca nas pastas do usuário) e o relatório de crash (não
+    há como provocar um crash de propósito: `LARECOMP_TEST_CRASH=<s>`, e346bc7, faz duas threads do jogo caírem).
+  - Depois de lançar, avisar em #22, #24, #25, #30 e #38.
+- **`uclamp.min` para o #41** (prometido ao autor, 2026-10-26): Snapdragon 8 Gen 3 (Adreno 750, Honor 300 Ultra,
+  MagicOS) cai para ~10 fps no mundo com um núcleo ocupado a ~600 MHz. O trabalho por quadro é o mesmo do POCO, ou
+  menos (3.000-4.500 draws e ~15 MB enviados por quadro, contra 4.500-6.000 e 20-25 MB a 30 fps), e a sessão do ADPF
+  está ligada: algo acima do escalonador segura o clock (o iAware do MagicOS gerencia o app).
+  - Feito em edcbe12 (falta rodar no celular): `LARECOMP_UCLAMP_MIN=<1-1024>` aplica `SCHED_FLAG_UTIL_CLAMP_MIN` às
+    threads de `plat_thread_unpin` e diz no log se o Android aceitou; e o núcleo 0 ganhou uma linha a cada 30 s (trocas,
+    esperas, quanto do tempo ficou ocupado). Mandar ao autor um build de teste.
+  - A lista de jogos e o modo desempenho do MagicOS não mudaram os clocks (resposta dele, 2026-10-27).
+- **DLC** (#42, #40, #34; talvez o crash ao chamar o cavalo do #43) - em andamento numa sessão própria (pedido do
+  usuário, 2026-10-25). O Modo Mestre vem com o primeiro pacote (#34). Avisar nas issues quando sair.
+  - Os dois pacotes extraídos para testar (2026-10-27, `romfs/` de cada um):
+    `D:\Projetos\Jogos\Android\Updates_Switch\work_dlc_master_trials` e `...\work_dlc_champions_ballad`.
+  - O trabalho em andamento (não commitado): `runtime/services/fs.c`, `runtime/services/misc.c`, `runtime/hle/movie.c`.
+  - Feito em 15c8323 (2026-10-27): Configurações > DLC instala a imagem (`dlc/aoc.bin`, 52 s no POCO), e a 1.8.2
+    mostra Modo mestre, "Conteúdo extra adquirido" e "DLC Ver.3.0".
+  - Visto uma vez: na tela de título com o Modo mestre escolhido, o menu ficou em câmera lenta (com 30 fps estáveis no
+    log, sem compilações nem esperas) e depois voltou ao normal sozinho; talvez enquanto o jogo carrega os recursos do
+    modo. Observar.
+  - Falta testar jogando: o Modo mestre, a Provação da Espada, a Balada e os itens do DLC (e o cavalo do #43).
+- **Importar saves de emulador** (prometido no #40, 2026-10-26): os saves ficam em
+  `Android/data/com.botwrecomp.android/files/<versão>/save/save_0`, fora do alcance dos gerenciadores de arquivos (nem
+  o adb escreve ali: só o próprio app). Os emuladores de Switch guardam os do BOTW no mesmo formato (`0/` a `5/` com
+  `caption.jpg`, `caption.sav`, `game_data.sav`, `option.sav`, `tracker/`).
+  - Feito em 3d66b47 (falta testar no celular): Configurações > Saves, com Exportar (uma pasta datada onde o jogador
+    escolher; também o #49, que queria editar os saves) e Importar (acha o slot com `game_data.sav` até quatro níveis
+    abaixo; o save anterior fica como `save_0.before-import`).
+  - Conferir no celular: uma pasta de emulador real, e um save mais novo que a versão (um 1.8.2 numa 1.0.0).
+- **Crash no Snapdragon 8s Gen 4 / Adreno 825** (#24, #30; POCO F7): sempre no mesmo ponto, ~2 s depois de a tela de
+  título começar a carregar, em todo driver (Turnip, Qualcomm), com a memória do jogo na GPU ligada ou não e em
+  toda resolução. É no código do jogo (1.0.0, `f_100a550e0+0x94`: um append de lista com o elemento nulo, centenas
+  de chamadores), com duas threads do jogo no mesmo nulo, 33 ms uma depois da outra. O código do jogo sai igual em todo
+  celular (`-target aarch64-linux-musl` sem `-mcpu`). No POCO a 1.0.0 passa desse ponto. Falta o log da próxima
+  versão (526fc76: os chamadores pela cadeia x29) para achar o objeto nulo.
+- **Vídeo da torre trava no Adreno 840** (#22; OnePlus 15, Snapdragon 8 Elite Gen 5, 1.0.0 com o dump completo): o
+  jogo inteiro para logo depois de `[movie] decoder vp9 configured`, com Turnip e com o driver da Qualcomm; no
+  Adreno 830 o mesmo vídeo passa até o fim. O VP9 do FFmpeg 9.0.2 só tem caminhos NEON (os de SVE/SME são do VVC).
+  Falta o log da próxima versão (4a27085) para ver o passo em que para.
+- **#43** (Adreno 740, 1.8.2, Turnip V38): a grama some de vez em quando ao andar, e chamar o cavalo trava com um
+  save da 1.6.0. Esperando o log (e se o cavalo usa equipamento de DLC).
+  - **A grama:** reproduzida no POCO (1.9.0, Grande Platô, os degraus ao lado da torre, 2026-10-27): a grama baixa
+    perto do Link some entre um quadro e outro (as touceiras altas ficam). Igual com `LARECOMP_SYNC_LAG=0` - não é o
+    sync lag, e já estava na 0.1.11. Suspeitas: a máscara de densidade da grama, que a GPU desenha e a CPU lê para
+    escolher as células (o MacNativeGames trata esse caminho), ou o fade de perto da grama baixa. Próximo passo: um
+    quadro de depuração (F9) com a grama presente e outro sem, e comparar os draws da grama. O PR #511 do MacNativeGames
+    também corrigiu "grama alta cobrindo a estrada perto do Link": uma cópia amostrada de um tile de material do
+    terreno (128x128) que ficava velha - conferir se o nosso caso é esse.
+  - **A malha de linhas escuras** (#21, desde a 0.1.x): reproduzida no POCO (1.9.0, mesmo lugar, 2026-10-27). Linhas
+    pontilhadas horizontais e verticais presas ao terreno (uma grade no chão), visíveis só ao mexer a câmera. Continua
+    com o sync lag desligado, com as leituras no lugar desligadas e com o LRZ desligado. Suspeita: frestas entre os
+    tiles do terreno (os vértices da borda de dois tiles vizinhos com alturas um pouco diferentes). Próximo passo:
+    comparar as alturas das bordas de dois tiles no shader do terreno (o mesmo caminho do atlas de alturas e das cortinas).
+    **Corrigido** (2026-10-27): com filtragem nearest nos vertex shaders as frestas sumiam; a causa é o peso bilinear
+    (o Switch usa 8 bits de posição sub-texel, o Adreno mais). As coordenadas dos vertex shaders agora são arredondadas a
+    1/256 de texel (`LARECOMP_NO_VS_SNAP=1` desliga). Testado no POCO: sem frestas, terreno normal. Avisar no #21.
+- **#23** (RP Nova T26, 1.0.0): o `ActorInfo.product.sbyml` está na pasta, mas a imagem tinha 39.677 arquivos e o
+  jogo para ao carregá-lo. Esperando a mensagem da verificação de setup da 0.1.11 (qual arquivo falta) e o tamanho
+  exato do arquivo (760.223 bytes).
+- **Mali** (#39: Dimensity 7050, Mali-G68, 7-10 fps; #34: Mali-G925, crash no código do jogo em `f_100047d40`;
+  #29): o caminho da Mali nunca foi ajustado, e não há um celular Mali para testar.
+- **Build no Galaxy S21 (Snapdragon 888)** (Reddit, Salt-Alfalfa-8665, 2026-10-26).
+  - Na 0.1.11, o build **recomeçou do zero** apesar de continuar de onde parou. Suspeitas:
+    - a pasta escolhida de novo apagava os objetos (corrigido em 201e99b, não lançado);
+    - ou a bateria acabou e o app foi morto antes de o `obj.ok` ser escrito.
+  - Ele também escreveu "doesn't fully scan now": a verificação do setup não termina? Falta saber em que tela.
+  - O app **caiu em 81%**. Falta o log, com o motivo do Android (`the last run ended`).
+  - Pede o build **em segundo plano**: feito em 97afeda (falta testar no celular), um foreground service com a
+    porcentagem numa notificação e um wake lock parcial enquanto o build roda. Só carregando: não feito (o texto da
+    notificação pede para deixar carregando).
+  - Perguntar o modelo de RAM, e pedir o `botwrecomp-log.txt` e o `botwrecomp-log-previous.txt`.
+  - O mesmo em 75-85% no #25 (OnePlus 15, ZenFone 8 Ultra, 1.6.0) e no #47 (Snapdragon 888, 1.6.0). O log do #47
+    diz **"the last run ended: low memory"**: o Android matou o app no build, com 1-1,9 GB livres e status térmico 3.
+  - Causa provável achada (b8dec17, falta testar no celular): na 1.6.0 o `main_536.c` tem uma função de 167.749 linhas
+    com 14.525 rótulos, abaixo do limite de 15.000, então em -O1: 1,1 GB por 526 s no PC (`tools/cc_memory.py`; o
+    resto da 1.6.0 fica abaixo de 350 MB). No celular, dezenas de minutos com mais de 1 GB enquanto os outros
+    compiladores levavam a barra de ~53% a ~80%. Agora uma função com mais de 60.000 linhas vai para -O0 e o arquivo
+    compila sozinho. A 1.8.2 e a 1.9.0 não têm função assim: se o #51 for da 1.8.2, a causa é outra.
+  - E o gerador (Python, dentro do app, ao lado dos compiladores) guardava o C de toda instrução até o fim: 3,3 GB
+    na 1.6.0 e 2,1 GB na 1.8.2. Desde 9603800 guarda só os desvios: 1,2 GB e 0,8 GB, a saída idêntica, ~25% mais
+    tempo de gerador. Isso vale para todas as versões, inclusive a 1.8.2 do #51.
+  - E o zig cc: com -O0 ele entra no modo Debug e põe UBSan, stack protector e debug info sozinho (e debug info no
+    -O1, que ele compila como -O2). O `main_536` levou 6-8 GB por 20+ minutos no POCO até o Android matar o app
+    ("swap is low and thrashing"). Com `-fno-sanitize=undefined -fno-stack-protector -g0` (6582d40), menos de 20 s.
+  - Testado no POCO (2026-10-27): o build da 1.6.0 terminou (876 s, retomando os 675 arquivos de antes), com o serviço
+    em primeiro plano e a tela apagada, e o jogo roda com esse código.
+- **Cortinas de terreno depois da cutscene de uma torre** (2026-10-26, em andamento).
+  - Aparecem só quando a ativação toca a cutscene. Carregar um save já com a torre ativada não mostra nenhuma.
+  - Com `LARECOMP_TEX_FULLHASH=1` não apareceram. Não é o padrão do #511 do MacNativeGames
+    (`LARECOMP_LOG_STALE_UPLOAD` só pegou o vídeo).
+  - Suspeitas: a comparação por snapshot das texturas dinâmicas (`texture_unchanged`), ou uma corrida com as threads do
+    jogo que escrevem texturas enquanto a thread de render as lê.
+  - Medindo o custo da verificação completa antes de decidir a correção.
+- **Sync lag**: ligado por padrão desde e5d6f00 (46,6 -> 53,6 fps no A/B com o Turnip V38, a água certa). A água
+  branca vinha dos write-backs descartados com os slots cheios; desde 502088f eles esperam a GPU.
+- **BOTW 1.9.0** (#28, em andamento, 2026-10-27). SDK 21.4.1, main `cd57b23f`, romfs com 41.062 arquivos.
+  - Reconhecida (pasta `v190`, launcher, romfs, am), com o código de 1.8.2 para SDK 20 / NVN 55.
+  - Os endereços de 1.8.2 (pacing, VFR, widescreen, laço de quadros, pausa, telas, eventos, passo do controle) achados
+    por `tools/port_addrs.py`, cada um com uma só correspondência e as mesmas instruções.
+  - Roda (f0df56c): o título com "Ver. 1.9.0", um jogo novo, e um save da 1.8.2 no Grande Platô a 59,5 fps.
+  - Falta: widescreen, uma sessão longa, e as chamadas novas do SDK (o MacNativeGames cita `PopOpenUsers` e
+    `pl::IsRunningOnOunce`; no log, `ICommonStateGetter` 54/66, `IApplicationFunctions` 67 e `ISelfController` 16
+    sem resposta, e o jogo seguiu).
+- **Os 16 bytes por draw como push constants:** o jogo reescreve 16 bytes de um constant buffer de 64 KB antes de cada
+  draw, e cada draw copia os 64 KB (~16 MB por quadro, ~10% da thread de render). O tradutor de shaders leria esse
+  trecho de outro lugar. Médio a grande.
+- **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
+- **Pequenos, do SavageWindRecomp e do MacNativeGames:**
+  - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona
+    morta dos analógicos do controle (Configurações > Controles, 0-40%);
+  - campo de visão: precisa de um patch no código do jogo em cada versão (achar o valor da câmera);
+  - um botão 60/30 nos controles de toque: um controle novo no layout editável.
 
 ## Regras
 

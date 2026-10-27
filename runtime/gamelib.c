@@ -56,9 +56,13 @@ static bool copy_to(const char *from, const char *to) {
 // A 1.6.0 / 1.8.2 library in that version's extracted/ (put there over adb: android/push_game.sh) newer than the one in
 // internal storage, or another size, is copied in with its id - as BOTWRecompAndroidActivity does 1.0.0's. Once per
 // process: a copy that fails isn't tried again every frame.
+// LARECOMP_GAME_LIB_SRC=<file> (development): that library instead - extracted/ of a version the app set up belongs to
+// the app, and adb can't write there, but it can write to the app's files/ root.
 static void sync_from_game_dir(const char *game_dir, const char *lib) {
     char src[1100], dir[1100];
-    snprintf(src, sizeof src, "%s/%s", game_dir, GAMELIB_NAME);
+    const char *e = getenv("LARECOMP_GAME_LIB_SRC");
+    if (e && *e) snprintf(src, sizeof src, "%s", e);
+    else snprintf(src, sizeof src, "%s/%s", game_dir, GAMELIB_NAME);
     struct stat s, d;
     if (stat(src, &s) != 0 || (stat(lib, &d) == 0 && d.st_size == s.st_size && d.st_mtime >= s.st_mtime)) return;
     static char tried[1100];

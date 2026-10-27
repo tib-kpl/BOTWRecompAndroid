@@ -129,6 +129,11 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
     return n;
 }
 
+// [addr, addr+size) inside the guest's window
+static bool guest_range_ok(uint64_t addr, uint64_t size) {
+    return addr >= GUEST_LO && addr <= GUEST_HI && size <= GUEST_HI - addr;
+}
+
 static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
     if (nregions == 1024) FATAL("too many regions\n");
     plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the heap)
@@ -207,6 +212,23 @@ static int c0_on = -1;
 static KThread *c0_holder;  // (c0_m) the thread that has core 0, since c0_since
 static uint64_t c0_since;
 
+// Telemetry (c0_m; issue #41: how much of a frame goes to waiting for core 0, against a slow clock): every 30 s one log
+// line - how often core 0 changed hands, the waits for it (total, longest) and how much of the time it was held.
+static struct { uint64_t start, takes, waited, longest, held; } c0_stat;
+static void c0_held_until(uint64_t now) {
+    if (c0_holder) c0_stat.held += now - c0_since;
+}
+static void c0_stat_log(uint64_t now) {
+    if (!c0_stat.start) { c0_stat.start = now; return; }
+    uint64_t span = now - c0_stat.start;
+    if (span < 30000000000ull) return;
+    LOG("[kernel] core 0, last %.0f s: %llu takes, waited %.0f ms in all (longest %.1f ms), held %.0f%% of the time\n",
+        span / 1e9, (unsigned long long)c0_stat.takes, c0_stat.waited / 1e6, c0_stat.longest / 1e6,
+        100.0 * (double)c0_stat.held / (double)span);
+    memset(&c0_stat, 0, sizeof c0_stat);
+    c0_stat.start = now;
+}
+
 // Optional cooperative slices: request a handoff at the next function entry/SVC, never run two owners at once.
 // BOTW's busy waits depend on workers on other cores, handled by SetThreadCoreMask, not by forcing a handoff.
 // (LARECOMP_C0_SLICE_MS: the slice; default 0)
@@ -254,14 +276,14 @@ static void core0_acquire(KThread *t) {
         if (--c0_nevicted == 0) __atomic_fetch_and(&g_fnprof, ~2, __ATOMIC_SEQ_CST);
         if (t->core0_held) {
             t->core0_held = false;
-            c0_holder = NULL;
+            c0_held_until(plat_now_ns()), c0_holder = NULL;
             pthread_cond_broadcast(&c0_cv);
         }
     }
     if (__atomic_load_n(&t->core, __ATOMIC_ACQUIRE) != 0) {
         if (t->core0_held) {
             t->core0_held = false;
-            c0_holder = NULL;
+            c0_held_until(plat_now_ns()), c0_holder = NULL;
             pthread_cond_broadcast(&c0_cv);
         }
         pthread_mutex_unlock(&c0_m);
@@ -277,7 +299,11 @@ static void core0_acquire(KThread *t) {
     uint64_t t0 = plat_now_ns();
     while ((c0_holder || c0_head != t) && __atomic_load_n(&t->core, __ATOMIC_ACQUIRE) == 0 && !g_rt_unwind)
         pthread_cond_wait(&c0_cv, &c0_m);
-    g_blocked_ns += plat_now_ns() - t0;
+    uint64_t now = plat_now_ns(), w = now - t0;
+    g_blocked_ns += w;
+    c0_stat.takes++, c0_stat.waited += w;
+    if (w > c0_stat.longest) c0_stat.longest = w;
+    c0_stat_log(now);
     KThread **p = &c0_head, *prev = NULL;
     while (*p != t) { prev = *p; p = &(*p)->core0_next; }
     *p = t->core0_next;
@@ -290,7 +316,7 @@ static void core0_acquire(KThread *t) {
     }
     t->core0_held = true;
     c0_holder = t;
-    c0_since = plat_now_ns();
+    c0_since = now;
     pthread_mutex_unlock(&c0_m);
 }
 
@@ -309,7 +335,7 @@ static void core0_release(KThread *t) {
     }
     if (t->core0_held) {
         t->core0_held = false;
-        if (c0_holder == t) c0_holder = NULL;
+        if (c0_holder == t) c0_held_until(plat_now_ns()), c0_holder = NULL;
         pthread_cond_broadcast(&c0_cv);
     }
     pthread_mutex_unlock(&c0_m);
@@ -570,8 +596,7 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     // A wait that timed out returns without the mutex in BOTW 1.8.2's and 1.9.0's SDKs: user mode takes it
     // again (InternalConditionVariableImplByHorizon::TimedWait calls Enter on 0xea01). Taken here too, the thread then
     // waited for the mutex it held, and every thread after it (SavageWindRecomp). The older SDKs run as before.
-    // 1.9.0: SDK TimedWait at 0x149354 calls Enter after 0xea01, just as 1.8.2 does.
-    if (r != R_OK && !(r == R_TIMEOUT && (g_game_version == 182 || g_game_version == 190))) {
+    if (r != R_OK && !(r == R_TIMEOUT && g_game_version >= 182)) {
         // timed out / cancelled: still must reacquire the mutex
         if (!mutex_acquire_or_mark(mutex, tag)) {
             t->wait_kind = WAIT_MUTEX;
@@ -787,8 +812,24 @@ static void watchdog_start(void) {
     pthread_detach(th);
 }
 
+// LARECOMP_TEST_CRASH=<seconds> (a test of the crash report, dispatch.c rt_fatal_trace): that long after start, the
+// next two of the game's threads to make an SVC write to address 0 - a fault with a guest context, as a crash in the
+// game's code would be, and two at once as in issue #24 (the report gate).
+static void test_crash(void) {
+    static int64_t at = -1;
+    static int n;
+    if (at < 0) {
+        const char *e = getenv("LARECOMP_TEST_CRASH");
+        at = e && atoi(e) > 0 ? (int64_t)(plat_now_ns() + (uint64_t)atoi(e) * 1000000000ull) : 0;
+    }
+    if (!at || plat_now_ns() < (uint64_t)at || __atomic_fetch_add(&n, 1, __ATOMIC_SEQ_CST) >= 2) return;
+    LOG("[kernel] LARECOMP_TEST_CRASH: a write to address 0 on t%llu\n", (unsigned long long)(t_cur ? t_cur->id : 0));
+    *(volatile uint32_t *)(uintptr_t)0 = 0;
+}
+
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     rt_unwind_point();
+    test_crash();
     KThread *me = t_cur;
     if (me) {
         me->svc_since = plat_now_ns();
@@ -874,11 +915,25 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x02: case 0x03: x[0] = R_OK; break;  // SetMemoryPermission / SetMemoryAttribute
     case 0x04:  // MapMemory(dst, src, size): src is inaccessible while mapped, so copying is equivalent
+        // (an address outside the guest window, as a null stack from an allocation the game didn't check (issue #31),
+        // is the kernel's InvalidAddress, not a copy from it)
+        if (!guest_range_ok(x[0], x[2]) || !guest_range_ok(x[1], x[2])) {
+            LOG("[kernel] MapMemory dst=%llx src=%llx size=%llx: outside the guest's memory\n",
+                (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2]);
+            x[0] = R_INVALID_ADDRESS;
+            break;
+        }
         memcpy((void *)x[0], (void *)x[1], x[2]);
         region_add(x[0], x[2], 0xB, 3);
         x[0] = R_OK;
         break;
     case 0x05:  // UnmapMemory(dst, src, size): copy back
+        if (!guest_range_ok(x[0], x[2]) || !guest_range_ok(x[1], x[2])) {
+            LOG("[kernel] UnmapMemory dst=%llx src=%llx size=%llx: outside the guest's memory\n",
+                (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2]);
+            x[0] = R_INVALID_ADDRESS;
+            break;
+        }
         memcpy((void *)x[1], (void *)x[0], x[2]);
         region_remove(x[0]);
         x[0] = R_OK;

@@ -141,6 +141,18 @@ extern "C" void controls_bindings_draw(float scale) {
     }
     if (msg[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", msg);
 
+    {   // the sticks' dead zone (hle/input.c): for worn sticks that drift
+        float dz = g_settings.stick_deadzone * 100;
+        ImGui::TextUnformatted(tr("Stick dead zone"));
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##Deadzone", &dz, 0, 40, dz < 0.5f ? tr("Off") : "%.0f%%")) g_settings.stick_deadzone = dz / 100;
+        if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("A stick held this close to the centre counts as centred, for worn sticks that move Link "
+                                     "or the camera on their own (drift). Off: only the game's own."));
+        ImGui::PopTextWrapPos();
+    }
+
     if (ImGui::BeginTable("##binds", keys ? 3 : 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
         ImGui::TableSetupColumn("Switch", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn(tr("Controller"), ImGuiTableColumnFlags_WidthStretch, 1.3f);

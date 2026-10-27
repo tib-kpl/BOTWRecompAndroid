@@ -12,4 +12,7 @@
     <string name="driver_system">Использовать системный драйвер</string>
     <string name="driver_close">Закрыть</string>
     <string name="driver_error_intro">Графический драйвер не смог запустить игру. Обычно помогает драйвер Turnip для вашего GPU (.zip): нажмите «Установить драйвер».\n\nПодробности:</string>
+    <string name="build_channel">Сборка кода игры</string>
+    <string name="build_title">Собирается код игры</string>
+    <string name="build_text">BOTWRecompAndroid продолжает сборку с выключенным экраном. Держите телефон на зарядке.</string>
 </resources>

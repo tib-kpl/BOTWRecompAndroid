@@ -23,7 +23,14 @@ uint32_t tegra_default_block_height_log2(uint32_t height_in_blocks) {
         while ((1u << log2) < gobs && log2 < 4) log2++;
         return log2;
     }
-    return pick_tile_log2(div_up(height_in_blocks + height_in_blocks / 2, 8));
+    // NVN truncates height x 1.5 / 8 (deko3d rounds it up: a size class too tall at some heights - TOTK's 160x160 BC3
+    // warp pad read its padding as black texels with 8 GOBs, NVN uses 4; MacNativeGames' docs/how-it-works.md, "Texture
+    // storage layout", checked against the SDK's own metadata functions; via TOTKRecompAndroid 52fd968).
+    // LARECOMP_TEGRA_DEKO_BH=1: deko3d's rounding
+    static int deko = -1;
+    if (deko < 0) deko = getenv("LARECOMP_TEGRA_DEKO_BH") != NULL;
+    if (deko) return pick_tile_log2(div_up(height_in_blocks + height_in_blocks / 2, 8));
+    return pick_tile_log2(height_in_blocks * 3 / 16);
 }
 
 // 3D textures tile in depth only: one GOB high blocks (deko3d sets just the tile depth for them). With the 2D rule

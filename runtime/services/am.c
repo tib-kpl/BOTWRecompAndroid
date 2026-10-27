@@ -180,8 +180,7 @@ static void application_functions(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     }
     case 23:  // GetDisplayVersion
-        memcpy(resp->data, g_game_version == 190 ? "1.9.0" : g_game_version == 182 ? "1.8.2" :
-                           g_game_version == 160 ? "1.6.0" : "1.0.0", 6);
+        memcpy(resp->data, g_game_version == 190 ? "1.9.0" : g_game_version == 182 ? "1.8.2" : g_game_version == 160 ? "1.6.0" : "1.0.0", 6);
         resp_size(resp, 0x10);
         break;
     case 40: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;  // NotifyRunning

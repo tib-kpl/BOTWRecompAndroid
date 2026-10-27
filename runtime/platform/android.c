@@ -21,6 +21,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/ucontext.h>
 #include <time.h>
 #include <unistd.h>
@@ -503,7 +504,7 @@ int plat_proc_wait(PlatProc p, bool block) {
     pid_t r = waitpid((pid_t)p, &st, block ? 0 : WNOHANG);
     if (r == 0) return -1;
     if (r < 0) return 255;
-    return WIFEXITED(st) ? WEXITSTATUS(st) : 255;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? 128 + WTERMSIG(st) : 255;  // (128+n: stopped by signal n)
 }
 
 static int rm_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw) {
@@ -641,8 +642,38 @@ typedef struct APerformanceHintSession APerformanceHintSession;
 static cpu_set_t g_all_cores;
 static bool g_pinned;
 
+// LARECOMP_UCLAMP_MIN=<1-1024> (a test, issue #41): a utilization floor for every thread that starts here (the game's,
+// the render thread, audio), so the governor runs their cores at least at that share of their top clock, however
+// briefly each thread works. On a Snapdragon 8 Gen 3 (MagicOS) the game's busiest core stayed at ~600 MHz in the open
+// world - ~12 fps - with the ADPF session on, the app in the game list and performance mode. Per thread, so the
+// threads' relative speeds stay as they were (LARECOMP_PIN's fast main thread crashed the game's job system).
+// sched_setattr with SCHED_FLAG_UTIL_CLAMP_MIN keeps the policy and priority; whether Android allows it (seccomp,
+// SELinux, the cgroup's uclamp.max) goes to the log once.
+static void uclamp_min_thread(void) {
+    static int want = -1;
+    if (want < 0) {
+        const char *e = getenv("LARECOMP_UCLAMP_MIN");
+        want = e && atoi(e) > 0 ? (atoi(e) > 1024 ? 1024 : atoi(e)) : 0;
+    }
+    if (!want) return;
+    struct {
+        uint32_t size, policy;
+        uint64_t flags;
+        int32_t nice;
+        uint32_t priority;
+        uint64_t runtime, deadline, period;
+        uint32_t util_min, util_max;
+    } attr = {.size = 56, .flags = 0x08 | 0x10 | 0x20, .util_min = (uint32_t)want};  // (KEEP_POLICY | KEEP_PARAMS |
+                                                                                    //  UTIL_CLAMP_MIN; struct ver. 1)
+    long r = syscall(__NR_sched_setattr, 0, &attr, 0);
+    static atomic_int logged;
+    if (!atomic_exchange(&logged, 1))
+        LOG("[android] uclamp.min %d for the game's threads: %s\n", want, r ? strerror(errno) : "ok");
+}
+
 void plat_thread_unpin(void) {
     if (g_pinned) sched_setaffinity(0, sizeof g_all_cores, &g_all_cores);
+    uclamp_min_thread();
 }
 
 static void pin_to_fastest_cores(void) {

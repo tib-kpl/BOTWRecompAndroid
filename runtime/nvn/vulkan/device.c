@@ -512,12 +512,18 @@ static void create_device(void) {
     // reported to LASRecomp-Android-Plus; LAS Recomp for Android 4a8749f turned it off on every GPU). Here only on
     // Xclipse: without it BOTW's heap goes through CPU copies (~4 GB every 2 s), and Mali drivers may take it.
     // LARECOMP_VK_HOST_IMPORT=0 / 1: off / on on any GPU.
+    // Mali-G2-Ultra (Xring O3, driver r56p0): with the import and the global-memory arena (exec.c gres_init) the game's
+    // text went missing from every menu; with both off it is all there (issue #44, the reporter's own tests). Both off
+    // there unless LARECOMP_VK_HOST_IMPORT / LARECOMP_VK_NO_GRES say otherwise.
+    bool mali_g2 = strstr(g_vk.props.deviceName, "Mali-G2-Ultra") != NULL;
+    if (mali_g2) setenv("LARECOMP_VK_NO_GRES", "1", 0);
     if (g_vk.host_import) {
         const char *e = getenv("LARECOMP_VK_HOST_IMPORT");
         bool xclipse = strstr(g_vk.props.deviceName, "Xclipse") || g_vk.props.vendorID == 0x144D;  // (Samsung)
-        if (e ? !atoi(e) : xclipse) {
+        if (e ? !atoi(e) : xclipse || mali_g2) {
             g_vk.host_import = false;
-            LOG("[vk] guest heap import left off (%s)\n", e ? "LARECOMP_VK_HOST_IMPORT=0" : "Xclipse: its first submission fails");
+            LOG("[vk] guest heap import left off (%s)\n", e ? "LARECOMP_VK_HOST_IMPORT=0" :
+                xclipse ? "Xclipse: its first submission fails" : "Mali-G2-Ultra: the game's text went missing");
         }
     }
 #endif
@@ -820,10 +826,11 @@ static void create_device(void) {
                                   .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = g_vk.qfam};
     VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_vk.pool));
 
-    // pipeline cache: cache/vk_pipelines.bin (written by vk_pipeline_cache_save)
+    // pipeline cache: cache/vk_pipelines.bin (written by vk_pipeline_cache_save; LARECOMP_VK_NO_PIPELINE_CACHE=1: neither
+    // read nor written - every pipeline compiled cold, for measuring)
     size_t sz = 0;
     void *data = NULL;
-    FILE *fp = fopen("cache/vk_pipelines.bin", "rb");
+    FILE *fp = getenv("LARECOMP_VK_NO_PIPELINE_CACHE") ? NULL : fopen("cache/vk_pipelines.bin", "rb");
     if (fp) {
 #ifdef __ANDROID__  // (a size cap and the public header checked: a file from another driver or a cut-off write)
         long length = -1;
@@ -858,6 +865,7 @@ static void create_device(void) {
 }
 
 void vk_pipeline_cache_save(void) {
+    if (getenv("LARECOMP_VK_NO_PIPELINE_CACHE")) return;
     size_t sz = 0;
     if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) != VK_SUCCESS || !sz) return;
     void *data = malloc(sz);
@@ -1075,10 +1083,21 @@ bool vk_frame_begin(const float clear[4]) {
     if (timing) vk_timing_trace_wait(VK_TIMING_SLOT, SDL_GetTicksNS() - trace_start);
     trace_start = timing ? SDL_GetTicksNS() : 0;
 #endif
-    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    // At most a second for a window image: with no limit a compositor that kept every buffer held the game's frame there
+    // until the app went to the background (the surface's loss ends the wait) - TOTK froze until another window came
+    // in front and back (2026-10-25). Then the swapchain is made again, as that trip does; still none: no frame now.
+    const uint64_t acquire_ns = 1000000000ull;
+    VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+    if (r == VK_TIMEOUT || r == VK_NOT_READY) {
+        static int nstuck;
+        if (nstuck++ < 20) LOG("[vk] no window image within 1 s (%d): the swapchain made again\n", r);
+        r = VK_ERROR_OUT_OF_DATE_KHR;
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
-        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        if (!g_vk.swapchain) return false;
+        r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+        if (r == VK_TIMEOUT || r == VK_NOT_READY) { LOG("[vk] still no window image: frame skipped\n"); return false; }
     }
 #ifdef __ANDROID__
     if (timing) vk_timing_trace_wait(VK_TIMING_ACQUIRE, SDL_GetTicksNS() - trace_start);
@@ -1317,7 +1336,10 @@ void backend_present(NvnTexture *t) {
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
         memcpy(g_shot_crop, crop, sizeof crop);
+        extern void vk_gp_note(VkCommandBuffer cb, const char *what);  // (LARECOMP_GPUPROF_AT: the present's own rows)
+        vk_gp_note(cb, "present: the image into the window");
         vk_present_draw(cb, b, (float)vx, (float)vy, (float)vw, (float)vh, pv);
+        vk_gp_note(cb, "present: menus and overlay");
         static long menu_at = -1;
         if (menu_at < 0) menu_at = getenv("LARECOMP_MENU_AT") ? atol(getenv("LARECOMP_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
@@ -1362,6 +1384,8 @@ void backend_present(NvnTexture *t) {
 #endif
     extern void vk_level_change_check(void);
     vk_level_change_check();
+    extern void vk_dump_watch_frame(void);  // (exec.c: LARECOMP_WATCH_TEXADDR's texture on request)
+    vk_dump_watch_frame();
     static long shot_every = -1;
     if (shot_every < 0) { const char *e = getenv("LARECOMP_SCREENSHOT_EVERY"); shot_every = e ? atol(e) : 0; }
     extern bool g_debug_frame;
@@ -1901,7 +1925,7 @@ int ui_run(void) {
             static uint64_t last;
             static size_t saved;
             uint64_t now = SDL_GetTicks();
-            if (g_vk.dev && now - last > 30000) {
+            if (g_vk.dev && now - last > 30000 && !getenv("LARECOMP_VK_NO_PIPELINE_CACHE")) {
                 last = now;
                 size_t sz = 0;
                 if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) == VK_SUCCESS && sz > saved + 65536) {

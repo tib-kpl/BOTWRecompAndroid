@@ -10,6 +10,7 @@
 #include "../mods.h"
 #include "../hle.h"
 #include "../ipc.h"
+#include "../paths.h"
 #include "../romfs_build.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
@@ -357,7 +358,7 @@ const char *romfs_file_at(uint64_t off) {
 }
 
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
-typedef struct { int fd; uint64_t size; } Storage;
+typedef struct { int fd; uint64_t size; bool plain; } Storage;  // plain: another image than the game's (no mod overlay)
 
 static void storage(Service *s, IpcReq *req, IpcResp *resp) {
     Storage *st = s->state;
@@ -368,8 +369,10 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         plat_write_prepare(b->addr, size);  // (pread into pages write tracking made read-only: EFAULT)
-        ssize_t n = romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
+        ssize_t n = st->plain ? pread(st->fd, (uint8_t *)(uintptr_t)b->addr, size, (off_t)off)
+                              : romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
+        if (st->plain) break;
         {
             const char *path = romfs_file_at(off);
             static const char *last;
@@ -384,7 +387,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if ((reads & (reads - 1)) == 0) LOG("[fs] romfs reads: %llu (%llu KB)\n", reads, bytes >> 10);
         break;
     }
-    case 4: OUT(uint64_t, 0) = ov_n ? ov_end : st->size; resp_size(resp, 8); break;  // GetSize
+    case 4: OUT(uint64_t, 0) = ov_n && !st->plain ? ov_end : st->size; resp_size(resp, 8); break;  // GetSize
     default: LOG("[fs] IStorage cmd %u (ok)\n", req->cmd);
     }
 }
@@ -407,6 +410,45 @@ static Service *open_romfs_storage(void) {
     fstat(romfs_fd, &sb);
     st->size = sb.st_size;
     return service_new("IStorage(romfs)", storage, st);
+}
+
+// ------------------------------------------------------------------ the DLC (add-on content)
+// The Expansion Pass's data: the RomFS of its first add-on content (01007EF00011F001, the Master Trials - the
+// Champions' Ballad's own is only its unlock), one image for 1.6.0, 1.8.2 and 1.9.0 alike: <1.0.0's data root>/dlc/aoc.bin
+// (LARECOMP_AOC_IMAGE=<path> for tests). The game mounts it as aoc: (nn::fs::MountAddOnContent ->
+// OpenDataStorageByDataId) once aoc:u lists both packs (services/misc.c).
+#define AOC_DATA_ID 0x01007EF00011F001ull
+const char *fs_aoc_image(void) {
+    static char path[1100];
+    const char *e = getenv("LARECOMP_AOC_IMAGE");
+    char root[1024];
+    if (e && *e) snprintf(path, sizeof path, "%s", e);
+    else if (rt_version_root(100, root, sizeof root)) snprintf(path, sizeof path, "%s/dlc/aoc.bin", root);
+    else return NULL;
+    struct stat sb;
+    return !stat(path, &sb) && sb.st_size > 0 ? path : NULL;
+}
+
+static Service *open_aoc_storage(void) {
+    static int fd = -1;
+    const char *path = fs_aoc_image();
+    if (fd < 0 && path) {
+        char why[128];
+        if (!romfs_image_ok(path, why, sizeof why)) {
+            LOG("[fs] the DLC's data (%s) is incomplete or damaged: %s\n", path, why);
+            return NULL;
+        }
+        fd = open(path, O_RDONLY);
+        if (fd >= 0) LOG("[fs] the DLC's data: %s\n", path);
+    }
+    if (fd < 0) return NULL;
+    Storage *st = calloc(1, sizeof *st);
+    st->fd = fd;
+    st->plain = true;
+    struct stat sb;
+    fstat(fd, &sb);
+    st->size = sb.st_size;
+    return service_new("IStorage(aoc)", storage, st);
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
@@ -674,10 +716,16 @@ SERVICE("fsp-srv", fsp_srv) {
         break;
     }
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
-    case 202:  // OpenDataStorageByDataId (system data archives)
+    case 202: {  // OpenDataStorageByDataId(storage id, data id): the DLC's data (system data archives: none)
+        // (the Champions' Ballad's own data, 01007EF00011F002, is System/AocVersion.txt alone - the same file the Master
+        // Trials' image holds: that image answers for both)
+        uint64_t id = IN(uint64_t, 8);
+        Service *aoc = id == AOC_DATA_ID || id == AOC_DATA_ID + 1 ? open_aoc_storage() : NULL;
+        if (aoc) { ipc_return_object(resp, aoc); break; }
         LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));
         resp->result = MAKE_RESULT(2, 1001);
         break;
+    }
     case 203:  // OpenPatchDataStorageByCurrentProcess: no update installed (BOTW asks at boot) - TargetNotFound
         resp->result = MAKE_RESULT(2, 1002);
         break;

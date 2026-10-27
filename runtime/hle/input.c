@@ -80,6 +80,14 @@ static void recompute_pad(void) {
                         SDL_GetGamepadAxis(pads[p], SDL_GAMEPAD_AXIS_RIGHTX), -SDL_GetGamepadAxis(pads[p], SDL_GAMEPAD_AXIS_RIGHTY)};
         for (int i = 0; i < 4; i++) if (abs(v[i]) > abs(ax[i])) ax[i] = v[i];
     }
+    // Settings > Controls' dead zone: each stick's position inside it is centre, and past it the travel is stretched
+    // back to full (round: a diagonal keeps its angle), so a worn stick's drift doesn't walk Link or turn the camera
+    float dz = g_settings.stick_deadzone;
+    for (int s = 0; dz > 0 && s < 2; s++) {
+        float x = ax[2 * s] / 32767.0f, y = ax[2 * s + 1] / 32767.0f, m = sqrtf(x * x + y * y);
+        float k = m <= dz ? 0 : fminf((m - dz) / (1 - dz), 1) / m;
+        ax[2 * s] = (int32_t)(x * k * 32767), ax[2 * s + 1] = (int32_t)(y * k * 32767);
+    }
     pad_lx = ax[0], pad_ly = ax[1], pad_rx = ax[2], pad_ry = ax[3];
     {   // LARECOMP_LOG_PAD=1: the left stick too, when it moves by more than ~1/8
         static int log_axes = -1;

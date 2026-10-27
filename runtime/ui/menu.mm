@@ -519,7 +519,7 @@ static void tab_display(void) {
     const char *aspects[] = {"Unlocked", "Original 16:9"};
     opt_choice("Aspect ratio", &g_settings.aspect, aspects, 2, ASPECT_UNLOCKED,
                "Unlocked: the view fills the screen, so wider screens show more of Hyrule, and the HUD moves out to its "
-               "edges (menus stay in the middle). Game version 1.8.2 (1.0.0 and 1.6.0 keep 16:9 with bars); a change applies "
+               "edges (menus stay in the middle). Game versions 1.8.2 and 1.9.0 (1.0.0 and 1.6.0 keep 16:9 with bars); a change applies "
                "when the game starts again (Quit -> Return to start, then Play). Original 16:9: the game's own framing, "
                "with bars.");
 #ifndef __ANDROID__  // (Android: always the whole screen)
@@ -551,7 +551,7 @@ static void tab_display(void) {
         // 30 - their frame loop picks 2 or 3 vsyncs - so a 60 there counts as 30. (On the start screen the version
         // isn't loaded yet: the 1.8.2 choices.)
         extern int g_game_version;
-        bool sixty = g_game_version == 0 || g_game_version == 182 || g_game_version == 190;
+        bool sixty = g_game_version == 0 || g_game_version >= 182;
         if (!sixty && g_settings.fps_mode > 1) g_settings.fps_mode = 1;
         static const char *fr[] = {"Auto (20 / 30)", "30 fps"};
         static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "60 fps"};
@@ -624,25 +624,34 @@ static void tab_display(void) {
         if (opt_choice("Upscaler", &ui, ups, NUP, UP_DEFAULT, ud)) g_settings.upscaler = up_mode[ui];
     }
     {   // the final image's lines (nvn/output_scale.c): the screen's, or fewer, scaled up to it when presented
-        static const char *outs[] = {"Screen", "1080p", "900p", "720p"};
-        static const int out_lines[] = {0, 1080, 900, 720};
-        int oi = 0;
-        for (int i = 0; i < 4; i++) if (out_lines[i] == g_settings.out_lines) oi = i;
+        static const char *outs[] = {"Auto", "Screen", "1080p", "900p", "720p"};
+        static const int out_lines[] = {OUT_AUTO, 0, 1080, 900, 720};
+        int oi = 1;
+        for (int i = 0; i < 5; i++) if (out_lines[i] == g_settings.out_lines) oi = i;
         float ox, oy;
         renderer_get_scale(&ox, &oy);
-        char od[640];
-        snprintf(od, sizeof od, tr("How many pixels the final image has - the 3D scene once scaled up, and the HUD - before "
+        char od[1280];
+        int on = snprintf(od, sizeof od, tr("How many pixels the final image has - the 3D scene once scaled up, and the HUD - before "
                                    "it reaches the screen. Screen: your screen's own, the sharpest. 1080p / 900p / 720p: "
                                    "fewer, scaled up at the very end: the game's last passes and the upscaler cost less "
                                    "(most on big and wide screens), the HUD and text are a little softer. Match display "
                                    "(Internal resolution) follows it.\n\nThe final image is %.0f x %.0f."),
                  1920.0 * ox, 1080.0 * oy);
-        if (opt_choice("Output resolution", &oi, outs, 4, 0, od, false)) g_settings.out_lines = out_lines[oi];
+        if (on > 0 && on < (int)sizeof od)
+            snprintf(od + on, sizeof od - on, "\n\n%s", tr("Auto: 1080p on screens with more lines than that, where it costs the "
+                                                           "GPU the most; the screen's own on the others."));
+#ifdef __ANDROID__
+        enum { OUT_DEFAULT = 0 };  // (Auto: settings.c)
+#else
+        enum { OUT_DEFAULT = 1 };
+#endif
+        if (opt_choice("Output resolution", &oi, outs, 5, OUT_DEFAULT, od, false)) g_settings.out_lines = out_lines[oi];
     }
-    static const char *aa[] = {"Off", "SMAA"};
-    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
+    static const char *aa[] = {"Off", "SMAA", "FXAA"};
+    opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF,
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
-               "blends only along them, so textures stay sharp. Most useful at a lower internal resolution.");
+               "blends only along them, so textures stay sharp. FXAA: a single, cheaper pass that also softens the image "
+               "a little. Most useful at a lower internal resolution.");
 #ifndef __APPLE__
     opt_toggle("Temporal stabilization (experimental)", &g_settings.temporal_aa, false,
                "Blends compatible pixels from consecutive images to reduce shimmer. Works with SMAA or on its own. "
@@ -651,6 +660,10 @@ static void tab_display(void) {
                "motion vectors or camera jitter. Disabled by default.");
 #endif
 #ifdef __ANDROID__
+    opt_toggle("Sync lag", &g_settings.sync_lag, true,
+               "The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads "
+               "back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands "
+               "still. Turn it off if that bothers you. Applies at once.");
     opt_toggle("32-bit shader math", &g_settings.shader_int32, false,
                "Translates the game's shaders with 32-bit address math, the path used for drivers without 64-bit "
                "integers (Adreno 6xx / 7xx and Mali stock drivers). Try it if lighting, grass or text are missing or wrong "
@@ -726,8 +739,8 @@ static void tab_about(void) {
         for (int i = 1; i < N_LANGUAGES; i++) names[i] = g_language_names[i];
         if (choice("Language", &g_settings.language, names, N_LANGUAGES)) settings_save();
     }
-    hint("The game's text language, as its own system setting. Applies when the game restarts: Quit -> Title "
-         "screen, then Play.");
+    hint("The game's text language, as its own system setting, and the app's menus' too (Auto: the phone's). The game's "
+         "text changes when the game restarts (Quit -> Title screen, then Play); the menus when the app starts again.");
     ImGui::Spacing();
     header("Controls");
     if (toggle("Motion controls", &g_settings.motion)) settings_save();  // (runtime/hle/motion.c)

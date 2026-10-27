@@ -12,4 +12,7 @@
     <string name="driver_system">Driver van het systeem gebruiken</string>
     <string name="driver_close">Sluiten</string>
     <string name="driver_error_intro">De grafische driver kon het spel niet uitvoeren. Een Turnip-driver voor je GPU (.zip) lost het meestal op: tik op Een driver installeren.\n\nDetails:</string>
+    <string name="build_channel">Bouwen van de spelcode</string>
+    <string name="build_title">De spelcode wordt gebouwd</string>
+    <string name="build_text">BOTWRecompAndroid gaat door met het scherm uit. Laat de telefoon opladen.</string>
 </resources>

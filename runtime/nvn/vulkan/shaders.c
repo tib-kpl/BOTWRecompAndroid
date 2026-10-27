@@ -121,6 +121,21 @@ static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
 // No spirv-opt by default: it rewrote the depth pre-pass and colour-pass vertex shaders differently enough that
 // their depths stopped matching (EQUAL test: black holes in foliage), and it was most of the compile time; the
 // driver optimises anyway. LARECOMP_VK_OPT=1 turns it back on (experiments).
+// Debug names (OpSource, OpSourceExtension, OpName, OpMemberName, OpString, OpLine, OpNoLine, OpModuleProcessed):
+// glslang writes one for every register variable, ~16 % of a translated shader's SPIR-V, read by no driver
+// (SavageWindRecomp's).
+static void strip_names(uint32_t *spv, size_t *nwords) {
+    size_t o = 5;
+    for (size_t i = 5; i < *nwords;) {
+        uint32_t wc = spv[i] >> 16, op = spv[i] & 0xFFFF;
+        if (!wc || i + wc > *nwords) return;  // (malformed: left as it is from here)
+        bool name = op == 3 || op == 4 || op == 5 || op == 6 || op == 7 || op == 8 || op == 317 || op == 330;
+        if (!name) { memmove(spv + o, spv + i, wc * 4); o += wc; }
+        i += wc;
+    }
+    *nwords = o;
+}
+
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
     // Fragment-only experiment leaves vertex arithmetic unchanged: optimizing the
     // depth and colour vertex programs independently broke their EQUAL depth test.
@@ -159,6 +174,7 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
         out = malloc(n);
         memcpy(out, shaderc_result_get_bytes(r), n);
         *nwords = n / 4;
+        strip_names(out, nwords);
         if (stage == STAGE_VERTEX) out = no_contraction(out, nwords);
         if (!nocache) cache_store(h, out, *nwords);
     }
@@ -294,6 +310,59 @@ static const char *builtin_src(const char *name, int *stage) {
                "}\n";
     }
     if (!strcmp(name, "temporal.frag")) { *stage = STAGE_FRAGMENT; return temporal_shader_src; }
+    // FXAA (Video tab "Anti-aliasing"), one pass in the manner of FXAA 3.11's quality path (Timothy Lottes, NVIDIA):
+    // the luma contrast around the pixel picks it; the edge's direction is the stronger of the row / column second
+    // differences; the edge is walked both ways until its luma leaves the edge's mean, and the pixel is moved across it
+    // by how near it is to the nearer end (or by the 3x3 neighbourhood's sub-pixel blend, whichever is more). a = (1 /
+    // size, size).
+    if (!strcmp(name, "fxaa.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform sampler2D t0;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "float lu(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }\n"
+               "vec3 at(vec2 uv) { return textureLod(t0, uv, 0.0).rgb; }\n"
+               "float la(vec2 uv) { return lu(at(uv)); }\n"
+               "const float steps[10] = float[](1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0);\n"
+               "void main() {\n"
+               "  vec2 px = pc.a.xy, uv = gl_FragCoord.xy * px;\n"
+               "  vec3 cM = at(uv);\n"
+               "  float lM = lu(cM), lN = la(uv + vec2(0.0, -px.y)), lS = la(uv + vec2(0.0, px.y));\n"
+               "  float lE = la(uv + vec2(px.x, 0.0)), lW = la(uv + vec2(-px.x, 0.0));\n"
+               "  float mx = max(lM, max(max(lN, lS), max(lE, lW))), mn = min(lM, min(min(lN, lS), min(lE, lW)));\n"
+               "  float range = mx - mn;\n"
+               "  if (range < max(0.0312, mx * 0.125)) { o = vec4(cM, 1.0); return; }\n"
+               "  float lNW = la(uv - px), lSE = la(uv + px);\n"
+               "  float lNE = la(uv + vec2(px.x, -px.y)), lSW = la(uv + vec2(-px.x, px.y));\n"
+               "  float sub = (2.0 * (lN + lS + lE + lW) + lNW + lNE + lSW + lSE) / 12.0;\n"
+               "  float subBlend = smoothstep(0.0, 1.0, clamp(abs(sub - lM) / range, 0.0, 1.0));\n"
+               "  subBlend = subBlend * subBlend * 0.75;\n"
+               "  float hor = 2.0 * abs(lN + lS - 2.0 * lM) + abs(lNE + lSE - 2.0 * lE) + abs(lNW + lSW - 2.0 * lW);\n"
+               "  float ver = 2.0 * abs(lE + lW - 2.0 * lM) + abs(lNE + lNW - 2.0 * lN) + abs(lSE + lSW - 2.0 * lS);\n"
+               "  bool isH = hor >= ver;\n"
+               "  float pL = isH ? lS : lE, nL = isH ? lN : lW;\n"
+               "  float pG = abs(pL - lM), nG = abs(nL - lM);\n"
+               "  float stepLen = isH ? px.y : px.x, opp = pL, grad = pG;\n"
+               "  if (pG < nG) { stepLen = -stepLen; opp = nL; grad = nG; }\n"
+               "  vec2 uvE = uv + (isH ? vec2(0.0, stepLen * 0.5) : vec2(stepLen * 0.5, 0.0));\n"
+               "  vec2 es = isH ? vec2(px.x, 0.0) : vec2(0.0, px.y);\n"
+               "  float edgeL = (lM + opp) * 0.5, thr = grad * 0.25;\n"
+               "  vec2 puv = uvE + es, nuv = uvE - es;\n"
+               "  float pD = la(puv) - edgeL, nD = la(nuv) - edgeL;\n"
+               "  bool pEnd = abs(pD) >= thr, nEnd = abs(nD) >= thr;\n"
+               "  for (int i = 1; i < 10 && !(pEnd && nEnd); i++) {\n"
+               "    if (!pEnd) { puv += es * steps[i]; pD = la(puv) - edgeL; pEnd = abs(pD) >= thr; }\n"
+               "    if (!nEnd) { nuv -= es * steps[i]; nD = la(nuv) - edgeL; nEnd = abs(nD) >= thr; }\n"
+               "  }\n"
+               "  float pDist = isH ? puv.x - uv.x : puv.y - uv.y, nDist = isH ? uv.x - nuv.x : uv.y - nuv.y;\n"
+               "  float shortest = min(pDist, nDist);\n"
+               "  bool sgn = pDist <= nDist ? pD >= 0.0 : nD >= 0.0;\n"
+               "  float edgeBlend = sgn == (lM - edgeL >= 0.0) ? 0.0 : 0.5 - shortest / (pDist + nDist);\n"
+               "  float f = max(subBlend, edgeBlend);\n"
+               "  o = vec4(at(uv + (isH ? vec2(0.0, stepLen * f) : vec2(stepLen * f, 0.0))), 1.0);\n"
+               "}\n";
+    }
     // SMAA 1x (third_party/smaa, runtime/nvn/smaa_data.c): the reference SMAA.hlsl in its GLSL mode, High preset,
     // with an entry point per pass. a = SMAA_RT_METRICS (1 / size, size). The vertex-stage offset helpers run per
     // pixel here. Luma edges (t0 = colour) -> blending weights (t0 = edges, t1 = area, t2 = search) -> neighbourhood

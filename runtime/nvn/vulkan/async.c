@@ -88,8 +88,11 @@ static void *render_main(void *arg) {
         Req r = q[q_head % QN];
         pthread_mutex_unlock(&q_lock);
         uint64_t t0 = plat_now_ns(), cpu0 = cpu_timing ? render_cpu_ns() : 0;
+        extern void vk_tl(const char *what, uint64_t a, uint64_t b);  // (exec.c: LARECOMP_FRAME_TIMELINE)
+        vk_tl(r.type == REQ_EXEC ? "render: list start" : r.type == REQ_PRESENT ? "render: present start" : "render: fence", r.id, 0);
         if (r.type == REQ_EXEC) { vk_execute_now(r.a); free(r.p); }  // (r.p: the list copy, vk_async_execute)
         else if (r.type == REQ_PRESENT) vk_present_now((NvnTexture *)r.p);
+        if (r.type != REQ_FENCE) vk_tl(r.type == REQ_EXEC ? "render: list end" : "render: present end", r.id, 0);
         else if (r.type == REQ_FENCE) nvn_sync_set_seq(r.a, renderer_fence_seq());
         uint64_t elapsed = plat_now_ns() - t0;
         frame_cpu += cpu_timing ? render_cpu_ns() - cpu0 : elapsed;
@@ -126,6 +129,10 @@ static uint64_t push(int type, uint64_t a, void *p) {
         pthread_mutex_lock(&q_lock);
     }
     uint64_t id = ++q_tail;  // (ids 1, 2, ...: the request at index id - 1)
+    {
+        extern void vk_tl(const char *what, uint64_t a, uint64_t b);
+        vk_tl(type == REQ_EXEC ? "game: list sent" : type == REQ_PRESENT ? "game: present sent" : "game: fence sent", id, 0);
+    }
     q[(id - 1) % QN] = (Req){type, a, p, id};
     if (type == REQ_PRESENT) q_presents++;
     pthread_cond_signal(&q_more);

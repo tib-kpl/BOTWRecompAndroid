@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #include <vector>
 #include <algorithm>
@@ -193,7 +194,7 @@ static const char *version_name(int v) { return v == 190 ? "1.9.0" : v == 182 ? 
 static std::string check_copied_files(const std::string &root) {
     int v = main_version(root + "/exefs/main"), want = rt_game_dir_version(root.c_str());
     if (v < 0) return "No game files";
-    if (!v || (want && v != want)) return "Wrong game version (needs v1.0.0, v1.6.0 or v1.8.2 / 1.9.0)";
+    if (!v || (want && v != want)) return "Wrong game version (needs v1.0.0, v1.6.0, v1.8.2 or v1.9.0)";
     // (the game reads its data through romfs.bin alone: on Android it's built straight from the picked folder, and romfs/
     // holds only the movies, opened by path)
     if (!file_exists(root + "/romfs.bin")) return "Game data missing";
@@ -271,9 +272,9 @@ static void set_failure(int k) {
         "Choose the folder that holds the game files.",
         "Choose the folder that holds the game files.",
         "Make sure there's about 30 GB free and try again.",
-        "BOTWRecompAndroid runs versions 1.0.0, 1.6.0 and 1.8.2 / 1.9.0 of the game.",
+        "BOTWRecompAndroid runs versions 1.0.0, 1.6.0, 1.8.2 and 1.9.0 of the game.",
         "Some files are missing. Choose the folder again; if it happens again, dump the game again.",
-        "Make sure there's about 2 GB free and try again. If it keeps happening, report it on GitHub."};
+        "Try again: the build goes on where it stopped. If it keeps failing, report it on GitHub with the log."};
     if (k >= 1 && k <= 6) set_job(head[k], true, hint[k]);
 }
 
@@ -329,8 +330,17 @@ static unsigned long long g_phase_base;
 static std::atomic<float> g_build_frac{-1};  // -1: not building
 static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
 static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
+#ifdef __ANDROID__
+static void android_call(const char *method);
+static void android_call_int(const char *method, int v);
+#endif
 static void build_progress(double f, const char *step) {
     g_build_frac = (float)f;
+#ifdef __ANDROID__
+    static int pct = -1;  // (the foreground service's notification, a whole percent at a time)
+    int p = (int)(f * 100);
+    if (p != pct) pct = p, android_call_int("buildServiceProgress", p);
+#endif
     static const char *last;
     if (step != last) last = step, set_job(step);
 }
@@ -353,10 +363,27 @@ static bool build_game_code(const std::string &dir) {
     GameBuildOpts o = {build_progress, cores < memory_jobs ? cores : memory_jobs};
     char why[256] = "";
     g_build_frac = 0;
+#ifdef __ANDROID__
+    android_call("buildServiceStart");  // (BuildService: on with the screen off or the app in the background)
+#endif
     bool ok = gamebuild_run(dir.c_str(), &o, why, sizeof why);
+#ifdef __ANDROID__
+    android_call("buildServiceStop");
+#endif
     if (!ok) {
         fprintf(stderr, "[launcher] game code: %s\n", why);
+        std::string detail = why;
+        struct statvfs fs;  // (free space named only when it is short)
+        if (statvfs(dir.c_str(), &fs) == 0) {
+            double gb = (double)fs.f_bavail * (double)fs.f_frsize / (1024.0 * 1024.0 * 1024.0);
+            if (gb < 2.0) {
+                char sp[96];
+                snprintf(sp, sizeof sp, "; only %.1f GB free on the phone", gb);
+                detail += sp;
+            }
+        }
         set_failure(FAIL_BUILD);
+        set_job_detail(detail);
     }
     return ok;
 }
@@ -414,7 +441,7 @@ static void *extract_thread(void *) {
             set_failure(FAIL_NOT_FOUND);
             goto done;
         }
-        rt_remove_game_files(dest.c_str());  // (an earlier or interrupted setup's; removes the folder too)
+        rt_remove_game_files_for_setup(dest.c_str());  // (an earlier or interrupted setup's; its compiled objects stay)
         mkdir(dest.c_str(), 0755);
         unsigned long long rbytes = romfs_dir_bytes(romfs.c_str());
         g_total = 2 * rbytes;
@@ -477,6 +504,18 @@ static void android_call(const char *method) {  // a static method of the activi
     env->DeleteLocalRef(act);
 }
 
+static void android_call_int(const char *method, int v) {  // (one int argument)
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, method, "(I)V");
+    if (m) env->CallStaticVoidMethod(c, m, (jint)v);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+}
+
 // The log file (Driver compatibility; runtime/platform/android.c): written to a folder the player picks
 // (BOTWRecompAndroidActivity pickLogFolder / openLog), where a file manager can open it - Android/data/ is out of its reach
 extern "C" void android_log_file(bool on);
@@ -489,6 +528,28 @@ extern "C" bool vk_driver_is_turnip(void);
 extern "C" const char *vk_gpu_desc(void);  // ("Adreno (TM) 830 - Turnip")
 static std::string g_log_folder;  // its name ("Download/BOTWRecomp"), "" with none
 static bool g_log_folder_read;
+
+static std::string app_version() {  // BOTWRecompAndroidActivity.appVersion, asked once ("0.2.0-beta")
+    static std::string v;
+    static bool read;
+    if (read) return v;
+    read = true;
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act = (jobject)SDL_GetAndroidActivity();
+    if (!env || !act) return v;
+    jclass c = env->GetObjectClass(act);
+    jmethodID m = env->GetStaticMethodID(c, "appVersion", "()Ljava/lang/String;");
+    jstring s = m ? (jstring)env->CallStaticObjectMethod(c, m) : NULL;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); s = NULL; }
+    if (s) {
+        const char *t = env->GetStringUTFChars(s, NULL);
+        if (t) v = t, env->ReleaseStringUTFChars(s, t);
+        env->DeleteLocalRef(s);
+    }
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(act);
+    return v;
+}
 
 static void log_folder_read() {  // (BOTWRecompAndroidActivity.logFolderName, once: then from each pick)
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
@@ -517,6 +578,37 @@ extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidAc
     pthread_mutex_unlock(&g_lock);
     if (t) env->ReleaseStringUTFChars(name, t);
     if (g_settings.log_file) android_log_file(true);  // (the file moves to the folder, with this run's lines so far)
+}
+
+// Saves (Settings > Saves; BOTWRecompAndroidActivity importSave / exportSave): this version's save_0, and the result
+static std::string g_save_msg;  // (g_lock) the last import's or export's, shown under the buttons
+static bool g_save_failed, g_save_busy;
+
+extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeSaveDir(JNIEnv *env, jclass) {
+    char r[1024];
+    std::string d = rt_version_root(rt_game_version(), r, sizeof r) ? std::string(r) + "/save/save_0" : "";
+    return env->NewStringUTF(d.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeSaveDone(JNIEnv *env, jclass,
+                                                                                                    jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[600];
+    switch (result) {
+    case 0:
+        if (d.empty()) snprintf(msg, sizeof msg, "%s", tr("Saves imported."));
+        else snprintf(msg, sizeof msg, tr("Saves imported. The ones before are kept beside them as %s."), d.c_str());
+        break;
+    case 1: snprintf(msg, sizeof msg, tr("Saves exported to %s."), d.c_str()); break;
+    case 2: msg[0] = 0; break;
+    case 3: snprintf(msg, sizeof msg, "%s", tr("No BOTW save there: look for the one that holds 0, 1, 2... and option.sav.")); break;
+    default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
+    }
+    pthread_mutex_lock(&g_lock);
+    g_save_msg = msg, g_save_failed = result >= 3, g_save_busy = false;
+    pthread_mutex_unlock(&g_lock);
 }
 
 // The game version of the picked main module's first bytes (game_version_of_build: 0 = not one this app runs)
@@ -550,7 +642,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroi
     g_dest = dest;
     pthread_mutex_unlock(&g_lock);
     if (n) env->ReleaseStringUTFChars(name, n);
-    rt_remove_game_files(dest.c_str());  // (an earlier or interrupted setup's)
+    rt_remove_game_files_for_setup(dest.c_str());  // (an earlier or interrupted setup's; its compiled objects stay)
     if (own) mkdir(vr, 0755);
     mkdir(dest.c_str(), 0755);
     g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
@@ -638,6 +730,85 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroi
     g_fail_detail = what;  // (nativeImportDone(5) follows)
     pthread_mutex_unlock(&g_lock);
     return env->NewStringUTF(what);
+}
+
+// The DLC (Settings > DLC; BOTWRecompAndroidActivity importDlc): its image built as romfs.bin is, at
+// <1.0.0's data root>/dlc/aoc.bin (services/fs.c fs_aoc_image), the movies loose in dlc/romfs (hle/movie.c)
+static std::string g_dlc_msg;  // (g_lock) the last install's result
+extern "C" const char *fs_aoc_image(void);  // (runtime/services/fs.c: the DLC image, NULL when not set up)
+static bool g_dlc_failed, g_dlc_busy;
+static std::atomic<float> g_dlc_frac{-1};
+static std::string dlc_dir(void) {
+    char r[1024];
+    return rt_version_root(100, r, sizeof r) ? std::string(r) + "/dlc" : std::string();
+}
+static void dlc_progress(uint64_t done, uint64_t total) { g_dlc_frac = total ? (float)((double)done / (double)total) : 0; }
+extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeBuildDlc(
+        JNIEnv *env, jobject act, jobjectArray paths, jlongArray sizes) {
+    int n = env->GetArrayLength(paths);
+    std::vector<std::string> keep_alive(n);
+    std::vector<RomfsEntry> entries(n);
+    std::vector<jlong> sz(n);
+    if (n) env->GetLongArrayRegion(sizes, 0, n, sz.data());
+    for (int i = 0; i < n; i++) {
+        jstring s = (jstring)env->GetObjectArrayElement(paths, i);
+        const char *c = env->GetStringUTFChars(s, NULL);
+        keep_alive[i] = c ? c : "";
+        if (c) env->ReleaseStringUTFChars(s, c);
+        env->DeleteLocalRef(s);
+        entries[i] = {keep_alive[i].c_str(), (uint64_t)sz[i]};
+    }
+    jclass cls = env->GetObjectClass(act);
+    RomfsJni j = {env, act, env->GetMethodID(cls, "openRomfsFile", "(I)I")};
+    env->DeleteLocalRef(cls);
+    if (!j.open) { env->ExceptionClear(); return env->NewStringUTF("Internal error: openRomfsFile missing."); }
+    std::string dir = dlc_dir(), romfs = dir + "/romfs";
+    if (dir.empty()) return env->NewStringUTF("no data folder");
+    mkdir(dir.c_str(), 0755);
+    mkdir(romfs.c_str(), 0755);
+    g_dlc_frac = 0;
+    char why[256] = "";
+    bool ok = romfs_build_entries(entries.data(), n, romfs_jni_open, &j, (dir + "/aoc.bin").c_str(), romfs.c_str(),
+                                  keep_loose, dlc_progress, why, sizeof why);
+    g_dlc_frac = -1;
+    if (ok) return NULL;
+    fprintf(stderr, "[launcher] DLC image: %s\n", why);
+    return env->NewStringUTF(why[0] ? why : "Could not build the DLC's data image. Check free storage and try again.");
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeDlcDone(JNIEnv *env, jclass,
+                                                                                                   jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[600];
+    switch (result) {
+    case 0: snprintf(msg, sizeof msg, "%s", tr("DLC installed. Start the game: the title shows Master Mode.")); break;
+    case 2: msg[0] = 0; break;
+    case 3: snprintf(msg, sizeof msg, "%s", tr("No DLC there: choose the folder with the DLC's romfs (System/AocVersion.txt and Pack).")); break;
+    case 5: snprintf(msg, sizeof msg, "%s", tr("That's only the Champions' Ballad's unlock: choose the larger pack (01007EF00011F001), "
+                                               "which holds both DLCs.")); break;
+    default: snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str()); break;
+    }
+    fprintf(stderr, "[launcher] DLC setup: %d %s\n", (int)result, d.c_str());
+    pthread_mutex_lock(&g_lock);
+    g_dlc_msg = msg, g_dlc_failed = result >= 3, g_dlc_busy = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void remove_tree(const std::string &p) {
+    struct stat st;
+    if (lstat(p.c_str(), &st) != 0) return;
+    if (S_ISDIR(st.st_mode)) {
+        if (DIR *d = opendir(p.c_str())) {
+            while (struct dirent *e = readdir(d))
+                if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) remove_tree(p + "/" + e->d_name);
+            closedir(d);
+        }
+        rmdir(p.c_str());
+    } else {
+        remove(p.c_str());
+    }
 }
 
 // The import thread's cause of a failure (an exception: "IOException: ..."), ahead of nativeImportDone
@@ -1172,8 +1343,8 @@ static void version_rows(bool busy, bool focus) {
     static const char *const notes[N_VERSIONS] = {
         "The game's first release, without updates.",
         "An update of the game.",
-        "60 fps and widescreen (Video settings) work in this one.",
-        "Experimental update. 60 fps is available; widescreen is not available."};
+        "An update of the game, in Brazilian Portuguese too. 60 fps and widescreen (Video settings) work in this one.",
+        "The game's last update (2025), in Brazilian Portuguese too. Being brought up: expect problems."};
     opt_section("Game version");
     int cur = rt_game_version();
     for (int i = 0; i < N_VERSIONS; i++) {
@@ -1183,7 +1354,7 @@ static void version_rows(bool busy, bool focus) {
         std::string desc = std::string(tr(notes[i])) + "\n\n" +
                            tr(!set_up ? "Not set up yet: choose the folder with this version's game files below."
                                       : "Which version PLAY starts. Each one keeps its own game files, saves and settings; "
-                                        "1.6.0 and 1.8.2 / 1.9.0 start from a copy of 1.0.0's saves and settings. Choosing another "
+                                        "1.6.0, 1.8.2 and 1.9.0 start from a copy of 1.0.0's saves and settings. Choosing another "
                                         "one starts BOTWRecompAndroid again with it.");
         if (busy || g_switching_to || (!set_up && v != cur)) opt_disable_next();
         if (opt_radio(label.c_str(), v == cur, desc.c_str()) && v != cur && set_up) switch_to_version(v);
@@ -1334,7 +1505,7 @@ static void prelaunch_tab(float sc) {
     heading("Game files");
     ImGui::Text(tr("Game version: %s"), version_name(rt_game_version()));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", tr("Versions 1.0.0, 1.6.0 and 1.8.2 / 1.9.0 can be set up side by side, each with its own saves."));
+    ImGui::TextDisabled("%s", tr("Versions 1.0.0, 1.6.0, 1.8.2 and 1.9.0 can be set up side by side, each with its own saves."));
     ImGui::PopTextWrapPos();
     if (ImGui::Button(tr("Versions and setup"))) g_open_files = true;
     static double gb = -1;
@@ -1378,6 +1549,92 @@ static void prelaunch_tab(float sc) {
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
+#ifdef __ANDROID__
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("Saves");
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_save_msg;
+        bool failed = g_save_failed, sbusy = g_save_busy;
+        pthread_mutex_unlock(&g_lock);
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("The saves are in the app's own folder, out of file managers' reach. Export saves this "
+                                     "version's as one .zip where you choose (to keep, edit, send or move them). Import "
+                                     "replaces them with the saves in a .zip - one exported here, or any holding 0, 1, 2... "
+                                     "and option.sav; Import from folder takes an emulator's save folder. The ones before "
+                                     "are kept beside them. A save from a newer version of the game may not load in an "
+                                     "older one."));
+        if (sbusy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr("Export saves"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveExport");  // (then nativeSaveDone)
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Import saves"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveImport");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Import from folder"))) {
+            pthread_mutex_lock(&g_lock);
+            g_save_busy = true, g_save_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickSaveImportFolder");
+        }
+        if (sbusy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::Spacing();
+    ImGui::Spacing();
+    heading("DLC");
+    {
+        pthread_mutex_lock(&g_lock);
+        std::string msg = g_dlc_msg;
+        bool failed = g_dlc_failed, dbusy = g_dlc_busy;
+        pthread_mutex_unlock(&g_lock);
+        bool have = fs_aoc_image() != NULL;
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextDisabled("%s", tr("The Expansion Pass - The Master Trials and The Champions' Ballad - for game versions "
+                                     "1.6.0, 1.8.2 and 1.9.0. Choose the folder with your own DLC's extracted romfs: the "
+                                     "larger pack (01007EF00011F001, 7,094 files, about 1.4 GB) holds both; the other "
+                                     "one is only the Ballad's unlock and isn't needed. The DLC isn't included with "
+                                     "BOTWRecompAndroid."));
+        ImGui::Text("%s", tr(have ? "Installed." : "Not installed."));
+        float f = g_dlc_frac;
+        if (dbusy && f >= 0) ImGui::Text(tr("Installing the DLC... %d%%"), (int)(f * 100));
+        if (dbusy || g_busy) ImGui::BeginDisabled();
+        if (ImGui::Button(tr(have ? "Install again" : "Install DLC"))) {
+            pthread_mutex_lock(&g_lock);
+            g_dlc_busy = true, g_dlc_msg.clear();
+            pthread_mutex_unlock(&g_lock);
+            android_call("pickDlcFolder");  // (then importDlc -> nativeBuildDlc -> nativeDlcDone)
+        }
+        if (have) {
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove DLC"))) {
+                remove_tree(dlc_dir());
+                pthread_mutex_lock(&g_lock);
+                g_dlc_msg = tr("DLC removed."), g_dlc_failed = false;
+                pthread_mutex_unlock(&g_lock);
+            }
+        }
+        if (dbusy || g_busy) ImGui::EndDisabled();
+        if (!msg.empty()) {
+            if (failed) ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", msg.c_str());
+            else ImGui::Text("%s", msg.c_str());
+        }
+        ImGui::PopTextWrapPos();
+    }
+#endif
     ImGui::Spacing();
     ImGui::Spacing();
     heading("Game font");
@@ -1856,8 +2113,8 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
                 std::string src_d = tr("The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath of "
-                                       "the Wild for Nintendo Switch: version 1.0.0, 1.6.0 or 1.8.2 / 1.9.0 (the one in Brazilian "
-                                       "Portuguese). The version is told from the files, and each one is set up in a place of "
+                                       "the Wild for Nintendo Switch: version 1.0.0, 1.6.0, 1.8.2 or 1.9.0 (the last two in "
+                                       "Brazilian Portuguese). The version is told from the files, and each one is set up in a place of "
                                        "its own, beside the others. The game isn't included with BOTWRecompAndroid.");
                 if (!src.empty()) src_d += std::string(tr("\n\nChosen: ")) + src;
                 // the step that's running / its result, under the rows and in the Set up row's explanation
@@ -2042,7 +2299,8 @@ extern "C" void launcher_run(const char *root) {
                     if (bold) dl->AddText(font, size, ImVec2(p.x + 0.7f * s, p.y), col, t);
                 };
 #ifdef __ANDROID__
-                std::string ver;  // (the PC version's label: not this app's)
+                std::string ver = app_version();  // this app's versionName, not the PC version's tag
+                if (!ver.empty()) ver = tag_label(ver, true);  // "Version 0.2.0-beta", as the PC version shows its own
 #else
                 std::string ver = tag_label(LARECOMP_VERSION, true);
 #endif

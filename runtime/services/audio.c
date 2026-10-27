@@ -15,7 +15,9 @@
 // Ryujinx's AudioRenderer (VoiceState / DataSourceHelper / StateUpdater, copies in notes/ryujinx_audio).
 // Voices decode PCM16 / ADPCM wave buffers, resample to 48 kHz, and mix into their destination mix's
 // buffers; sub mixes route into their destination; the final mix feeds the device sink, which we
-// downmix to stereo and push to an SDL audio stream. Effects and splitters are not implemented.
+// downmix to stereo and push to an SDL audio stream. Voices and sub mixes can go through a splitter instead (to
+// several mixes, each with its own volumes: TOTK's voices and much of its sound). Effects other than reverb and the
+// limiter are not implemented.
 #define WB_COUNT 4
 #define MIXBUF_MAX 24
 #define HIST 4
@@ -70,9 +72,22 @@ typedef struct {
 
 typedef struct Effect Effect;
 
+typedef struct {  // a splitter: its destinations' ids, in order
+    uint32_t n;
+    uint32_t *ids;
+} Splitter;
+
+typedef struct {  // a splitter destination: a mix, and the volume into each of its buffers
+    int32_t mix;
+    uint8_t used;
+    float vol[MIXBUF_MAX], prev[MIXBUF_MAX];
+} SplitDest;
+
 typedef struct {
     uint32_t sample_rate, sample_count, mix_buffers, submixes, voices, sinks, effects, perf_frames;
-    uint32_t splitters, revision;
+    uint32_t splitters, dests, revision;
+    Splitter *spl;
+    SplitDest *dest;
     uint64_t elapsed_frames;
     uint32_t event_r, event_w;
     KEvent *event;
@@ -88,11 +103,21 @@ typedef struct {
     SDL_AudioStream *stream;
     FILE *wav;
     uint32_t wav_bytes;
+    uint32_t clip_frames, clipped;  // (the output's samples past full scale: render_frame)
+    float peak;
     pthread_t thread;
     volatile bool quit;  // reboot (audio_reset)
 } Renderer;
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+// The output's last stage: unchanged up to 0.9 of full scale, then a knee that reaches 1 only in the limit. The game's
+// limiter holds each of its 6 channels at 0.708, but the downmix to stereo adds up to 1.89 of that (TOTK: peaks of
+// 1.1 a few times a minute, 2026-10-26), which the clamp cut hard.
+static float soft_clip(float x) {
+    float a = fabsf(x);
+    if (!(a > 0.9f)) return a == a ? x : 0;  // (NaN: silence)
+    return copysignf(0.9f + 0.1f * tanhf((a - 0.9f) * 10), x);
+}
 
 // One sample of DSP ADPCM at absolute sample index s (frames of 8 bytes: header + 14 nibbles).
 static int16_t adpcm_next(const uint8_t *data, uint64_t size, uint32_t s, const int16_t *coefs, ChanState *cs) {
@@ -247,6 +272,119 @@ static int voice_prepare(Renderer *r, Voice *v) {
 }
 
 static Mix *find_mix(Renderer *r, int32_t id) { return id >= 0 && (uint32_t)id < r->nmix && r->mix[id].used ? &r->mix[id] : NULL; }
+
+// Splitter s's k-th destination (NULL past its last), and the mix it feeds (NULL if unused)
+static SplitDest *split_dest(Renderer *r, uint32_t s, uint32_t k) {
+    if (s >= r->splitters || k >= r->spl[s].n) return NULL;
+    uint32_t id = r->spl[s].ids[k];
+    return id < r->dests ? &r->dest[id] : NULL;
+}
+static Mix *split_mix(Renderer *r, const SplitDest *d) { return d->used ? find_mix(r, d->mix) : NULL; }
+
+// A sub mix's splitter: only without a destination mix (the mix id is unused then)
+static uint32_t mix_splitter(Renderer *r, const Mix *x) {
+    return !find_mix(r, x->dest) && x->dest_splitter < r->splitters ? x->dest_splitter : 0xFFFFFFFF;
+}
+
+// How many sub mixes down from x the final mix is, along the longest way (sub mixes are mixed deepest first)
+static int mix_depth(Renderer *r, const Mix *x, int lim) {
+    if (x == &r->mix[0] || lim <= 0) return 0;
+    int d = 0;
+    Mix *t = find_mix(r, x->dest);
+    if (t && t != x) d = mix_depth(r, t, lim - 1);
+    uint32_t s = mix_splitter(r, x);
+    for (uint32_t k = 0; s != 0xFFFFFFFF; k++) {
+        SplitDest *sd = split_dest(r, s, k);
+        if (!sd) break;
+        if ((t = split_mix(r, sd)) && t != x) {
+            int e = mix_depth(r, t, lim - 1);
+            if (e > d) d = e;
+        }
+    }
+    return d + 1;
+}
+
+// N samples into each of dst's buffers, the gain going from g0 * prev[b] to g1 * cur[b] over the frame
+static void mix_into(Mix *dst, const float *smp, uint32_t N, float g0, const float *prev, float g1, const float *cur) {
+    for (uint32_t b = 0; b < dst->bufs && b < MIXBUF_MAX; b++) {
+        float a = g0 * prev[b], z = g1 * cur[b];
+        if (a == 0 && z == 0) continue;
+        float *o = dst->buf + b * N, dg = (z - a) / N;
+        for (uint32_t i = 0; i < N; i++) o[i] += smp[i] * (a + dg * i);
+    }
+}
+
+// The splitter section (between the effects and the mixes): a header 'SNDH' {splitters, destinations} of 0x20
+// bytes, then the splitters that changed - 'SNDI' {id, sample rate, n} and n destination ids (TOTK's REV15: and 12
+// more bytes) - and the destinations that changed - 'SNDD' {id, f32 volume per buffer of the destination mix [24],
+// mix id, ...}, 0x70 bytes with is_used at 0x6C; later revisions put two biquad filters before is_used and pad it to
+// 12 bytes (0x90; REV15's float biquads: 0xA8, is_used at 0x9C - TOTK's dumps). Sizes are taken from where the next
+// one starts.
+static void update_splitters(Renderer *r, const uint8_t *p, const uint8_t *end) {
+    uint32_t ns, nd;
+    memcpy(&ns, p + 4, 4);
+    memcpy(&nd, p + 8, 4);
+    p += 0x20;
+    static int logged;
+    for (uint32_t i = 0; i < ns && p + 0x10 <= end && *(const uint32_t *)p == 0x49444E53; i++) {
+        uint32_t id, n;
+        memcpy(&id, p + 4, 4);
+        memcpy(&n, p + 12, 4);
+        if (n > 0x10000 || p + 0x10 + 4ull * n > end) break;
+        if (id < r->splitters) {
+            Splitter *s = &r->spl[id];
+            s->ids = realloc(s->ids, (n ? n : 1) * 4ull);
+            memcpy(s->ids, p + 0x10, 4ull * n);
+            s->n = n;
+            if (n && logged < 64 && ++logged)
+                LOG("[audren] splitter %u: %u destinations (first %u)\n", id, n, s->ids[0]);
+        }
+        p += 0x10 + 4ull * n;
+        // REV15's entries end with 12 more bytes the game leaves as they were: once they held an old 'SNDD' header
+        // and the name "Main", and the destinations were read from there, 12 bytes off - a volume of 1.8e28 from the
+        // text (TOTK, the output went to 1e27 x full scale, 2026-10-26). A magic 12 bytes on wins over one right here.
+        const uint32_t *w12 = p + 16 <= end ? (const uint32_t *)(p + 12) : NULL;
+        if (w12 && (*w12 == 0x49444E53 || *w12 == 0x44444E53)) p += 12;
+        else
+            for (int k = 0; k < 16 && p + 4 <= end && *(const uint32_t *)p != 0x49444E53 && *(const uint32_t *)p != 0x44444E53; k++)
+                p += 4;
+    }
+    static uint32_t stride;  // (kept: an update with one destination doesn't show it; only the known sizes)
+    static const uint32_t sizes[] = {0x70, 0x90, 0xA8};
+    for (int k = 0; nd > 1 && k < 3; k++)
+        if (p + sizes[k] + 4 <= end && *(const uint32_t *)(p + sizes[k]) == 0x44444E53) { stride = sizes[k]; break; }
+    if (nd == 1 && !stride)
+        for (int k = 0; k < 3; k++) if ((uint32_t)(end - p) == sizes[k]) stride = sizes[k];
+    if (!stride) return;
+    uint32_t used_at = stride == 0x70 ? 0x6C : stride - 12;
+    for (uint32_t i = 0; i < nd && p + stride <= end && *(const uint32_t *)p == 0x44444E53; i++, p += stride) {
+        uint32_t id;
+        memcpy(&id, p + 4, 4);
+        if (id >= r->dests) continue;
+        SplitDest *d = &r->dest[id];
+        float vol[MIXBUF_MAX];
+        memcpy(vol, p + 8, sizeof vol);
+        bool odd = false;  // (a volume no mix would use: not a destination after all - kept as it was, the first 4 logged)
+        for (int b = 0; b < MIXBUF_MAX; b++) odd |= !(fabsf(vol[b]) < 64);
+        if (odd) {
+            static int nodd;
+            if (nodd++ < 4) {
+                LOG("[audren] f%llu splitter destination %u (stride %#x, %u in this update) skipped:",
+                    (unsigned long long)r->elapsed_frames, id, stride, nd);
+                for (uint32_t k = 0; k < 0x10; k += 4) LOG(" %08x", *(const uint32_t *)(p + k));
+                LOG("\n");
+            }
+            continue;
+        }
+        memcpy(d->vol, vol, sizeof d->vol);
+        memcpy(&d->mix, p + 0x68, 4);
+        if (p[used_at] && !d->used) memcpy(d->prev, d->vol, sizeof d->prev);
+        d->used = p[used_at];
+        if (d->used && logged < 64 && ++logged)
+            LOG("[audren] splitter destination %u (%#x bytes): mix %d vol %.3f %.3f %.3f %.3f %.3f %.3f\n", id, stride,
+                d->mix, d->vol[0], d->vol[1], d->vol[2], d->vol[3], d->vol[4], d->vol[5]);
+    }
+}
 
 // ------------------------------------------------------------------ reverb (port of Ryujinx ReverbState/Command)
 typedef struct { float *buf; uint32_t sr, cur, last, count, max; } DelayLine;
@@ -421,20 +559,84 @@ static void reverb_process(Reverb *rv, float *const *in, float *const *out, uint
     }
 }
 
+// ------------------------------------------------------------------ limiter (port of Ryujinx LimiterCommandVersion1)
+// TOTK puts one on its final mix (6 channels at 0.708 of full scale, instant attack, 2 ms release), with sends above 1
+// into its sub mixes (splitter volumes up to 1.8): without it the loud moments went past full scale and were clipped.
+typedef struct {
+    uint8_t input[6], output[6];
+    uint16_t ch_max, ch;
+    int32_t sample_rate, look_ahead_max, attack_time, release_time, look_ahead;  // (times in microseconds)
+    float attack_coef, release_coef, threshold, input_gain, output_gain;
+    int32_t delay_min, delay_max;  // the look-ahead delay: wraps at min, max per channel
+} LimiterParam;
+
+typedef struct {
+    int ready;
+    LimiterParam p;
+    float detector[6], gain[6];  // the moving averages of the level and of the gain
+    float *delay;                // ch x delay_max
+    int32_t pos[6];
+} Limiter;
+
+static void limiter_update(Limiter *lm, const uint8_t *d, bool is_new) {
+    LimiterParam p;
+    memcpy(&p, d, sizeof p);
+    if ((p.ch != 1 && p.ch != 2 && p.ch != 4 && p.ch != 6) || p.ch > p.ch_max || p.delay_min <= 0 ||
+        p.delay_max < p.delay_min || p.delay_max > 48000) {
+        lm->ready = 0;
+        return;
+    }
+    if (is_new || !lm->ready || p.ch != lm->p.ch || p.delay_max != lm->p.delay_max) {
+        free(lm->delay);
+        lm->delay = calloc((size_t)p.ch * p.delay_max, sizeof(float));
+        for (int c = 0; c < 6; c++) lm->detector[c] = 0, lm->gain[c] = 1, lm->pos[c] = 0;
+        lm->ready = lm->delay != NULL;
+        static int logged;
+        if (logged++ < 4)
+            LOG("[audren] limiter: ch %u rate %d attack %d us release %d us look-ahead %d us (%d..%d samples) coefficients "
+                "%.4f/%.4f threshold %.3f gains %.3f/%.3f\n", p.ch, p.sample_rate, p.attack_time, p.release_time,
+                p.look_ahead, p.delay_min, p.delay_max, p.attack_coef, p.release_coef, p.threshold, p.input_gain,
+                p.output_gain);
+    }
+    lm->p = p;
+    for (int c = 0; c < p.ch; c++) if (lm->pos[c] >= p.delay_min) lm->pos[c] = 0;
+}
+
+static void limiter_process(Limiter *lm, float *const *in, float *const *out, uint32_t n) {
+    const LimiterParam *p = &lm->p;
+    for (int c = 0; c < p->ch; c++) {
+        float *dl = lm->delay + (size_t)c * p->delay_max, det = lm->detector[c], g = lm->gain[c];
+        int32_t pos = lm->pos[c];
+        for (uint32_t s = 0; s < n; s++) {
+            float x = in[c][s] / 32767.0f * p->input_gain, ax = fabsf(x);
+            det += (ax > det ? p->attack_coef : p->release_coef) * (ax - det);
+            float att = det > p->threshold ? p->threshold / det : 1.0f;
+            g += (g > att ? p->attack_coef : p->release_coef) * (att - g);
+            float y = dl[pos] * g * p->output_gain;
+            dl[pos] = x;
+            if (++pos >= p->delay_min) pos = 0;
+            out[c][s] = y * 32767.0f;
+        }
+        lm->detector[c] = det, lm->gain[c] = g, lm->pos[c] = pos;
+    }
+}
+
 struct Effect {
     uint8_t type, enabled;
     int32_t mix_id;
     uint32_t order;
     Reverb rv;
+    Limiter lm;
 };
 
 // Effect slot update from EffectInParameterVersion1 (0xC0 bytes: type, is_new, enabled, mix, buffers, order, data).
 static void effect_update(Effect *fx, const uint8_t *e) {
-    if (fx->type != e[0]) memset(&fx->rv.p, 0, sizeof fx->rv.p), fx->rv.ready = 0;
+    if (fx->type != e[0]) memset(&fx->rv.p, 0, sizeof fx->rv.p), fx->rv.ready = 0, fx->lm.ready = 0;
     fx->type = e[0];
     fx->enabled = e[2];
     memcpy(&fx->mix_id, e + 4, 4);
     memcpy(&fx->order, e + 0x18, 4);
+    if (fx->type == 7) { limiter_update(&fx->lm, e + 0x20, e[1]); return; }
     if (fx->type != 4) return;
     const uint8_t *d = e + 0x20;
     uint16_t ch_max, ch;
@@ -463,16 +665,27 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
     for (uint32_t order = 0; order < r->effects; order++) {
         for (uint32_t i = 0; i < r->effects; i++) {
             Effect *fx = &r->fx[i];
-            if (fx->type != 4 || fx->mix_id != mix_id || fx->order != order || !fx->rv.ready) continue;
-            int ch = fx->rv.p.ch;
+            if (fx->mix_id != mix_id || fx->order != order) continue;
+            bool lim = fx->type == 7;
+            if (lim ? !fx->lm.ready : fx->type != 4 || !fx->rv.ready) continue;
+            int ch = lim ? fx->lm.p.ch : fx->rv.p.ch;
+            const uint8_t *ins = lim ? fx->lm.p.input : fx->rv.p.input, *outs = lim ? fx->lm.p.output : fx->rv.p.output;
             float *in[6], *out[6];
             int ok = 1;
             for (int c = 0; c < ch; c++) {
-                if (fx->rv.p.input[c] >= m->bufs || fx->rv.p.output[c] >= m->bufs) ok = 0;
-                in[c] = m->buf + (fx->rv.p.input[c] % MIXBUF_MAX) * N;
-                out[c] = m->buf + (fx->rv.p.output[c] % MIXBUF_MAX) * N;
+                if (ins[c] >= m->bufs || outs[c] >= m->bufs) ok = 0;
+                in[c] = m->buf + (ins[c] % MIXBUF_MAX) * N;
+                out[c] = m->buf + (outs[c] % MIXBUF_MAX) * N;
             }
             if (!ok) continue;
+            if (lim) {  // (LARECOMP_NO_LIMITER=1: passed through, as before)
+                static int no_limiter = -1;
+                if (no_limiter < 0) no_limiter = getenv("LARECOMP_NO_LIMITER") && atoi(getenv("LARECOMP_NO_LIMITER"));
+                if (fx->enabled && !no_limiter) limiter_process(&fx->lm, in, out, N);
+                else
+                    for (int c = 0; c < ch; c++) if (in[c] != out[c]) memcpy(out[c], in[c], N * sizeof(float));
+                continue;
+            }
             static int no_reverb = -1;
             if (no_reverb < 0) no_reverb = getenv("LARECOMP_NO_REVERB") ? 1 : 0;
             static int toggle = -1;
@@ -535,6 +748,14 @@ static void render_frame(Renderer *r, float *stereo) {
                     st[1] = in * k[2] + o * k[4];
                     smp[i] = o;
                 }
+                if (!(fabsf(st[0]) < 1e7f && fabsf(st[1]) < 1e7f)) {  // (a filter that ran away: reset, silence)
+                    static int nlog;
+                    if (nlog++ < 16)
+                        LOG("[audren] v%u biquad%d ran away (fmt %u, %u Hz): %.5f %.5f %.5f / %.5f %.5f\n", vi, fi, v->fmt,
+                            v->rate, k[0], k[1], k[2], k[3], k[4]);
+                    st[0] = st[1] = 0;
+                    memset(smp, 0, N * sizeof(float));
+                }
             }
             cs->fraction = cs->fraction + ratio * N - need;
             if (cs->fraction < 0 || cs->fraction >= 1) cs->fraction = 0;
@@ -546,16 +767,19 @@ static void render_frame(Renderer *r, float *stereo) {
                 double e = (q1 * q1 + q2 * q2 - q1 * q2 * cw) * v->volume * v->volume / N;
                 hf[vi] += e;
             }
-            if (!dst) continue;
             static int solo = -2;
             if (solo == -2) solo = getenv("LARECOMP_AUDIO_SOLO") ? atoi(getenv("LARECOMP_AUDIO_SOLO")) : -1;
             if (solo >= 0 && (int)vi != solo) continue;
-            for (uint32_t b = 0; b < dst->bufs && b < MIXBUF_MAX; b++) {
-                float g0 = v->prev_volume * cr->prev[b], g1 = v->volume * cr->mix[b];
-                if (g0 == 0 && g1 == 0) continue;
-                float *o = dst->buf + b * N, dg = (g1 - g0) / N;
-                for (uint32_t i = 0; i < N; i++) o[i] += smp[i] * (g0 + dg * i);
+            if (!dst && v->splitter_id < r->splitters) {  // through a splitter: destinations c, c + channels, ...
+                for (uint32_t k = (uint32_t)c;; k += (uint32_t)nch) {
+                    SplitDest *sd = split_dest(r, v->splitter_id, k);
+                    if (!sd) break;
+                    Mix *m = split_mix(r, sd);
+                    if (m) mix_into(m, smp, N, v->prev_volume, sd->prev, v->volume, sd->vol);
+                }
+                continue;
             }
+            if (dst) mix_into(dst, smp, N, v->prev_volume, cr->prev, v->volume, cr->mix);
         }
         for (int c = 0; c < nch; c++) {
             ChanRes *cr = &r->chres[v->chan_ids[c] % r->voices];
@@ -564,6 +788,7 @@ static void render_frame(Renderer *r, float *stereo) {
         v->bq_reset[0] = v->bq_reset[1] = 0;
         v->prev_volume = v->volume;
     }
+    for (uint32_t k = 0; k < r->dests; k++) memcpy(r->dest[k].prev, r->dest[k].vol, sizeof r->dest[k].prev);
     if (hf_log && r->elapsed_frames % 200 == 0) {
         LOG("[audren] hf f%llu:", (unsigned long long)r->elapsed_frames);
         for (uint32_t k = 0; k < r->voices; k++)
@@ -579,8 +804,7 @@ static void render_frame(Renderer *r, float *stereo) {
     int maxd = 0;
     for (uint32_t m = 1; m < r->nmix && m < 64; m++) {
         if (!r->mix[m].used) continue;
-        int d = 0;
-        for (Mix *x = &r->mix[m]; x && d < 64; x = find_mix(r, x->dest)) { if (x == &r->mix[0]) break; d++; }
+        int d = mix_depth(r, &r->mix[m], 16);
         depth[m] = d;
         if (d > maxd) maxd = d;
     }
@@ -589,6 +813,19 @@ static void render_frame(Renderer *r, float *stereo) {
             Mix *s = &r->mix[m];
             if (!s->used || depth[m] != d) continue;
             apply_effects(r, (int32_t)m, s);
+            uint32_t sp = mix_splitter(r, s);
+            for (uint32_t k = 0; sp != 0xFFFFFFFF; k++) {  // through a splitter: destination k takes buffer k % bufs
+                SplitDest *sd = split_dest(r, sp, k);
+                if (!sd || !s->bufs) break;
+                Mix *t = split_mix(r, sd);
+                if (!t || t == s) continue;
+                const float *src = s->buf + (k % s->bufs) * N;
+                for (uint32_t j = 0; j < t->bufs; j++) {
+                    float g = s->volume * sd->vol[j], *o = t->buf + j * N;
+                    if (g != 0)
+                        for (uint32_t i = 0; i < N; i++) o[i] += src[i] * g;
+                }
+            }
             Mix *t = find_mix(r, s->dest);
             if (!t || t == s) continue;
             for (uint32_t i = 0; i < s->bufs; i++)
@@ -613,8 +850,66 @@ static void render_frame(Renderer *r, float *stereo) {
             L += 0.707f * ch[2] + 0.251f * ch[3] + 0.707f * ch[4];
             R += 0.707f * ch[2] + 0.251f * ch[3] + 0.707f * ch[5];
         }
-        stereo[i * 2] = clampf(L / 32768.f, -1, 1);
-        stereo[i * 2 + 1] = clampf(R / 32768.f, -1, 1);
+        stereo[i * 2] = soft_clip(L / 32768.f);
+        stereo[i * 2 + 1] = soft_clip(R / 32768.f);
+        float a = fabsf(L) > fabsf(R) ? fabsf(L) : fabsf(R);
+        if (a > 32768.f) r->clipped++;
+        if (a > r->peak) r->peak = a;
+    }
+    // (the samples past full scale, clipped above: a line for each second that had some, the first 30)
+    if (++r->clip_frames * N >= r->sample_rate) {
+        static int lines;
+        if (r->clipped && lines++ < 30)
+            LOG("[audren] %u samples clipped in the last second (peak %.2f x full scale)\n", r->clipped, r->peak / 32768.f);
+        r->clip_frames = r->clipped = 0;
+        r->peak = 0;
+    }
+}
+
+// Waiting for the device's stream to drain below its target. A device that stopped taking samples (an AAudio stream
+// that errored, a route that went away) held those waits forever: the game's audio events stopped, and the game with
+// them, until the app went to the background and back (SDL restarts the device there; TOTK, 2026-10-25). After 250 ms
+// with nothing taken the queue is dropped and the samples go by the clock (period_ns each wait), until the device takes
+// some again. added: the bytes put into the stream since the last wait.
+typedef struct { bool stalled; int last; uint64_t next; unsigned n; } Drain;
+
+static uint64_t mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static void drain_wait(Drain *d, SDL_AudioStream *st, int target, uint64_t period_ns, int added, const volatile bool *quit,
+                       const char *who) {
+    int q = SDL_GetAudioStreamQueued(st);
+    if (d->stalled) {
+        if (q < d->last + added) {
+            d->stalled = false;
+            LOG("[%s] the audio device takes samples again\n", who);
+        } else {
+            if (q >= target) SDL_ClearAudioStream(st);
+            uint64_t now = mono_ns();
+            if (!d->next || d->next + 100000000ull < now) d->next = now;
+            if (d->next > now) { struct timespec ts = {0, (long)(d->next - now)}; nanosleep(&ts, NULL); }
+            d->next += period_ns;
+            d->last = SDL_GetAudioStreamQueued(st);
+            return;
+        }
+    }
+    int q0 = q, ms = 0;
+    while (q >= target && !*quit) {
+        struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+        q = SDL_GetAudioStreamQueued(st);
+        if (q < q0) { q0 = q; ms = 0; continue; }
+        if (++ms < 250) continue;
+        d->stalled = true;
+        d->next = 0;
+        if (++d->n <= 10 || d->n % 100 == 0)
+            LOG("[%s] the audio device took nothing for 250 ms (%u): its queue dropped, the samples go by the clock\n", who, d->n);
+        SDL_ClearAudioStream(st);
+        d->last = 0;
+        return;
     }
 }
 
@@ -655,12 +950,10 @@ static void *renderer_tick(void *arg) {
                 target / (2 * (int)sizeof(float)));
         }
     }
+    Drain drain = {0};
     while (!r->quit) {
         if (r->stream) {
-            while (SDL_GetAudioStreamQueued(r->stream) >= target && !r->quit) {
-                struct timespec ts = {0, 1000000};
-                nanosleep(&ts, NULL);
-            }
+            drain_wait(&drain, r->stream, target, (uint64_t)N * 1000000000ull / r->sample_rate, frame_bytes, &r->quit, "audren");
         } else {
             clock_gettime(CLOCK_MONOTONIC, &now);
             uint64_t t = now.tv_sec * 1000000000ull + now.tv_nsec;
@@ -689,12 +982,12 @@ static void *renderer_tick(void *arg) {
     return NULL;
 }
 
-// A VoiceInParameter. v2: REV15's VoiceInParameter2 (0x188 bytes): its two biquad filters take float coefficients,
-// 0x18 bytes each instead of 0xC, so everything after them is 0x18 further on. Read as the old one, BOTW 1.8.2's
-// voices past the first came out garbage (sample formats 61, 72, 221...): most of its sounds never played, and a
-// voiced line that never ends holds its text - the new game stuck at Zelda's "Now, go..." (2026-10-24).
-static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out, bool v2) {
-    const int d = v2 ? 0x18 : 0;
+// A voice's parameters: 0x170 bytes, or 0x188 with float biquads (TOTK's REV15): two BiquadFilterParameter2 at 0x24
+// (enable, 3 reserved, f32 numerator[3], denominator[2]: 0x18 each, not the 0xC of Q14 ones) and everything after
+// them 0x18 further on - read at the old offsets, every voice after the first was garbage, wave buffers at
+// 0x380000000000, and a new game crashed as its sounds started.
+static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out, bool float_bq) {
+    const int s = float_bq ? 0x18 : 0;  // (the fields after the biquads)
     uint8_t is_new = p[8];
     if (is_new) {
         memset(v, 0, sizeof *v);
@@ -716,42 +1009,45 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out, 
     v->chans = ch > 6 ? 6 : (uint8_t)ch;
     memcpy(&v->pitch, p + 28, 4);
     memcpy(&v->volume, p + 32, 4);
-    memcpy(&v->wb_count, p + 60 + d, 4);
-    memcpy(&v->ds_addr, p + 72 + d, 8);
-    memcpy(&v->mix_id, p + 88 + d, 4);
-    memcpy(&v->splitter_id, p + 92 + d, 4);
-    memcpy(v->chan_ids, p + 320 + d, 24);
-    v->flush += p[345 + d];
-    memcpy(&v->behaviour, p + 348 + d, 2);
-    if (p[344 + d]) v->drop = 0;
-    for (int f = 0; f < 2; f++) {
-        // BiquadFilterParameter: enable, reserved, s16 numerator[3], denominator[2] (Q14); v2: enable, 3 reserved,
-        // float numerator[3], denominator[2]
-        const uint8_t *b = p + 36 + f * (v2 ? 0x18 : 0xC);
-        float k[5];
-        if (v2) memcpy(k, b + 4, 20);
-        else {
+    memcpy(&v->wb_count, p + 60 + s, 4);
+    memcpy(&v->ds_addr, p + 72 + s, 8);
+    memcpy(&v->mix_id, p + 88 + s, 4);
+    memcpy(&v->splitter_id, p + 92 + s, 4);
+    static int split_logged;
+    if (is_new && v->splitter_id < r->splitters && split_logged++ < 16)
+        LOG("[audren] v%ld through splitter %u (mix %d, fmt %u, %u Hz, %u channels)\n", (long)(v - r->voice),
+            v->splitter_id, v->mix_id, p[11], *(const uint32_t *)(p + 12), *(const uint32_t *)(p + 24));
+    memcpy(v->chan_ids, p + 320 + s, 24);
+    v->flush += p[345 + s];
+    memcpy(&v->behaviour, p + 348 + s, 2);
+    if (p[344 + s]) v->drop = 0;
+    for (int f = 0; f < 2; f++) {  // BiquadFilterParameter: enable, reserved, s16 numerator[3], denominator[2] (Q14)
+        const uint8_t *b = p + 36 + f * (float_bq ? 0x18 : 12);
+        if (b[0] && !v->bq_on[f]) v->bq_reset[f] = 1;
+        v->bq_on[f] = b[0];
+        if (float_bq) {
+            memcpy(v->bq[f], b + 4, 5 * sizeof(float));
+        } else {
             int16_t c[5];
             memcpy(c, b + 2, 10);
-            for (int i = 0; i < 5; i++) k[i] = c[i] / 16384.0f;
+            for (int k = 0; k < 5; k++) v->bq[f][k] = c[k] / 16384.0f;
         }
-        if (b[0] && !v->bq_on[f]) {
-            v->bq_reset[f] = 1;
-            if (getenv("LARECOMP_AUDIO_LOG"))
-                LOG("[audren] v%ld biquad%d on: %.4f %.4f %.4f / %.4f %.4f\n", (long)(v - r->voice), f, k[0], k[1], k[2], k[3], k[4]);
+        if (float_bq && b[0] && v->bq_reset[f]) {  // (TOTK's are one-pole low-passes, a0 + b1 = 1: stable as read)
+            float b1 = v->bq[f][3], b2 = v->bq[f][4];
+            static int nlog;
+            if (!(fabsf(b2) < 1 && fabsf(b1) < 1 - b2) && nlog++ < 8)
+                LOG("[audren] v%ld float biquad%d unstable as read: %.5f %.5f %.5f / %.5f %.5f\n", (long)(v - r->voice), f,
+                    v->bq[f][0], v->bq[f][1], v->bq[f][2], b1, b2);
         }
-        v->bq_on[f] = b[0];
-        memcpy(v->bq[f], k, sizeof k);
-    }
-    if (v->splitter_id != 0xFFFFFFFF && v->mix_id < 0) {
-        static int warned;
-        if (!warned++) LOG("[audren] splitter destinations not implemented\n");
+        if (b[0] && v->bq_reset[f] && getenv("LARECOMP_AUDIO_LOG"))
+            LOG("[audren] v%ld biquad%d on: %.4f %.4f %.4f / %.4f %.4f\n", (long)(v - r->voice), f, v->bq[f][0], v->bq[f][1],
+                v->bq[f][2], v->bq[f][3], v->bq[f][4]);
     }
     ChanState *cs0 = &r->chst[v->chan_ids[0] % r->voices];
     if (is_new)
         for (int c = 0; c < v->chans; c++) memset(r->chst[v->chan_ids[c] % r->voices].valid, 0, WB_COUNT);
     for (int i = 0; i < WB_COUNT; i++) {
-        const uint8_t *w = p + 96 + d + i * 0x38;
+        const uint8_t *w = p + 96 + s + i * 0x38;
         WaveBuf *wb = &v->wb[i];
         if (!cs0->valid[i] && wb->sent) wb->addr = 0;
         if (!w[26]) {  // !SentToServer: a new buffer for the DSP
@@ -795,7 +1091,7 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out, 
                     (long)(v - r->voice), i, v->fmt, v->rate, v->chans, v->pitch, v->volume, v->mix_id, v->chan_ids[0],
                     (unsigned long long)wb->addr, (unsigned long long)wb->size, wb->start, wb->end, wb->loop,
                     wb->loop_count, wb->eos, (unsigned long long)wb->ctx, (unsigned long long)v->ds_addr);
-            if (vlog && v->ds_addr && in_guest(v->ds_addr, 38)) {
+            if (vlog && v->ds_addr && in_guest(v->ds_addr, 38)) {  // (a garbage voice's address is no place to read)
                 const int16_t *k = (const int16_t *)(uintptr_t)v->ds_addr;
                 LOG("[audren]   coefs v%ld:", (long)(v - r->voice));
                 for (int j = 0; j < 19; j++) LOG(" %d", k[j]);
@@ -828,7 +1124,8 @@ static void update_mix(Renderer *r, const uint8_t *p, int id) {
     static uint64_t logged;
     if (id < 64 && (logged >> id & 1) && !ENV("LARECOMP_AUDIO_LOG")) return;
     if (id < 64) logged |= 1ull << id;
-    LOG("[audren] mix %d used %u vol %.3f bufs %u dest %d:", id, m->used, m->volume, m->bufs, m->dest);
+    LOG("[audren] mix %d used %u vol %.3f bufs %u dest %d splitter %d:", id, m->used, m->volume, m->bufs, m->dest,
+        (int)m->dest_splitter);
     for (int i = 0; i < MIXBUF_MAX * MIXBUF_MAX; i++)
         if (m->vol[i] != 0) LOG(" %d>%d=%.3f", i / MIXBUF_MAX, i % MIXBUF_MAX, m->vol[i]);
     LOG("\n");
@@ -849,17 +1146,23 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         if (dump_n < 0) dump_n = getenv("LARECOMP_AUDIO_DUMP") ? 1 : 0;
         count++;
         if (dump_n && (count == 300 || count == 2000 || count == 6000 || count == 12000)) {
-            char path[64];
-            snprintf(path, sizeof path, "build/audren_in_%ld.bin", count);
+            // (LARECOMP_AUDIO_DUMP=<folder>: there instead of build/ - Android: the app's internal files, which
+            // run-as reads; its external folder is out of the shell's reach)
+            const char *dir = getenv("LARECOMP_AUDIO_DUMP");
+            char path[1100];
+            snprintf(path, sizeof path, "%s/audren_in_%ld.bin", strcmp(dir, "1") ? dir : "build", count);
             FILE *f = fopen(path, "wb");
             if (f) { fwrite(ip, 1, in->size, f); fclose(f); }
             LOG("[audren] dumped %s (%llu bytes, rev %08x)\n", path, (unsigned long long)in->size, r->revision);
         }
     }
-    // (a voice's parameters: 0x188 bytes from REV15 - VoiceInParameter2, update_voice - 0x170 before)
-    bool voice2 = (r->revision >> 24) - '0' >= 15 && voices_sz == r->voices * 0x188u;
-    uint32_t vstride = voice2 ? 0x188 : 0x170;
-    uint32_t npools = pools_sz / 0x20, nvoices = voices_sz / vstride, neffects = effects_sz / 0xC0;
+    uint32_t vsz = r->voices && voices_sz % r->voices == 0 ? voices_sz / r->voices : 0x170;
+    if (vsz != 0x170 && vsz != 0x188) {
+        static int warned;
+        if (!warned++) LOG("[audren] voices of %#x bytes (%u for %u voices): read as 0x170\n", vsz, voices_sz, r->voices);
+        vsz = 0x170;
+    }
+    uint32_t npools = pools_sz / 0x20, nvoices = voices_sz / vsz, neffects = effects_sz / 0xC0;
     uint32_t nchans = chans_sz / 0x70, nsinks = sinks_sz / 0x140;
     if (nvoices > r->voices) nvoices = r->voices;
     if (nchans > r->voices) nchans = r->voices;
@@ -885,14 +1188,16 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         r->chres[id].used = c[0x64];
         if (c[0x64]) memcpy(r->chres[id].mix, c + 4, sizeof r->chres[id].mix);
     }
-    // voices
+    // voices: each the section's size over the renderer's voice count (0x170; 0x188 with float biquads: REV15)
     const uint8_t *vin = cin + chans_sz;
     oh[3] = r->voices * 0x10;
     for (uint32_t i = 0; i < r->voices; i++) r->voice[i].in_use = 0;
+    uint32_t vout = o;
     for (uint32_t i = 0; i < nvoices && o + 0x10 <= out->size; i++, o += 0x10) {
-        const uint8_t *v = vin + i * vstride;
-        if (v[9]) update_voice(r, &r->voice[i], v, op + o, voice2);
+        const uint8_t *v = vin + i * vsz;
+        if (v[9]) update_voice(r, &r->voice[i], v, op + o, vsz == 0x188);
     }
+    o = vout + oh[3];  // (the status of every voice, as the header says, whatever came in)
     // effects (not processed): report them as enabled/disabled per request
     const uint8_t *ein = vin + voices_sz;
     // (REV9 on, BOTW 1.8.2's SDK 20 is REV13: an effect's status is 0x90 bytes, its result state after the first 0x10)
@@ -905,7 +1210,7 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
         static uint32_t seen_types;
         if (e[0] && e[0] < 32 && !(seen_types & (1u << e[0]))) {
             seen_types |= 1u << e[0];
-            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], e[0] == 4 ? "" : " (not implemented)", i,
+            LOG("[audren] effect type %u used%s: slot %u mix %d enabled %u\n", e[0], e[0] == 4 || e[0] == 7 ? "" : " (not implemented)", i,
                 *(const int32_t *)(e + 4), e[2]);
         }
         if (e[0] && getenv("LARECOMP_AUDIO_LOG")) {
@@ -918,14 +1223,24 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
             }
         }
     }
-    const uint8_t *min = ein + effects_sz;
-    if (r->splitters && *(const uint32_t *)min == 0x48444E53) {
-        static int warned;
-        if (!warned++) LOG("[audren] splitter section present (ignored)\n");
-    }
-    // mixes: the section ends right before the sinks
+    // mixes: the section ends right before the sinks; the splitters' between the effects and it
     const uint8_t *sin = ip + h[15] - perf_sz - sinks_sz;
-    min = sin - mixes_sz;
+    const uint8_t *min = sin - mixes_sz;
+    const uint8_t *spl = ein + effects_sz;
+    if (r->splitters && spl + 0x20 <= min && *(const uint32_t *)spl == 0x48444E53) {
+        uint32_t ns = *(const uint32_t *)(spl + 4), nd = *(const uint32_t *)(spl + 8);
+        static int dumped;
+        const char *dir = getenv("LARECOMP_AUDIO_DUMP");
+        if (dir && (ns || nd) && dumped < 4) {  // (the first updates that change splitters: their layout)
+            char path[1100];
+            snprintf(path, sizeof path, "%s/audren_split_%d.bin", strcmp(dir, "1") ? dir : "build", dumped++);
+            FILE *f = fopen(path, "wb");
+            if (f) { fwrite(ip, 1, in->size, f); fclose(f); }
+            LOG("[audren] dumped %s: %u splitters, %u destinations in %#lx bytes at %#lx\n", path, ns, nd,
+                (long)(min - spl), (long)(spl - ip));
+        }
+        update_splitters(r, spl, min);
+    }
     if ((r->revision >> 24) - '0' >= 7 && *(const uint32_t *)min == 0xCAFEBABE) {
         uint32_t n = *(const uint32_t *)(min + 4);
         for (uint32_t i = 0; i < n; i++) {
@@ -1043,6 +1358,7 @@ SERVICE("audren:u", audren_u) {
         r->sample_rate = p[0]; r->sample_count = p[1]; r->mix_buffers = p[2]; r->submixes = p[3];
         r->voices = p[4]; r->sinks = p[5]; r->effects = p[6]; r->perf_frames = p[7];
         r->splitters = p[9];
+        r->dests = p[10];
         r->revision = p[12];
         r->state = 1;
         if (r->voices > 1024) r->voices = 1024;
@@ -1053,16 +1369,40 @@ SERVICE("audren:u", audren_u) {
         r->chst = calloc(r->voices, sizeof(ChanState));
         r->mix = calloc(r->nmix, sizeof(Mix));
         r->fx = calloc(r->effects ? r->effects : 1, sizeof(Effect));
+        r->spl = calloc(r->splitters ? r->splitters : 1, sizeof(Splitter));
+        r->dest = calloc(r->dests ? r->dests : 1, sizeof(SplitDest));
         renderer_open_output(r);
         r->event = kernel_create_event_pair(&r->event_w, &r->event_r);
         pthread_create(&r->thread, NULL, renderer_tick, r);
         audio_track(r, NULL);
-        LOG("[audren] renderer %u Hz, %u samples/frame, %u voices, %u mixes, %u mix buffers, %u splitters, %u effects\n",
-            r->sample_rate, r->sample_count, r->voices, r->nmix, r->mix_buffers, r->splitters, r->effects);
+        LOG("[audren] renderer %u Hz, %u samples/frame, %u voices, %u mixes, %u mix buffers, %u splitters (%u "
+            "destinations), %u effects\n", r->sample_rate, r->sample_count, r->voices, r->nmix, r->mix_buffers,
+            r->splitters, r->dests, r->effects);
         ipc_return_object(resp, service_new("IAudioRenderer", audio_renderer, r));
         break;
     }
-    case 1: OUT(uint64_t, 0) = 0x1000000; resp_size(resp, 8); break;  // GetWorkBufferSize: 16 MB
+    case 1: {  // GetWorkBufferSize(params)
+        // The renderer here mixes in host memory and never touches the work buffer: only the game's heaps see this
+        // size. It was 16 MB for any renderer, which LAS and BOTW had room for; TOTK sizes its sound heap from its
+        // own data (System/HeapSize), and that ran out with 16 MB taken from it - an allocation came back null and
+        // the game wrote through it. Now about what the console asks for these parameters (~1 MB for TOTK's 96
+        // voices): mix buffers, voice, mix, effect, sink and memory pool states, splitters, performance frames and
+        // the command buffer.
+        const uint32_t *p = (const uint32_t *)req->data;
+        uint64_t samples = p[1], mixbufs = p[2], mixes = p[3] + 1ull, voices = p[4], sinks = p[5], effects = p[6];
+        uint64_t perf = p[7], splitters = p[9], dests = p[10];
+#define A64(x) (((x) + 0x3F) & ~0x3Full)
+        uint64_t n = A64(4 * samples * (mixbufs + 6) * 2) + A64(4 * mixbufs * 2) + A64(0x1000 * voices) +
+                     A64(0x940 * mixes + 4 * mixes * mixes) + A64(0x2000 * effects) + A64(0x400 * sinks) +
+                     A64(0x100 * (effects + voices * 4)) + A64(0x60 * splitters + 0xE0 * dests) +
+                     A64(perf ? (perf + 1) * (0x20 + 0x14 * (voices + effects + sinks + mixes + 1)) : 0) +
+                     A64(0x20000 + 0x80 * voices);
+#undef A64
+        OUT(uint64_t, 0) = (n + 0xFFF) & ~0xFFFull;
+        LOG("[audren] GetWorkBufferSize -> %#llx\n", (unsigned long long)OUT(uint64_t, 0));
+        resp_size(resp, 8);
+        break;
+    }
     case 2: case 4: ipc_return_object(resp, service_new("IAudioDevice", audio_device, NULL)); break;
     default: LOG("[audren] cmd %u (ok)\n", req->cmd);
     }
@@ -1135,7 +1475,10 @@ void audio_stop(void) {
             if (r->stream) SDL_DestroyAudioStream(r->stream);
             if (r->wav) { wav_header(r->wav, r->wav_bytes); fclose(r->wav); }
             for (uint32_t m = 0; m < r->nmix; m++) free(r->mix[m].buf);
+            for (uint32_t k = 0; k < r->splitters; k++) free(r->spl[k].ids);
+            for (uint32_t k = 0; k < r->effects; k++) free(r->fx[k].lm.delay);
             free(r->voice), free(r->chres), free(r->chst), free(r->mix), free(r->fx);  // (reverb delay lines leak)
+            free(r->spl), free(r->dest);
             free(r);
             g_rens[i] = NULL;
             n++;
@@ -1162,6 +1505,7 @@ static void *audout_thread(void *arg) {
             dev_frames = 1024;
         target = 2 * dev_frames * 2 * (int)ch;  // bytes of s16 at the source rate (close enough at 48 kHz)
     }
+    Drain drain = {0};
     while (!a->quit) {
         pthread_mutex_lock(&a->lock);
         uint64_t size = 0, tag = 0, data = 0;
@@ -1172,7 +1516,8 @@ static void *audout_thread(void *arg) {
         if (a->stream) {
             apply_gain(a->stream);
             if (data) SDL_PutAudioStreamData(a->stream, (const void *)(uintptr_t)data, (int)size);
-            while (SDL_GetAudioStreamQueued(a->stream) > target && !a->quit) { struct timespec ts = {0, 1000000}; nanosleep(&ts, NULL); }
+            drain_wait(&drain, a->stream, target + 1, frames * 1000000000ull / (a->rate ? a->rate : 48000), data ? (int)size : 0,
+                       &a->quit, "audout");
         } else {
             uint64_t ns = frames * 1000000000ull / (a->rate ? a->rate : 48000);
             struct timespec ts = {(time_t)(ns / 1000000000ull), (long)(ns % 1000000000ull)};

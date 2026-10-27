@@ -29,4 +29,7 @@
     <string name="watch_code_copied">Código copiado</string>
     <string name="watch_crop_error">Use quatro valores de 0 a 100 separados por vírgulas, com esquerda &lt; direita e topo &lt; base. Use ponto para decimais.</string>
     <string name="driver_error_intro">O driver de vídeo não conseguiu rodar o jogo. Um driver Turnip para a sua GPU (.zip) costuma resolver: toque em Instalar um driver.\n\nDetalhes:</string>
+    <string name="build_channel">Compilação do código do jogo</string>
+    <string name="build_title">Compilando o código do jogo</string>
+    <string name="build_text">O BOTWRecompAndroid continua compilando com a tela apagada. Deixe o celular carregando.</string>
 </resources>

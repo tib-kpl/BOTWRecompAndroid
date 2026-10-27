@@ -11,8 +11,8 @@
 > - **Releases APK automatiques :** chaque push sur `main` dont la compilation réussit produit un APK Android signé,
 >   publié en préversion sur [la page Releases de ce fork](https://github.com/tib-kpl/BOTWRecompAndroid/releases).
 > - **Menus en français :** traduction de l’accueil, des paramètres, des commandes, des dialogues et des raccourcis
->   Android, en complément des menus anglais et portugais existants. L’interface suit la langue de l’application
->   définie dans Android.
+>   Android, en complément des menus anglais et portugais existants. Les menus suivent le réglage Langue du jeu ;
+>   Auto utilise la langue de l’application définie dans Android.
 > - **Préparation des futures traductions :** des catalogues séparés, des ressources de texte Android et des contrôles
 >   dans la CI facilitent l’ajout de langues. Voir le [guide de traduction](docs/TRANSLATIONS.md) (en anglais).
 >
@@ -22,7 +22,7 @@
 >   testés sur l’Odin 2 Portal. L’installation dans `v190` conserve ses propres sauvegardes et paramètres.
 >   Le rendu et les performances restent à améliorer ; choisir 60 FPS ne garantit pas de les maintenir.
 > - **Commandes et démarrage :** les associations de boutons sont utilisées dans le jeu et les menus de l’application ;
->   un écran de chargement traduit accompagne le lancement. L’écran large reste réservé à la 1.8.2.
+>   un écran de chargement traduit accompagne le lancement. L’écran large de l’amont est intégré pour la 1.8.2 et la 1.9.0 expérimentale.
 >
 > Le moteur de recompilation et la prise en charge existante du jeu proviennent des projets d’origine cités plus bas.
 > Les traductions décrites ici concernent l’interface de l’application ; la langue des textes du jeu dispose de son
@@ -58,15 +58,18 @@ avec le SDK/NDK Android.
 - **Version 1.8.2 :** portugais du Brésil, écran large (Vidéo → Format d’image → « Déverrouillé » : le champ de vision
   s’élargit et l’interface se déplace vers les bords de l’écran) et gestion du rythme des images de SavageWindRecomp.
 - **Version 1.9.0 (expérimentale) :** écran titre, chargement des sauvegardes et jeu en monde ouvert testés sur
-  l’Odin 2 Portal. Les lignes noires et les défauts de rendu du terrain sont encore en cours d’analyse, avec un
-  [signalement similaire dans le projet d’origine, nº 21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21).
+  l’Odin 2 Portal. Le correctif amont des fissures du terrain du
+  [signalement nº 21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21) est intégré, mais reste à vérifier sur l’Odin.
   Les performances varient selon la scène ; l’option 60 FPS ne garantit pas 60 FPS constants.
-  L’écran large reste limité à la 1.8.2.
-- **Vidéo :** résolution interne, mise à l’échelle AMD FSR 1 / Snapdragon GSR 1, résolution de sortie, SMAA et
+  L’écran large de l’amont est également intégré pour cette version.
+- **Vidéo :** résolution interne, mise à l’échelle AMD FSR 1 / Snapdragon GSR 1, résolution de sortie, SMAA, FXAA et
   stabilisation temporelle expérimentale facultative (désactivée par défaut).
 - **Application :** importation des fichiers du jeu depuis le téléphone, avec un dossier par version et sélection
   dans la page Fichiers du jeu ; commandes tactiles, manettes, mods, menus anglais, français et portugais, choix du
   pilote Vulkan (Turnip via adrenotools) et options de compatibilité des pilotes.
+- **Nouveautés de l’amont :** import du pass d’extension pour la 1.6.0 / 1.8.2 / 1.9.0, import/export des sauvegardes
+  en ZIP, compilation du code du jeu en arrière-plan, correction du biais du gyroscope et zone morte des sticks.
+  Vidéo → Sync lag peut accélérer le jeu mais retarder les retours GPU ; désactivez-le si les jambes de Link s’enfoncent dans le sol.
 - **Limites connues :** l’installation depuis le téléphone compile le code du jeu sur celui-ci ; cette opération
   n’a pas encore été chronométrée ni testée avec BOTW (prévoir une longue attente et de la chauffe). Les GPU autres
   que les Adreno 8xx utilisent des méthodes plus prudentes et plus lentes. Les miniatures des sauvegardes créées
@@ -87,7 +90,11 @@ Importez les dossiers `exefs` et `romfs` correspondants de votre copie du jeu, a
 L’APK importe les fichiers extraits ; il n’applique pas directement un patch à un XCI ou un NSP.
 La version est détectée automatiquement et installée dans `v190` sur le stockage choisi, y compris la carte SD.
 Les versions installées se sélectionnent dans **Paramètres → Fichiers**. Chaque version conserve ses propres
-sauvegardes et paramètres ; installer la 1.9.0 ne migre pas les sauvegardes d’une autre version.
+sauvegardes et paramètres. À sa création, un dossier de version peut recevoir une copie des sauvegardes et paramètres
+de la 1.0.0, sans remplacer ceux déjà présents.
+
+Une mise à jour du recompilateur peut demander de reconstruire le code du jeu depuis vos fichiers extraits.
+La fusion de l’amont 0.2.1 modifie le générateur et son identifiant de compatibilité.
 
 ## Compatibilité des manettes
 

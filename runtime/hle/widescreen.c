@@ -40,7 +40,7 @@ bool widescreen_allowed(void) {
     // built on the stack, never rebuilt), so a change applies when the game starts again (a reboot: widescreen_reset)
     int boot_aspect = g_boot_aspect;
     if (boot_aspect < 0 && g_hooked) g_boot_aspect = boot_aspect = g_settings.aspect;
-    bool game = g_game_version == 182 && g_hooked && boot_aspect == ASPECT_UNLOCKED;
+    bool game = g_game_version >= 182 && g_hooked && boot_aspect == ASPECT_UNLOCKED;
     bool test = (g_allowed || ENV("LARECOMP_WIDESCREEN")) && g_settings.aspect == ASPECT_UNLOCKED;
     return (game || test) && !ENV("LARECOMP_NO_WIDESCREEN");
 }

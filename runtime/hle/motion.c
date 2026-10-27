@@ -109,7 +109,33 @@ static void feed(SDL_SensorType type, const float d[3], uint64_t ts) {
         float dt = m_gyro_ts && ts > m_gyro_ts ? (float)((ts - m_gyro_ts) / 1e9) : 0.005f;
         if (dt > 0.1f) dt = 0.005f;  // (after a pause)
         m_gyro_ts = ts;
-        const float w[3] = {d[0], -d[2], d[1]};
+        // The gyroscope's bias at rest, learned and taken off: a phone's reads a little turn while it lies still, and the
+        // aim drifted (SavageWindRecomp / MacNativeGames: learn it while still). Still: every axis within ~3.4 deg/s of
+        // the bias for 1.5 s; then the bias follows slowly. LARECOMP_NO_GYRO_BIAS=1: off.
+        static int bias_on = -1;
+        static float bias[3];
+        static uint64_t still_since;
+        if (bias_on < 0) bias_on = getenv("LARECOMP_NO_GYRO_BIAS") == NULL;
+        float g[3] = {d[0], d[1], d[2]};
+        if (bias_on) {
+            float dev = 0;
+            for (int i = 0; i < 3; i++) dev = fmaxf(dev, fabsf(d[i] - bias[i]));
+            if (dev < 0.06f) {
+                if (!still_since) still_since = ts;
+                else if (ts - still_since > 1500000000ull) {
+                    for (int i = 0; i < 3; i++) bias[i] += (d[i] - bias[i]) * 0.02f;
+                    static bool told;
+                    if (!told && ts - still_since > 4000000000ull) {
+                        told = true;
+                        LOG("[motion] gyroscope at rest: bias %.4f %.4f %.4f rad/s taken off\n", bias[0], bias[1], bias[2]);
+                    }
+                }
+            } else {
+                still_since = 0;
+            }
+            for (int i = 0; i < 3; i++) g[i] -= bias[i];
+        }
+        const float w[3] = {g[0], -g[2], g[1]};
         add_sample(w, dt);
         m_live_ns = SDL_GetTicksNS();
     }

@@ -12,4 +12,7 @@
     <string name="driver_system">システムのドライバーを使う</string>
     <string name="driver_close">閉じる</string>
     <string name="driver_error_intro">グラフィックドライバーでゲームを実行できませんでした。GPU 用の Turnip ドライバー (.zip) でたいてい解決します:「ドライバーをインストール」をタップしてください。\n\n詳細:</string>
+    <string name="build_channel">ゲームコードのビルド</string>
+    <string name="build_title">ゲームコードをビルド中</string>
+    <string name="build_text">画面を消してもビルドは続きます。スマートフォンは充電したままにしてください。</string>
 </resources>

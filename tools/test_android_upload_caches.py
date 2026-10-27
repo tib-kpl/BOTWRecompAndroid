@@ -4,6 +4,7 @@ Requires Python, Node.js and the Android NDK's clang/ld.lld. Pass its bin direct
 The allocator, submission counter and arena allocator are test doubles; no Vulkan calls are executed.
 """
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -16,7 +17,11 @@ textures = (ROOT / 'runtime/nvn/vulkan/textures.c').read_text()
 execution = (ROOT / 'runtime/nvn/vulkan/exec.c').read_text()
 texture_helpers = textures[textures.index('static uint8_t *upload_scratch;'):textures.index('uint64_t prof_tex_checks,')]
 arena_helper = execution[execution.index('static uint64_t ga_load_copy('):execution.index('static bool gres_prepare(')]
-heap_fallback = execution[execution.index('bool vk_heap_place('):execution.index('#endif', execution.index('bool vk_heap_place('))]
+# Upstream handles every failed/disabled placement with this production macro,
+# rather than the fork's former wrapper around try_heap_place(). Exercise that
+# policy without mocking the whole Vulkan allocator.
+heap_fallback = re.search(r'^#define NOT_PLACED\(\).*$', execution, re.M).group(0) + '\n'
+heap_fallback += 'static bool heap_failure(void) { return NOT_PLACED(); }\n'
 ubo_helper = execution[execution.index('static bool is_ubo('):execution.index('\n', execution.index('static bool is_ubo('))]
 plan_start = execution.index('typedef struct { uint8_t regular[MAX_BIND]')
 descriptor_helpers = execution[plan_start:execution.index('\n#endif', plan_start)]
@@ -70,10 +75,9 @@ typedef struct { uint64_t data_hash; } TexBackend;
 static uint8_t guest[65536], arena[4096];
 #define HEAP_BASE ((uintptr_t)guest)
 #define HEAP_MAX sizeof guest
-static bool gcopy_mode, place_result;
+static bool gcopy_mode;
 static int tracking_calls;
 static uint64_t tracking_lo, tracking_hi;
-static bool try_heap_place(uint64_t size) { return place_result; }
 static void plat_write_tracking_enable(uint64_t lo, uint64_t hi) {
     tracking_calls++;
     tracking_lo = lo; tracking_hi = hi;
@@ -165,15 +169,11 @@ int test(void) {
     CHECK(guest_copy((uintptr_t)(guest + 100), 16).ptr != new_submission.ptr);
     // An advertised placement extension can still be disabled or fail. Copy-mode caches must remain available.
     gcopy_mode = true;
-    CHECK(!vk_heap_place(1024) && tracking_calls == 1);
+    CHECK(!heap_failure() && tracking_calls == 1);
     CHECK(tracking_lo == HEAP_BASE && tracking_hi == HEAP_BASE + HEAP_MAX);
     // Direct GPU mappings must never receive CPU page protection through this fallback.
-    place_result = true;
-    CHECK(vk_heap_place(1024) && tracking_calls == 1);
-    place_result = false; gcopy_mode = false;
-    CHECK(!vk_heap_place(1024) && tracking_calls == 1);
-    gcopy_mode = true;
-    CHECK(!vk_heap_place(0) && tracking_calls == 1);
+    gcopy_mode = false;
+    CHECK(!heap_failure() && tracking_calls == 1);
     TexBackend b = {123};
     uint8_t pixels[64] = {1, 2, 3};
     CHECK(!texture_unchanged(&b, pixels, sizeof pixels));
