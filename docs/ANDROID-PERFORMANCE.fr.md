@@ -89,3 +89,33 @@ partout dans le jeu ni le maintien de 60 FPS.
 Les essais de cache des constantes internes du pilote n’apportent pas de gain mesurable et sont retirés. Le découpage
 actuel des longues passes est conservé (environ 38,8 FPS contre 37,1 sans découpage dans son essai). Rapprocher les
 soumissions de 2 ms à 0,5 ms n’améliore pas la cadence. Aucun de ces essais ne réduit la qualité graphique.
+
+## BOTW 1.9.0 : retours mémoire GPU en double, 27 octobre 2026
+
+Odin 2 Portal, même pilote Turnip, High Performance (`performance_mode=2`), même sauvegarde extérieure et même
+caméra, cible 60 FPS, SMAA et stabilisation temporelle désactivés. Le rendu interne et la sortie étaient tous deux
+fixés à **1920 × 1080** ; la résolution dynamique était contournée. L’accès direct de la mémoire GPU restait sur
+Automatique, donc le moteur utilisait les copies CPU sur cet Adreno 740. Cette scène diffère du sanctuaire ci-dessus.
+
+Plusieurs commandes demandaient le retour des mêmes zones mémoire pour une seule soumission GPU. Ces demandes
+lisent toutes les mêmes données une fois la soumission terminée. La déduplication exige une soumission, une source,
+une destination, une taille, une copie de référence et des métadonnées de propriété identiques. Les soumissions
+ou allocations différentes et les copies sans référence restent séparées. Les écritures CPU plus récentes restent protégées.
+
+Comparaison alternée toutes les 120 images dans le même processus, après chauffe des caches, sans profilage
+détaillé par dessin. Phases complètes retenues :
+
+| Chemin | Images mesurées | Débit calculé sur les temps d’image |
+| --- | ---: | ---: |
+| File de retours mémoire d’origine | 480 | 23,74 FPS |
+| Retours mémoire résidents dédupliqués | 600 | 27,65 FPS |
+
+Le gain est d’environ **16,5 % dans cette scène**. Les quatre paires complètes favorisent la déduplication.
+Le volume relu par fenêtre stable de 120 images descend d’environ 8 800–9 100 Mio à environ 1 600 Mio.
+Cette optimisation réduit le travail CPU redondant sans modifier la résolution. Les tests de la file et de la
+protection des écritures passent, y compris sous AddressSanitizer et UBSan.
+
+Cela ne démontre **pas** le maintien de 60 FPS et ne corrige pas les défauts connus du terrain et les lignes noires.
+Le travail GPU reste proche de 30 ms par image dans cette scène. Les essais d’optimisation des shaders de pixels
+et du LRZ n’établissent pas de gain supplémentaire fiable ; cette modification ne les active pas.
+L’accès direct à la mémoire GPU reste en cours d’évaluation.

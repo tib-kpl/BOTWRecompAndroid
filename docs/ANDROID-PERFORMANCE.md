@@ -82,3 +82,32 @@ sustained 60 fps.
 Driver-constant cache experiments showed no measurable gain and were removed. The current long-pass split remains
 enabled (about 38.8 fps versus 37.1 without splitting in that test). Shortening submission intervals from 2 ms to
 0.5 ms did not improve throughput. None of these experiments lowers rendering quality.
+
+## BOTW 1.9.0: duplicate GPU writebacks, 27 October 2026
+
+Odin 2 Portal, the same Turnip driver, High Performance (`performance_mode=2`), the same outdoor save and camera,
+60 fps target, SMAA and temporal stabilization off. Both internal rendering and screen output were fixed at
+**1920×1080** for this comparison; dynamic resolution was bypassed. GPU heap access remained Automatic (CPU-copy
+path on this Adreno 740). This is a different workload from the shrine test above.
+
+Several commands registered identical resident memory ranges for writeback from the same GPU submission.
+These requests all observe the same completed buffer contents. Coalescing requests with identical submission,
+source, destination, extent, shadow and ownership metadata avoids rescanning them. Requests from different
+submissions or allocations stay separate, as do unshadowed copies. Newer CPU writes retain their protection.
+
+The test alternated the old and new paths every 120 presented frames in the same process. Complete phases after
+warmup, without detailed per-draw profiling:
+
+| Path | Measured frames | Throughput from frame periods |
+| --- | ---: | ---: |
+| Original writeback queue | 480 | 23.74 fps |
+| Coalesced resident writebacks | 600 | 27.65 fps |
+
+This is about **16.5% higher throughput in this scene**. All four complete old/new pairs favor coalescing.
+Steady 120-frame windows scanned roughly 8,800–9,100 MiB before coalescing versus about 1,600 MiB after it.
+The optimization changes scheduling of redundant CPU work,
+not image resolution. Queue identity tests and ownership-merge tests pass, including AddressSanitizer and UBSan.
+
+This does **not** demonstrate sustained 60 fps or fix the known terrain/black-line artifacts. GPU work remains
+around 30 ms per frame in this scene. Fragment-only shader optimization and LRZ tests have not established a
+separate reliable gain; they are not enabled by this optimization. Direct GPU heap access is still being evaluated.
