@@ -40,6 +40,7 @@ typedef _Bool bool;
 #define NULL ((void *)0)
 #define MAX_BIND 96
 #define GMAP_BUFFER_INDEX 20
+#define CBPATCH_BUFFER_INDEX 23
 typedef enum {
     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
     VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -119,12 +120,15 @@ int test(void) {
         {0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
         {0, 17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC},
         {0, 32, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+        {0, CBPATCH_BUFFER_INDEX, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC},
+        {0, CBPATCH_BUFFER_INDEX, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER},
     };
     DescriptorPlan plan;
     descriptor_plan(binds, sizeof binds / sizeof binds[0], 0, &plan);
-    CHECK(plan.nregular == 4 && plan.ndeferred == 3);
+    CHECK(plan.nregular == 4 && plan.ndeferred == 5);
     CHECK(plan.regular[0] == 0 && plan.regular[1] == 3 && plan.regular[2] == 4 && plan.regular[3] == 7);
     CHECK(plan.deferred[0] == 2 && plan.deferred[1] == 5 && plan.deferred[2] == 6);
+    CHECK(plan.deferred[3] == 10 && plan.deferred[4] == 11);
     descriptor_plan(binds, sizeof binds / sizeof binds[0], 1, &plan);
     CHECK(plan.nregular == 1 && plan.regular[0] == 1 && plan.ndeferred == 0);
     descriptor_plan(binds, 0, 0, &plan);
