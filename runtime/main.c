@@ -177,11 +177,13 @@ static void boot(const char *root) {
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
     char why[512];
-    if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
+    native_begin_boot();  // (Native game code: the game's own code runs, no botwgame.so - runtime/native.c)
+    if (!native_on() && !gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
     { extern void settings_load(void); settings_load(); }
     kernel_init();
-    dispatch_init();
+    if (!native_on()) dispatch_init();
+    native_prepare();
 
     uint32_t stack_size = 0x100000;
     int prio = 44;

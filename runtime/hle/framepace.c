@@ -99,12 +99,13 @@ int framepace_target(void) {
     if (forced == -2) forced = env_int("LARECOMP_FPS", -1);
     if (movie == -2) movie = env_int("LARECOMP_MOVIE_FPS", 30);
     if (menu == -2) menu = env_int("LARECOMP_MENU_FPS", 30);
-    if (event == -2) event = env_int("LARECOMP_EVENT_FPS", 30);
+    if (event == -2) event = env_int("LARECOMP_EVENT_FPS", -1);  // (-1: the setting - Cutscenes at 60 fps, else 30)
     // (Video > Frame rate: 30, 60; Auto is 60 here - the clock follows whatever the frames really take)
     int fps = forced >= 0 ? forced : g_settings.fps_mode == 1 ? 30 : 60;
     if (movie > 0 && __atomic_load_n(&g_movie_playing, __ATOMIC_RELAXED) > 0 && (fps == 0 || fps > movie)) fps = movie;
     if (menu > 0 && (fps == 0 || fps > menu) && in_menu()) fps = menu;
-    if (event > 0 && (fps == 0 || fps > event) && in_event()) fps = event;
+    int ev = event >= 0 ? event : g_settings.event_fps_unlock ? 0 : 30;
+    if (ev > 0 && (fps == 0 || fps > ev) && in_event()) fps = ev;
     return fps;
 }
 

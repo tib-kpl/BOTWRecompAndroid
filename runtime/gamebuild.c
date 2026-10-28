@@ -478,9 +478,13 @@ static PlatProc start_compile(const Tools *t, const Unit *u) {
 }
 
 // ------------------------------------------------------------------ going on after the app closed
-// What the objects in .gamebuild were compiled from: this builder (GAMELIB_ID) and the game code's build ids
+// What the objects in .gamebuild were compiled from: this builder (GAMELIB_ID), its compile flags and the game code's
+// build ids. The flags too: 0.2.1 took them from zig's Debug mode (UBSan at -O0) without a new GAMELIB_ID, so a build
+// 0.2.0 had begun went on with its objects and the library wanted __ubsan_* symbols (issues #56, #60)
 static void build_stamp(const char *game_dir, char *out, size_t n) {
-    int k = snprintf(out, n, "%s", GAMELIB_ID);
+    uint32_t h = 2166136261u;  // (FNV-1a)
+    for (const char *s = GAMELIB_CFLAGS; *s; s++) h = (h ^ (uint8_t)*s) * 16777619u;
+    int k = snprintf(out, n, "%s %08x", GAMELIB_ID, h);
     static const char *const mods[2] = {"main", "sdk"};
     for (int m = 0; m < 2 && k > 0 && (size_t)k < n; m++) {
         char p[1100];

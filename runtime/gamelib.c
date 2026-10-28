@@ -125,7 +125,18 @@ static const GameLibTables *open_lib(const char *path) {
     GameLibEntry entry = (GameLibEntry)(void *)GetProcAddress(h, GAMELIB_ENTRY);
 #else
     void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!h) { snprintf(g_error, sizeof g_error, "%s", dlerror()); return NULL; }
+    if (!h) {
+        const char *e = dlerror();
+        snprintf(g_error, sizeof g_error, "%s", e ? e : path);
+        if (e && strstr(e, "cannot locate symbol")) {  // (built wrong - #56, #60: objects with UBSan from an earlier
+            char id[1200];                              //  build: its id goes, and the start screen builds it again)
+            snprintf(id, sizeof id, "%s.id", path);
+            remove(id);
+            snprintf(g_error, sizeof g_error, "%.180s\n\nThe game code will be built again: open the app and set up the "
+                     "game files.", e);
+        }
+        return NULL;
+    }
     GameLibEntry entry = (GameLibEntry)dlsym(h, GAMELIB_ENTRY);
 #endif
     if (!entry) { snprintf(g_error, sizeof g_error, "%s: not game code", path); return NULL; }

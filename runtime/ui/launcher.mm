@@ -203,10 +203,12 @@ static std::string check_copied_files(const std::string &root) {
     return "";
 }
 
+extern "C" bool native_wanted(void);  // (Native game code: nothing to build - runtime/native.c)
+
 // "" = ready to play, else what is wrong
 static std::string check_game_files(const std::string &root) {
     std::string why = check_copied_files(root);
-    if (why.empty() && !gamelib_present(root.c_str())) return "The game code needs building";
+    if (why.empty() && !native_wanted() && !gamelib_present(root.c_str())) return "The game code needs building";
     return why;
 }
 
@@ -352,6 +354,7 @@ static float extract_progress(void) {
 
 // Builds the game code from the copied files in dir (a few minutes); false = failed (the job line says so)
 static bool build_game_code(const std::string &dir) {
+    if (native_wanted()) return true;  // (the game's own code runs as it is)
     int cores = SDL_GetNumLogicalCPUCores(), ram_gb = SDL_GetSystemRAM() / 1024;
     int memory_jobs = ram_gb - 2;
 #ifdef __ANDROID__
@@ -2120,10 +2123,12 @@ extern "C" void launcher_run(const char *root) {
                 // the step that's running / its result, under the rows and in the Set up row's explanation
                 const std::string &job_line = job;
                 bool copied = check_copied_files(g_root).empty();  // (here, the game code to build again: an app update)
-                std::string ex_d = tr(copied ? "The game files are already here: this builds the game code from them again, as "
-                                               "BOTWRecompAndroid needs after an update. It may take a while."
-                                             : "Copies the game files BOTWRecompAndroid needs and recompiles the game from them. "
-                                               "This only needs to be done once and may take a while. Your own files aren't changed.");
+                std::string ex_d = tr(native_wanted() ? "Copies the game files BOTWRecompAndroid needs (native game code: "
+                                                        "nothing to build). Your own files aren't changed."
+                                      : copied ? "The game files are already here: this builds the game code from them again, as "
+                                                 "BOTWRecompAndroid needs after an update. It may take a while."
+                                               : "Copies the game files BOTWRecompAndroid needs and recompiles the game from them. "
+                                                 "This only needs to be done once and may take a while. Your own files aren't changed.");
                 if (!job.empty()) ex_d += "\n\n" + std::string(tr(job.c_str())) + (job_hint.empty() ? "" : ".\n" + std::string(tr(job_hint.c_str())));
                 if (failed && !job_detail.empty()) ex_d += "\n(" + job_detail + ")";
 
@@ -2142,6 +2147,25 @@ extern "C" void launcher_run(const char *root) {
                 version_rows(busy, focus_first > 0 && focus_first--);
                 // the folder: this version's files when they aren't set up, else another version's (or this one's again)
                 opt_section("Your copy of the game");
+#ifdef __ANDROID__
+                {   // how the game's code runs - chosen before the folder (picking it sets the game up at once): built
+                    // from the files (recompiled) or the game's own on the CPU (native: no build; runtime/native.c)
+                    static const char *const modes[] = {"Recompiled", "Native (experimental)"};
+                    int m = g_settings.native_code ? 1 : 0;
+                    if (busy) opt_disable_next();
+                    opt_choice("Game code", &m, modes, 2, 0,
+                               "Recompiled: the setup rebuilds the game's code for this phone from your files (once, it may "
+                               "take a while). Set up this way, the game can still run natively: Video > Native game code.\n\n"
+                               "Native: the game's own code runs directly on the phone's CPU, so the setup only copies the "
+                               "files - no build. An experiment. Switching to Recompiled later means building the game code "
+                               "then.");
+                    if ((m == 1) != g_settings.native_code) {
+                        g_settings.native_code = m == 1;
+                        settings_save();
+                        status = check_game_files(g_root);
+                    }
+                }
+#endif
                 if (busy) opt_disable_next();
 #ifdef __ANDROID__
                 if (opt_action("Game files folder", src_v.c_str(), src_d.c_str(), true)) android_call("pickGameFolder");

@@ -183,6 +183,7 @@ static uint64_t resolve(Module *m, uint32_t symidx) {
         return m->base + s->value;
     }
     HostFn impl = hle_lookup_impl(name);
+    if (impl && native_on() && !strcmp(name, "longjmp")) impl = NULL;  // (the guest's own works on the CPU: hle/setjmp.c)
     if (impl) return hle_register(name, impl);  // host implementation wins over the guest SDK's
     uint64_t a = loader_find_symbol(name);
     if (a) return a;

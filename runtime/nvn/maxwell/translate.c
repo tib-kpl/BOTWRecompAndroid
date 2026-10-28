@@ -35,6 +35,7 @@ bool maxwell_no_switch;
 bool maxwell_no_local_struct;
 bool maxwell_native_half;
 bool maxwell_fast_minmax;
+bool maxwell_cb_window;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -2150,6 +2151,30 @@ static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
             for (int i = 1; i < n; i++) num = num && id[i] >= '0' && id[i] <= '9';
             if (num && atoi(id + 1) > 255) { fail(c, "register %s out of range", id); return; }
         }
+        if (c->info->cbwin_mask && id[0] == 'c' && id[1] == 'b') {  // (maxwell_cb_window) cbW[v] -> cbwW(vu), cbr(cbW, -> cbrwW(
+            const char *q = p;
+            bool r = !strcmp(id, "cbr") && *q == '(' && !strncmp(q + 1, "cb", 2);
+            if (r) q += 3;
+            else q = id + 2;
+            int k = 0, nd = 0;
+            for (; *q >= '0' && *q <= '9' && nd < 3; q++, nd++) k = k * 10 + (*q - '0');
+            if (nd && k < 32 && (c->info->cbwin_mask >> k & 1u)) {
+                if (r && *q == ',') {
+                    sp(o, "cbrw%d(", k);
+                    for (p = q + 1; *p == ' '; p++) {}
+                    continue;
+                }
+                if (!r && !*q && *p == '[') {
+                    const char *v = p + 1, *ve = v;
+                    while (*ve >= '0' && *ve <= '9') ve++;
+                    if (ve > v && *ve == ']') {
+                        sp(o, "cbw%d(%.*su)", k, (int)(ve - v), v);
+                        p = ve + 1;
+                        continue;
+                    }
+                }
+            }
+        }
         const char *rep = id;
         if (maxwell_no_int64 && !strcmp(id, "ulong")) { fail(c, "unlowered 64-bit shader operation"); return; }
         for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
@@ -2680,6 +2705,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     const ShaderKey *key = c->key;
     int stage = c->stage;
     Str body = {0};
+    info->cbwin_mask = 0;
+    if (maxwell_cb_window && (stage == STAGE_VERTEX || stage == STAGE_FRAGMENT))
+        info->cbwin_mask = info->cbuf_dynamic & info->cbuf_mask & 0x1FFF8u;  // (the game's: 3..16)
     glsl_rewrite(c, &body, c->body.buf ? c->body.buf : "");
     if (info->uses_gmem && (info->cbuf_mask & (1u << GMEM_BUFFER_INDEX))) fail(c, "cbuf %d clashes with gmem", GMEM_BUFFER_INDEX);
     if (info->cbuf_mask >> 18) fail(c, "cbuf index out of range");
@@ -2716,6 +2744,14 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if ((info->cbuf_dynamic & (1u << i)) && n < 4096) n = 4096;
         if (!n) n = 1;
         sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
+        if (info->cbwin_mask >> i & 1u) {  // (maxwell_cb_window: shader.h)
+            if (!(info->cbwin_mask & ((1u << i) - 1u)))
+                sp(&s, "layout(std140, set = %d, binding = %d) uniform CBP { uvec4 cbp_m; uvec4 cbp[64]; };\n", set,
+                   CBPATCH_BUFFER_INDEX);
+            sp(&s, "uvec4 cbw%d(uint i) { uint j = i - cbp_m.y; return cbp_m.x == %du && j < cbp_m.z ? cbp[min(j, 63u)] : cb%d[i]; }\n",
+               i, i + 1, i);
+            sp(&s, "#define cbrw%d(off) cbw%d(min((off) >> 4, %uu))[((off) >> 2) & 3u]\n", i, i, n - 1);
+        }
     }
     if (info->uses_gmem)
         sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,

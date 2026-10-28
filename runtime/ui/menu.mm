@@ -562,6 +562,11 @@ static void tab_display(void) {
                          : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
                            "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
                            "dropping to 20.");
+        if (sixty)
+            opt_toggle("Cutscenes at 60 fps (experimental)", &g_settings.event_fps_unlock, false,
+                       "In-game cutscenes and talks run at the chosen frame rate instead of 30. Some of them count frames "
+                       "and may run shorter or out of step with their sound (at 60 fps the new game's opening gave Link "
+                       "control 2 s early). Videos and menus stay at 30. Applies at once.");
     }
 #endif
 
@@ -664,6 +669,9 @@ static void tab_display(void) {
                "The game starts its next frame while the GPU still finishes the last one: a few more fps. What the game reads "
                "back from the GPU then comes a frame late, and Link's legs can sink into the ground while he stands "
                "still. Turn it off if that bothers you. Applies at once.");
+    opt_toggle("Native game code (experimental)", &g_settings.native_code, false,
+               "Runs the game's own code directly on the phone's CPU instead of the game code built at setup: no build "
+               "needed. An experiment - report what goes wrong. Applies the next time the game starts.");
     opt_toggle("32-bit shader math", &g_settings.shader_int32, false,
                "Translates the game's shaders with 32-bit address math, the path used for drivers without 64-bit "
                "integers (Adreno 6xx / 7xx and Mali stock drivers). Try it if lighting, grass or text are missing or wrong "

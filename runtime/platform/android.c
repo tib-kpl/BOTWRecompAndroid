@@ -455,6 +455,15 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     if (sig == SIGSEGV && si->si_code == SEGV_ACCERR && wt_fault(fa)) return;  // (write tracking)
     char what[32];
     snprintf(what, sizeof what, "signal %d", sig);
+    if (pc >= GUEST_LO && pc < GUEST_HI) {  // (the game's own code on the CPU: its registers are the signal's, not the Cpu's)
+        extern Cpu *kernel_current_cpu(void);  // (kernel.c)
+        Cpu *c = kernel_current_cpu();
+        if (c) {
+            memcpy(c->x, uc->uc_mcontext.regs, 31 * sizeof c->x[0]);
+            c->sp = uc->uc_mcontext.sp;
+            c->pc = pc;
+        }
+    }
     rt_fault_report(what, fa, pc, lr);
 }
 

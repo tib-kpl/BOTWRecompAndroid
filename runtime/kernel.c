@@ -77,7 +77,8 @@ void kernel_signal(KObject *o) {
 // ------------------------------------------------------------------ time
 
 uint64_t rt_ticks(void) {
-    // 19.2 MHz system tick
+    // 19.2 MHz system tick (running the game's own code: the counter its rewritten reads see, native.c)
+    if (native_on()) return native_ticks();
     uint64_t ns = plat_now_ns();
     static double scale = -1;
     if (scale < 0) scale = getenv("LARECOMP_TICK_SCALE") ? atof(getenv("LARECOMP_TICK_SCALE")) : 1.0;
@@ -378,6 +379,7 @@ static void *thread_main(void *arg) {
         guest_call(&t->cpu, t->entry);
     }
     core0_release(t);
+    native_thread_end();
 #else
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
 #endif
@@ -860,10 +862,29 @@ static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc) {
         svc_impl(c, imm, pc);
         uint64_t dt = plat_now_ns() - t0;
         static _Atomic int nslow;
-        if (((t_cur && t_cur->id == 80 && (imm == 0x18 || imm == 0x34)) || (dt > 10000000 && imm != 0x0b && imm != 0x1c)) && nslow < 20000) {
+        static long watch_tid = -2, watch_tid2 = -1;  // LARECOMP_PROF_SVC_TID=<id>[+<id>]: those threads' every SVC
+        if (watch_tid == -2) {
+            const char *e = ENV("LARECOMP_PROF_SVC_TID");
+            watch_tid = e ? strtol(e, (char **)&e, 10) : -1;
+            if (e && *e == '+') watch_tid2 = atol(e + 1);
+        }
+        static uint64_t from = ~0ull;  // LARECOMP_PROF_SVC_FROM=<s>: the watched threads from that many seconds in
+        if (from == ~0ull) from = t0 + (ENV("LARECOMP_PROF_SVC_FROM") ? (uint64_t)atol(ENV("LARECOMP_PROF_SVC_FROM")) * 1000000000ull : 0);
+        bool watched = t_cur && ((long)t_cur->id == watch_tid || (long)t_cur->id == watch_tid2) && t0 >= from;
+        static uint64_t watch_key = ~0ull;  // LARECOMP_PROF_SVC_KEY=<hex>: who signals that condition variable key
+        if (watch_key == ~0ull) watch_key = ENV("LARECOMP_PROF_SVC_KEY") ? strtoull(ENV("LARECOMP_PROF_SVC_KEY"), NULL, 16) : 0;
+        bool sig = watch_key && imm == 0x1d && a0 == watch_key;
+        if ((watched || sig || (watch_tid < 0 && !watch_key && dt > 10000000 && imm != 0x0b && imm != 0x1c)) && nslow < 20000) {
             nslow++;
-            LOG("[slow] t%llu svc%02x %llums a=%llx,%llx,%llx,%llx h0=%x lr=%llx\n", (unsigned long long)(t_cur ? t_cur->id : 0), imm,
-                (unsigned long long)(dt / 1000000), (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3, h0, (unsigned long long)lr);
+            uint64_t st[4] = {0}, fp = c->x[29];  // (callers: the frame pointer chain, 4 deep)
+            for (int k = 0; k < 4 && fp >= GUEST_LO && fp < GUEST_HI && !(fp & 7); k++) {
+                st[k] = *(const uint64_t *)(uintptr_t)(fp + 8);
+                fp = *(const uint64_t *)(uintptr_t)fp;
+            }
+            LOG("[slow] t%llu/%x svc%02x %.3fms at %.3f a=%llx,%llx,%llx,%llx h0=%x lr=%llx up=%llx,%llx,%llx,%llx\n",
+                (unsigned long long)(t_cur ? t_cur->id : 0), t_cur ? t_cur->handle : 0, imm, dt / 1e6, t0 / 1e6, (unsigned long long)a0, (unsigned long long)a1,
+                (unsigned long long)a2, (unsigned long long)a3, h0, (unsigned long long)lr, (unsigned long long)st[0],
+                (unsigned long long)st[1], (unsigned long long)st[2], (unsigned long long)st[3]);
         }
         unsigned tid = t_cur ? (unsigned)(t_cur->id & 31) : 31;
         svc_wait_ns[tid][imm] += dt;

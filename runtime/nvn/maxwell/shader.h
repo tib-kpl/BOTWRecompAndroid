@@ -64,6 +64,7 @@ typedef struct {
     uint32_t cbuf_mask;     // hardware constant buffers read
     uint32_t cbuf_size[18];
     uint32_t cbuf_dynamic;  // cbufs indexed with a register: bind the whole buffer
+    uint32_t cbwin_mask;    // (maxwell_cb_window) cbufs whose reads may take their rows from the patch buffer
     int ntex;
     ShaderTexture tex[64];
     uint32_t attr_mask;     // vertex: input attributes; fragment: input varyings
@@ -121,6 +122,12 @@ extern bool maxwell_no_local_struct;
 // (GLSL) fragment and compute shaders convert halves with unpackHalf2x16 instead of the bitwise h2f (vertex shaders
 // keep it: NVIDIA ran math after unpacked halves in fp16, and depth passes disagreed). Set by the Android backend.
 extern bool maxwell_native_half;
+// (GLSL vertex / fragment) the game cbufs indexed with a register (3..16) read up to 64 of their 16-byte rows from a
+// patch buffer when the draw says so - `uniform CBP { uvec4 cbp_m; uvec4 cbp[64]; };` at CBPATCH_BUFFER_INDEX: cbp_m.x
+// the cbuf (index + 1, 0: none), .y its first row there, .z how many. The runtime binds such a buffer in place and
+// copies only the rows the game rewrites between draws (vulkan/exec.c cbwin_bind).
+extern bool maxwell_cb_window;
+#define CBPATCH_BUFFER_INDEX 23
 // (GLSL) fmin / fmax / saturate as GLSL min / max / clamp: the GPU returns the non-NaN operand and saturates NaN to 0
 // (Adreno, as D3D requires) - what the NaN-testing helpers do. Set by the Android backend.
 extern bool maxwell_fast_minmax;

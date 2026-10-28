@@ -836,9 +836,70 @@ Pedidos ainda não começados, o mais recente no fim.
   - Falta: widescreen, uma sessão longa, e as chamadas novas do SDK (o MacNativeGames cita `PopOpenUsers` e
     `pl::IsRunningOnOunce`; no log, `ICommonStateGetter` 54/66, `IApplicationFunctions` 67 e `ISelfController` 16
     sem resposta, e o jogo seguiu).
-- **Os 16 bytes por draw como push constants:** o jogo reescreve 16 bytes de um constant buffer de 64 KB antes de cada
-  draw, e cada draw copia os 64 KB (~16 MB por quadro, ~10% da thread de render). O tradutor de shaders leria esse
-  trecho de outro lugar. Médio a grande.
+- **Os 16 bytes por draw (feito, 2026-10-27):** o jogo reescreve 16 bytes de um constant buffer de 64 KB antes de cada
+  draw, e cada draw copiava os 64 KB (~14 MB por quadro). Na 1.9.0 as escritas caem em linhas diferentes dos primeiros
+  656 bytes (não só +0x70), então em vez de push constants: o buffer é lido no lugar no heap, e o draw copia só as
+  linhas que as escritas alcançam (até 64) para um buffer de remendo por estágio (binding 23, `CBP`), de onde os
+  shaders com esse buffer indexado por registrador as leem (`maxwell_cb_window`, `cbwin_bind`). A/B na mesma rodada
+  (`LARECOMP_AB=60:cbwin`, 1.9.0 no Grande Platô, celular a ~88 °C): render 13,81 -> 13,49 ms, GPU 14,82 -> 14,57 ms,
+  período 19,28 -> 18,94 ms; imagem igual. Ganho pequeno: o memcpy era mais barato do que a estimativa. O período
+  (~19 ms) passa da soma esperada: a thread de render (~13,5 ms) e a GPU (~14,6 ms) ainda andam em parte em série.
+  **Desligado por padrão desde o mesmo dia** (`LARECOMP_CB_WINDOW=1` liga): em jogo a água ficou branca, o terreno
+  em "cortinas" e objetos ao longe com pontas num golpe - o buffer lido no lugar enquanto a CPU já escreve o quadro
+  seguinte nele (o sync lag deixa a CPU um quadro à frente). `LARECOMP_LOG_CBWIN=1` mostra o que fica copiado.
+- **Onde vai o quadro de 60 fps (1.9.0, Grande Platô, 2026-10-27, celular a 75-93 °C):**
+  - Linha do tempo (`LARECOMP_FRAME_TIMELINE=4000`), ~19 ms por quadro, em série: o jogo grava a lista do quadro
+    (~3,9 ms, uma lista só), a thread de render traduz (~11 ms, 6-8 submissões pelo split de 3 ms) e apresenta (~0,8
+    ms). O jogo só volta ~3 ms depois do fim do present: antes disso a thread que apresenta fica ~15 ms bloqueada
+    esperando as outras threads do jogo (a lógica), não a nossa. Nenhuma thread satura (`top -H`: a mais ocupada 74%),
+    e o núcleo prime fica em ~2,2 de 4,1 GHz.
+  - Testado sem ganho (A/B na mesma rodada): a sessão ADPF com as 8 threads do jogo mais ocupadas e o período real do
+    quadro como trabalho (17,94 vs 17,83 ms; com as ~40 threads o Android recusa a sessão); o período sozinho (18,05
+    vs 18,06). O HyperOS não sobe os clocks por essas dicas. Sem o revezamento do núcleo 0 (`LARECOMP_NO_CORE0=1`,
+    rodadas separadas): 18,21 vs 18,27 ms - também não é o limite.
+  - GPU ~14,2 ms de 16,7, render ~11,8 ms. O que sobra: menos trabalho de GPU e de lógica a clocks baixos; o calor
+    (90+ °C em poucos minutos, carregando) corta os clocks pela metade.
+  - Passes da GPU (`LARECOMP_GPUPROF_AT=3000`, com `LARECOMP_GPUPROF_DRAWS=1`): os três passes do G-buffer (6 alvos,
+    1600x900, ~2.400 draws) ~6,6 ms; a saída com FSR 1 (EASU 0,70 + RCAS 0,26 ms) e FXAA para 2560x1440 (0,80 ms);
+    nenhum shader domina (o maior 10%, ~4 us por draw no resto): a GPU paga por draw. A primeira linha do quadro (~3
+    ms) é ociosidade esperando a próxima submissão.
+  - **A GPU não é o limite agora:** SGSR no lugar do FSR 1 (`LARECOMP_AB=120:sgsr`) tirou 0,5 ms de GPU (14,15 ->
+    13,65) e o período ficou igual (17,91 vs 18,03 ms). O quadro é a cadeia de CPU do jogo (a lógica nas threads
+    dele, depois a gravação da lista), a esses clocks.
+  - As threads do jogo que mais rodaram (a cada ~2 s, por `/proc/self/task/<tid>/schedstat`) presas nos 2 núcleos
+    prime (A/B na mesma rodada): 2 threads 17,62 vs 17,62 ms, 4 threads 18,24 vs 18,29 ms. Sem efeito, desfeito.
+  - **O que a thread que apresenta espera** (`LARECOMP_PROF_SVC=1`, `LARECOMP_PROF_SVC_TID=80+82`,
+    `LARECOMP_PROF_SVC_FROM=75`; `[pace] presenting thread` diz qual é): a thread de desenho do jogo (t82, handle
+    0x118) espera ~16 ms por quadro numa variável de condição (chave 3446c5148), sinalizada uma vez por quadro pela
+    thread principal (t80, handle 0x101, chamada do laço de quadros da 1.9.0 em 0x11267c4). Nesse tempo a t80 quase
+    não espera: só sincronizações curtas com os jobs (`WaitForAddress`, 0,3-1 ms) e yields (`SleepThread(-1)`, 1-2
+    ms, que entregam o núcleo 0). **O caminho crítico é a CPU da thread principal do jogo, ~12-15 ms por quadro de
+    código recompilado numa thread só.** Para 60 fps estáveis: deixar esse código mais rápido (o que ele roda: falta
+    um perfil por amostragem da t80, o `fnprof` só conta entradas) ou clocks mais altos nessa thread.
+  - **Referência: [totk-mobile](https://github.com/OJZen/totk-mobile)** (OJZen, Apache-2.0; o núcleo vem do
+    d2r-mobile, MIT) e o [MacNativeGames](https://github.com/ly05010419/MacNativeGames) (MIT) não recompilam: rodam o
+    código ARM64 do jogo direto na CPU, com um reescritor estático do módulo (`core/tools/patch_nso.py`: x18 e
+    `tpidr_el0` em slots da thread, `mrs tpidrro_el0` no TLR do Horizon, `svc` e `mrs cntpct_el0` em portas para o
+    host). Para o nosso caminho crítico (a thread principal do jogo) seria o maior ganho possível, e acabaria com a
+    compilação do código do jogo no celular - mas é outra arquitetura. Existe um port para Android do MacNativeGames
+    (deivid22srk/MacNativeGames-Android) a estudar antes. Nada foi copiado deles até agora.
+- **Pontas na nuvem da Montanha da Morte e na névoa do horizonte num golpe** (2026-10-27, em aberto; cosmético,
+  um quadro). Visto pelo usuário na 0.2.0, 0.2.1 e no branch native-p0, recompilado e nativo, a 30 e 60 fps.
+  - Descartados (cada um num teste em jogo): Sync lag, `LARECOMP_SYNC_ALL=1` (a GPU esperada por inteiro: não é
+    corrida CPU/GPU), `LARECOMP_FRAMEPACE=0` (o relógio do próprio jogo), `LARECOMP_NO_VS_SNAP=1`, o caminho dos 64 KB,
+    o modo FMZ do FMUL/FFMA (implementado e testado, sem efeito, desfeito).
+  - O draw: passe de meia resolução 800x450 (o 209 de 269 no quadro de depuração 9490), 354 vértices, 8 atributos,
+    fs `8d989710b28bd28a`, vs em 0x36e610000 (`LARECOMP_DUMP_FS`): partículas - idade = `cb10[2].x` (tempo do
+    efeito) - nascimento (`a5.w`), vida `a4.w`, arrasto `cb9[12].x`, eixos de câmera de `cb10[8..10]`, duas texturas
+    lidas no VS.
+  - `LARECOMP_LOG_FS_CB=<fs>:<estágio>:<cbuf>:<linha>:<linhas>` (novo) registra o cbuf por quadro: o `cb10` está são em
+    todos os golpes - o hit-stop é o tempo do efeito a 10% (passo 0,05) voltando em rampa 0,1, 0,2, 0,4; no quadro em
+    que começa, o tempo ainda andou 0,5 e `cb10[2].w` já diz 0,05.
+  - Também descartados: leitura além do fluxo de vértices (o draw usa só o fluxo 0, 120 vértices de 20 bytes, e os
+    índices nunca passaram do tamanho ligado, medido em vários golpes) e textura atualizada sem ser notada
+    (`LARECOMP_TEX_FULLHASH=1`: as pontas continuam).
+  - Parado aqui (cosmético, um quadro). Próximo, se retomado: o vs calculado na CPU com os vértices e cbufs do quadro
+    de transição do hit-stop, ou a tradução do Ryujinx do mesmo shader para comparar.
 - **Aquecimento de shaders com listas conhecidas** (como o MacNativeGames): menos travadas no primeiro jogo. Médio.
 - **Pequenos, do SavageWindRecomp e do MacNativeGames:**
   - feitos em b512a4b (falta testar no celular): o desvio do giroscópio em repouso aprendido e descontado, e a zona

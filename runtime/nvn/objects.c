@@ -1411,6 +1411,11 @@ NVN(nvnQueueAcquireTexture) {
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
+    {   // (which guest thread presents: LARECOMP_PROF_SVC_TID, kernel.c)
+        static uint64_t last_id = ~0ull;
+        KThread *kt = kernel_current_thread();
+        if (kt && kt->id != last_id) LOG("[pace] presenting thread t%llu\n", (unsigned long long)(last_id = kt->id));
+    }
     {   // Frame limiter: a present waits until N vsyncs have gone by since the previous one, as NVN does on the Switch -
         // N is the larger of the window's interval (BOTW asks for 2: its world steps 1/30 s a frame) and the Video
         // tab's cap (Frame rate 30: 2, 60: 1; Auto: 2 for now). Without it the menus ran at ~200 fps and the world
