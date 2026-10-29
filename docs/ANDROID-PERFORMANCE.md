@@ -149,3 +149,30 @@ At fixed 1080p, another same-process test compared the existing 3 ms long-pass s
 Four complete 120-frame phases per mode measured 26.10 fps with splitting and 23.39 fps without it; all four
 neighbouring pairs favour splitting. The existing default is retained. This confirms the scheduling benefit at
 this resolution; it is not a new optimization or an additive gain over the other measurements above.
+
+## Adreno 740 automatic compatibility profile, 28 October 2026
+
+Odin 2 Portal, High Performance, corrected Turnip Mesa 27.0.0-devel (`ab1502fd16`), BOTW 1.9.0,
+fixed 1920×1080 internal rendering and output. Sync lag and the player's temporal stabilization were on;
+antialiasing was off. The separate test-save directory and isolated configuration files left the player's
+settings and main save untouched. After shader warmup, each run recorded a 45-second stationary interval.
+
+| Configuration | Recorded frames | Throughput from all recorded frame periods |
+| --- | ---: | ---: |
+| Guest-memory mapping, target reads and LRZ all off | 1,384 | 30.21 fps |
+| Guest-memory mapping only | 1,305 | 28.23 fps |
+| Target reads in place only | 1,543 | 33.65 fps |
+
+These are separate-process observations, not an alternating A/B proof. The target-read run was about 11.4% faster
+than this reference; it does not establish the same gain elsewhere. Landscape, nearby ground/character and
+inventory captures were inspected without an observed new rendering defect in these checks. No sustained
+60 fps result is claimed. Earlier runs with camera/application changes were discarded.
+
+Automatic now enables **target reads in place only** for Adreno 740 under Turnip. Guest-memory mapping stays off:
+it worked in the tested views but was slower. The LRZ run was interrupted by movement and leaving the app, and
+the console was subsequently disconnected; it is not a valid comparison or a confirmed driver failure. LRZ
+therefore stays off on this GPU. Enabling all three together has not been validated.
+
+The profile is independent per option. Existing Adreno 8xx defaults and explicit On/Off overrides remain unchanged;
+no other Adreno 7xx model is added. Compatibility controls show each option's own automatic choice. Other drivers,
+game versions and scenes have not been validated by this test; explicit Off still selects target copies if needed.

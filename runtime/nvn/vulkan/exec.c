@@ -25,6 +25,7 @@
 #include "feedback_identity.h"
 #include "writeback_merge.h"
 #include "writeback_queue.h"
+#include "turnip_policy.h"
 
 static uint64_t post_reset_gen;
 void renderer_get_scene_scale(float *sx, float *sy);
@@ -3367,12 +3368,11 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
                 // Only the writes before the game's last barrier (NVN's rule) left the ground dark: its draws don't
                 // fence every write they then read. Sampling a target the pass writes is a feedback loop Vulkan leaves
                 // undefined (without VK_EXT_attachment_feedback_loop_layout): on Turnip only, where it was checked
-                // frame by frame on the Adreno 830 - Automatic keeps it to the Adreno 8xx (settings.h inplace_reads,
-                // the start screen's Driver compatibility; LARECOMP_FEEDBACK_INPLACE=1 on any driver).
+                // frame by frame on the Adreno 830, and checked on the Odin's Adreno 740. Automatic selects a GPU
+                // profile (settings.h inplace_reads, turnip_policy.h); LARECOMP_FEEDBACK_INPLACE=1 on any driver.
                 if (g_inplace_copy < 0) {
                     extern bool vk_driver_is_turnip(void);
-                    extern bool vk_turnip_path_on(int setting);
-                    bool inplace = getenv("LARECOMP_FEEDBACK_INPLACE") || (vk_driver_is_turnip() && vk_turnip_path_on(g_settings.inplace_reads));
+                    bool inplace = getenv("LARECOMP_FEEDBACK_INPLACE") || (vk_driver_is_turnip() && vk_turnip_path_setting(g_vk.props.deviceName, g_settings.inplace_reads, VK_TURNIP_TARGET_READS));
                     g_inplace_copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL || !inplace;
                     LOG("[vk] targets a draw writes, sampled by it: %s (%s)\n", g_inplace_copy ? "copies" : "in place",
                         g_settings.inplace_reads < 0 ? "automatic" : "settings");
@@ -3989,11 +3989,10 @@ bool vk_heap_place(uint64_t size) {
     // on an Adreno 730 (issue #31). A page not tracked yet counts as written, so turning it on late is safe.
 #define NOT_PLACED() (gcopy_mode ? plat_write_tracking_enable(HEAP_BASE, HEAP_BASE + HEAP_MAX) : (void)0, false)
     if (!g_vk.map_placed || getenv("LARECOMP_VK_NO_PLACED")) return NOT_PLACED();
-    extern bool vk_turnip_path_on(int setting);
-    if (!vk_turnip_path_on(g_settings.gpu_heap)) {
+    if (!vk_turnip_path_setting(g_vk.props.deviceName, g_settings.gpu_heap, VK_TURNIP_HEAP)) {
         // (the start screen's Driver compatibility: Automatic leaves it to the Adreno 8xx it was made on)
         LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
-            g_settings.gpu_heap < 0 ? "automatic: not an Adreno 8xx" : "settings");
+            g_settings.gpu_heap < 0 ? "automatic GPU profile" : "settings");
         return NOT_PLACED();
     }
     {   // The placed heap is committed at once (~3.1 GB for BOTW), where CPU copies commit only the pages the game

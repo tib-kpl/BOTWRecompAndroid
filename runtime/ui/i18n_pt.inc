@@ -633,3 +633,11 @@
  "Cutscenes a 60 fps (experimental)"},
 {"In-game cutscenes and talks run at the chosen frame rate instead of 30. Some of them count frames and may run shorter or out of step with their sound (at 60 fps the new game's opening gave Link control 2 s early). Videos and menus stay at 30. Applies at once.",
  "As cutscenes e conversas feitas em tempo real seguem a taxa de quadros escolhida em vez de 30. Algumas contam quadros e podem ficar mais curtas ou fora de sincronia com o som (a 60 fps a abertura de um jogo novo deu o controle ao Link 2 s antes). Vídeos e menus continuam a 30. Vale na hora."},
+
+{"Automatic uses a separate compatibility profile for each option and GPU. On and Off override that profile.", "O modo Automático usa um perfil de compatibilidade separado para cada opção e GPU. Ativado e Desativado substituem esse perfil."},
+
+{"On maps the game's memory directly for GPU access. Off uses CPU copies. Direct mapping can be slower on some GPUs. Applies when the game starts.", "Ativado: a GPU acessa diretamente a memória do jogo. Desativado: os dados são copiados pela CPU. O acesso direto pode ser mais lento em algumas GPUs. Aplicado ao iniciar o jogo."},
+
+{"On lets decals and effects read the target they draw into. Off uses intermediate copies for compatibility. Applies when the game starts.", "Ativado: decalques e efeitos leem diretamente o alvo em que desenham. Desativado: cópias intermediárias garantem a compatibilidade. Aplicado ao iniciar o jogo."},
+
+{"Turnip's early depth test. Off can fix missing or broken drawing on some GPUs. Applies after restarting BOTWRecompAndroid.", "Teste antecipado de profundidade do Turnip. Desativá-lo pode corrigir elementos ausentes ou incorretos em algumas GPUs. Aplicado após reiniciar o BOTWRecompAndroid."},

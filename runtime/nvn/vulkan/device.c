@@ -14,6 +14,7 @@
 #include "vk.h"
 #include "timing_trace.h"
 #include "device_compat.h"
+#include "turnip_policy.h"
 #include "../output_scale.h"
 #include "../renderer.h"
 
@@ -1680,18 +1681,6 @@ static void quick_exit_handler(void) {
 }
 
 #ifdef __ANDROID__
-// Driver compatibility's Automatic (settings.h gpu_heap / inplace_reads / turnip_lrz, from LASRecompAndroid): the
-// fastest paths on the Adreno 8xx GPUs they were made on, the compatible ones elsewhere (an Adreno 750 drew LAS's text
-// and colors wrong with them). name: Vulkan's "Adreno (TM) 830v1" or the kernel's "Adreno830v2".
-bool vk_adreno_8xx(const char *name) {
-    const char *a = name ? strstr(name, "Adreno") : NULL;
-    if (!a) return false;
-    while (*a && (*a < '0' || *a > '9')) a++;
-    int n = atoi(a);
-    return n >= 800 && n < 900;
-}
-// A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU
-bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_adreno_8xx(g_vk.props.deviceName) : setting != 0; }
 static bool g_lrz_at_start = true;
 bool vk_lrz_at_start(void) { return g_lrz_at_start; }  // (the start screen: a change needs a restart)
 const char *vk_gpu_name(void) { return g_vk.props.deviceName; }
@@ -1722,7 +1711,7 @@ void ui_window_init(void) {
                 model[strcspn(model, "\r\n")] = 0;
             }
             if (!model[0]) snprintf(model, sizeof model, "%s", g_settings.gpu_model);
-            lrz = !model[0] || vk_adreno_8xx(model);
+            lrz = !model[0] || vk_turnip_path_auto(model, VK_TURNIP_LRZ);
         }
         g_lrz_at_start = lrz != 0;
         if (!lrz && !getenv("TU_DEBUG")) setenv("TU_DEBUG", "nolrz", 1);

@@ -48,8 +48,8 @@ typedef struct {
     bool sync_lag;        // Android: the game's next frame overlaps the GPU's last (nvn/objects.c nvnSyncWait); on by default
     // Driver compatibility (the start screen's Settings > Prelaunch, ui/launcher.mm; from LASRecompAndroid), for GPUs
     // where a Turnip path draws wrong: read when the game starts (gpu_heap, inplace_reads) or when the app starts
-    // (turnip_lrz, log_file). -1 Automatic: on for the Adreno 8xx GPUs these paths were made on, off elsewhere
-    // (vulkan/device.c vk_adreno_8xx); 1 on, 0 off.
+    // (turnip_lrz, log_file). -1 Automatic: per-option GPU profiles in vulkan/turnip_policy.h;
+    // 1 on, 0 off. Adreno 740 enables target reads only; the upstream 8xx profile stays unchanged.
     int gpu_heap;         // Turnip: the game's memory mapped as GPU memory (vulkan/exec.c vk_heap_place); off: CPU copies
     int inplace_reads;    // Turnip: draws sample targets they write as they are (vulkan/exec.c resolve_feedback); off: copies
     int turnip_lrz;       // Turnip's low-resolution Z; off: TU_DEBUG=nolrz before the driver loads (vulkan/device.c)

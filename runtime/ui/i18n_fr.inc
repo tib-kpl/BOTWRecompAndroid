@@ -634,3 +634,10 @@
  "Cinématiques à 60 fps (expérimental)"},
 {"In-game cutscenes and talks run at the chosen frame rate instead of 30. Some of them count frames and may run shorter or out of step with their sound (at 60 fps the new game's opening gave Link control 2 s early). Videos and menus stay at 30. Applies at once.",
  "Les cinématiques en temps réel et les dialogues utilisent la fréquence d’images choisie au lieu de 30 fps. Certains comptent les images et peuvent être raccourcis ou désynchronisés avec le son (à 60 fps, l’introduction d’une nouvelle partie a rendu le contrôle de Link 2 s trop tôt). Les vidéos et les menus restent à 30 fps. S’applique immédiatement."},
+{"Automatic uses a separate compatibility profile for each option and GPU. On and Off override that profile.", "Le mode Automatique utilise un profil de compatibilité distinct pour chaque option et chaque GPU. Les choix Activé et Désactivé remplacent ce profil."},
+
+{"On maps the game's memory directly for GPU access. Off uses CPU copies. Direct mapping can be slower on some GPUs. Applies when the game starts.", "Activé : le GPU accède directement à la mémoire du jeu. Désactivé : les données sont copiées par le CPU. L’accès direct peut être plus lent sur certains GPU. S’applique au démarrage du jeu."},
+
+{"On lets decals and effects read the target they draw into. Off uses intermediate copies for compatibility. Applies when the game starts.", "Activé : les décalques et les effets lisent directement leur cible de rendu. Désactivé : des copies intermédiaires assurent la compatibilité. S’applique au démarrage du jeu."},
+
+{"Turnip's early depth test. Off can fix missing or broken drawing on some GPUs. Applies after restarting BOTWRecompAndroid.", "Test de profondeur anticipé de Turnip. Le désactiver peut corriger des éléments manquants ou mal affichés sur certains GPU. S’applique après le redémarrage de BOTWRecompAndroid."},
