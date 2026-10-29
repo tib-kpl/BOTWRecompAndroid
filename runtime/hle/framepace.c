@@ -37,7 +37,11 @@
 #include "../settings.h"
 #include "../framepace.h"
 
+#ifdef LARECOMP_NO_FFMPEG
+static volatile int g_movie_playing;  // (no movie.c without FFmpeg: no movies)
+#else
 extern volatile int g_movie_playing;  // runtime/hle/movie.c: video decoders running
+#endif
 
 // a canonical address of main (0x7000000000 + offset) where the guest window is: 1.8.2's, or 1.9.0's (the same code
 // elsewhere: tools/port_addrs.py found each one by the instructions that reach it)

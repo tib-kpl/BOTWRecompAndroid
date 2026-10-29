@@ -85,6 +85,11 @@ static void plat_write_tracking_enable(uint64_t lo, uint64_t hi) {
 }
 static uint8_t *ga_ptr = arena;
 static uint64_t gcopy_gen, seq = 1, top;
+static uint64_t dirty_off, dirty_len;
+static unsigned dirty_calls;
+static void ga_wrote(uint64_t off, uint64_t len) {
+    dirty_off = off; dirty_len = len; dirty_calls++;
+}
 static uint64_t vk_pending_seq(void) { return seq; }
 static uint64_t ga_ring(uint64_t n) {
     if (top + n > sizeof arena) return ~0ull;
@@ -204,10 +209,13 @@ int test(void) {
     guest[0] = 1;
     uint64_t a = ga_load_copy(0, 64);
     CHECK(a == 0 && top == 64 && arena[a] == 1);
+    CHECK(dirty_calls == 1 && dirty_off == a && dirty_len == 64);
     CHECK(ga_load_copy(0, 64) == a && top == 64);
+    CHECK(dirty_calls == 1);
     guest[63] = 7;
     uint64_t bcopy = ga_load_copy(0, 64);
     CHECK(bcopy != a && arena[bcopy + 63] == 7 && arena[a + 63] == 0);
+    CHECK(dirty_calls == 2 && dirty_off == bcopy && dirty_len == 64);
     seq++;
     uint64_t c = ga_load_copy(0, 64);
     CHECK(c != bcopy);
@@ -218,6 +226,7 @@ int test(void) {
     top = sizeof arena;
     guest[20]++;
     CHECK(ga_load_copy(0, 64) == ~0ull);
+    CHECK(dirty_calls == 4);
     CHECK(arena[d + 20] == 0);
     guest[20]--;
     CHECK(ga_load_copy(0, 64) == d);

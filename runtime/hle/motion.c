@@ -191,14 +191,29 @@ void motion_event(const SDL_Event *e) {
         to_screen(e->sensor.data, s);
         feed(SDL_GetSensorTypeForID(e->sensor.which), s, e->sensor.sensor_timestamp ? e->sensor.sensor_timestamp : SDL_GetTicksNS());
     } else if (e->type == SDL_EVENT_GAMEPAD_SENSOR_UPDATE) {
-        // A controller's sensors replace the phone's only once its gyroscope has moved: some report one that never
-        // does (a USB-C controller the phone sits in, GameSir X5 Lite: issue #78), and its zeros held the phone's off
+        // A controller's sensors replace the phone's only once its gyroscope has moved for a quarter of a second: some
+        // report one that never does (a USB-C controller the phone sits in, GameSir X5 Lite: issue #78), and its zeros
+        // held the phone's off. One reading over a threshold wasn't enough: with that controller motion worked for
+        // the first aim and then stopped for good (a stray reading, then its zeros). And back to the phone's once the
+        // controller's gyroscope has read exactly zero for 2 s: a real one is never that still.
         static bool pad_live;
-        if (!pad_live && (SDL_SensorType)e->gsensor.sensor == SDL_SENSOR_GYRO) {
+        static uint64_t moving_ns, zero_ns;
+        if ((SDL_SensorType)e->gsensor.sensor == SDL_SENSOR_GYRO) {
             const float *g = e->gsensor.data;
-            if (fabsf(g[0]) + fabsf(g[1]) + fabsf(g[2]) > 0.02f) {
-                pad_live = true;
-                LOG("[motion] the controller's gyroscope moves: its sensors in place of the phone's\n");
+            float mag = fabsf(g[0]) + fabsf(g[1]) + fabsf(g[2]);
+            uint64_t now = SDL_GetTicksNS();
+            if (!pad_live) {
+                if (mag <= 0.05f) moving_ns = 0;
+                else if (!moving_ns) moving_ns = now;
+                else if (now - moving_ns > 250000000) {
+                    pad_live = true, zero_ns = 0;
+                    LOG("[motion] the controller's gyroscope moves: its sensors in place of the phone's\n");
+                }
+            } else if (mag != 0.0f) zero_ns = 0;
+            else if (!zero_ns) zero_ns = now;
+            else if (now - zero_ns > 2000000000) {
+                pad_live = false, moving_ns = 0, pad_until_ns = 0;
+                LOG("[motion] the controller's gyroscope reads zero: the phone's sensors again\n");
             }
         }
         if (!pad_live) return;

@@ -642,6 +642,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         g->exit = -1;
         snprintf(g->log, sizeof g->log, "%s" SEP "gen_%s.log", work, g->name);
         snprintf(g->out, sizeof g->out, "%s" SEP "%s", work, g->name);
+        remove(g->log);  // (a stopped run's log: its file count isn't this run's - read before the new one replaced it)
         char nso[1100];
         snprintf(nso, sizeof nso, "%s" SEP "exefs" SEP "%s", game_dir, g->name);
         Args a = {0};
@@ -721,6 +722,14 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
                 if (next > 0) remove(units.u[next].src);
                 next++, resumed++;
                 continue;
+            }
+            // (a file the generator's log names but that isn't there yet: waited for while the generator runs - a
+            // resumed build once read the stopped run's log and compiled sdk_013.c before it was written again: zig's
+            // "file_open FileNotFound", the setup failed a second in, every time; issues #52, #92)
+            if (next > 0 && !gens_done && !file_exists(units.u[next].src)) break;
+            if (!units.u[next].bytes) {
+                struct stat st;
+                if (stat(units.u[next].src, &st) == 0) units.u[next].bytes = (unsigned long long)st.st_size;
             }
 #ifdef __ANDROID__
             if (!may_start_another(nrun, jobs)) break;
