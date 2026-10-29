@@ -24,17 +24,18 @@
 > O motor de recompilação e o suporte existente ao jogo vêm dos projetos de origem creditados abaixo. As traduções
 > dos menus descritas aqui são da interface do aplicativo; o idioma dos textos do jogo tem sua própria configuração.
 
-Uma recompilação estática de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões **1.0.0, 1.6.0,
-1.8.2 e 1.9.0**) para Android. **O suporte à 1.9.0 é experimental.** **Não é emulação**: o código ARM64 do jogo vira C compilado para o seu celular, e os gráficos
-(NVN) são traduzidos para Vulkan.
+Um porte de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões **1.0.0, 1.6.0, 1.8.2 e 1.9.0**) para
+Android. **Não é emulação do Switch**: o código do jogo pode ser recompilado em C para o celular ou, no modo nativo
+experimental, executado diretamente na CPU ARM64. A API gráfica do jogo (NVN) é traduzida para Vulkan.
 
 O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)**, de peiikai (uma recompilação de
 *Link's Awakening*), e do seu porte para Android, o **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)**.
 
 > [!WARNING]
-> **Beta.** Os testes do projeto original se concentram no POCO F7 Ultra (Adreno 830, driver Mesa Turnip).
-> Este fork também é testado no Odin 2 Portal. Espere bugs. O plano e o estado
-> de cada fase estão em [docs/BOTW-PORT.md](docs/BOTW-PORT.md).
+> **Beta.** Testado principalmente em um celular (POCO F7 Ultra, Adreno 830, driver Mesa Turnip). O desempenho e a
+> compatibilidade variam entre aparelhos; espere bugs, sobretudo em GPUs ainda não testadas fisicamente. Veja as
+> [notas da 0.2.3-beta](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.2.3-beta) e as
+> [notas de desenvolvimento](docs/BOTW-PORT.md).
 
 ## Plataforma suportada
 
@@ -43,33 +44,36 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
 
 ## Estado
 
-- **Jogável** da tela de título até o mundo, com saves, no POCO F7 Ultra: 1.0.0 e 1.6.0 a 30 fps, 1.8.2 a 30 ou até
-  60 (cerca de 40-47 fps no mundo aberto com um driver Turnip).
-- **1.8.2** tem português do Brasil, widescreen (Vídeo > Proporção da tela "Livre": a visão alarga, o HUD vai para as
-  bordas da tela) e o ritmo de quadros do SavageWindRecomp.
-- **1.9.0 (experimental):** tela de título, carregamento de saves e mundo aberto testados no Odin 2 Portal.
-  A correção do projeto original para as fissuras do terreno do
-  [relato nº 21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21) está integrada, mas ainda precisa ser validada no Odin.
-  O desempenho varia conforme a cena; a opção de 60 fps não garante 60 fps constantes. Widescreen também integrado nesta versão.
-- **Vídeo:** resolução interna, upscaling AMD FSR 1 / Snapdragon GSR 1, resolução de saída, SMAA, FXAA e estabilização
-  temporal experimental opcional (desativada por padrão).
-- **App:** configuração dos arquivos do jogo pelo celular (cada versão na sua pasta, trocadas na página Arquivos do
-  Jogo), controles de toque, controles físicos, mods, menus em inglês, francês e português, escolha do driver Vulkan (Turnip
-  pelo adrenotools) e opções de compatibilidade do driver.
-- **Novidades do projeto original:** importação do passe de expansão para 1.6.0 / 1.8.2 / 1.9.0, importação/exportação
-  de saves em ZIP, compilação em segundo plano, correção do viés do giroscópio e zona morta dos analógicos.
-  Vídeo → Sync lag pode melhorar a velocidade, mas atrasar os resultados da GPU; desative se as pernas de Link afundarem no chão.
-- **Lacunas conhecidas:** configurar o jogo pelo celular compila o código do jogo nele, e isso ainda não foi medido nem
-  testado com o BOTW (espere uma demora longa e o celular quente); GPUs que não são Adreno 8xx usam caminhos mais
-  lentos e seguros; as miniaturas dos saves feitos no app ficam pretas; o áudio ainda usa um mixer simplificado.
+- **Jogável** da tela de título até o mundo, com saves, no POCO F7 Ultra testado. As quatro versões listadas são
+  suportadas no modo recompilado. O modo nativo foi testado com 1.0.0 e 1.9.0; 1.6.0 e 1.8.2 ainda precisam de testes
+  nesse modo.
+- **Código do jogo:** escolha o modo Recompilado (compila o código uma vez no celular) ou Nativo experimental (dispensa
+  essa compilação). Quem configurou o modo Recompilado pode alternar para o Nativo depois.
+- **Arquivos do jogo:** copie os dados extraídos para a pasta do app ou, desde a **0.2.3-beta**, use-os no lugar, sem
+  uma cópia extra de cerca de 16 GB. Usar no lugar exige acesso a todos os arquivos do Android, e a pasta original
+  precisa continuar disponível.
+- **DLC, saves e mods:** instale os dados extraídos do seu Passe de Expansão; importe ou exporte saves em ZIP ou importe
+  uma pasta de saves de emulador; use mods, inclusive os que adicionam arquivos e pastas de mod do DLC. O uso de mods
+  no lugar ainda precisa de mais testes.
+- **Vídeo e controles:** opção de 60 fps nas versões do jogo compatíveis e cutscenes a 60 fps experimentais,
+  proporção livre da tela, resoluções interna e de saída, upscaling FSR 1 ou Snapdragon GSR 1, FXAA/SMAA, controles de
+  toque e físicos e giroscópio. O app oferece escolha de driver Vulkan e opções de compatibilidade.
+- **Correções da 0.2.3:** pontos e linhas escuras na grama, pontas na fumaça após golpes, texto incompleto de GAME
+  OVER, água branca com Sync lag ligado antes do carregamento, problemas de interface na proporção livre e alguns
+  crashes. A correção de memória compartilhada nas GPUs Mali ainda não foi confirmada em um aparelho físico.
+- **Problemas conhecidos:** a grama baixa só aparece de perto; reflexos da água podem acompanhar a câmera; o fundo
+  do menu de pausa pode ficar preto no driver padrão da Qualcomm; Link pode piscar no primeiro golpe no modo nativo.
+  Depois da ativação de uma Torre Sheikah, o terreno pode esticar em "cortinas"; recarregue um save feito após a
+  ativação.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase todo com IA (Claude, da Anthropic, pelo Claude Code), dirigido,
 > testado e revisado por um humano.
 
 > [!NOTE]
-> **Nenhum arquivo do jogo vem incluído.** Você precisa do seu próprio dump, obtido legalmente, de *Breath of the
-> Wild* 1.0.0, 1.6.0, 1.8.2 ou 1.9.0 (`exefs` e `romfs`, extraídos). Não serão dadas instruções de como obtê-lo.
+> **Nenhum arquivo do jogo ou DLC vem incluído.** Você precisa dos seus próprios arquivos do jogo, obtidos legalmente
+> e extraídos (`exefs` e `romfs`). O app não abre NSP/XCI nem usa `prod.keys`. Não serão dadas instruções de como
+> obter os arquivos.
 
 ### Usando a atualização 1.9.0
 
@@ -78,9 +82,6 @@ O APK importa arquivos extraídos; não aplica uma atualização diretamente a u
 A versão é detectada automaticamente e instalada em `v190` no armazenamento escolhido, inclusive no cartão SD.
 Selecione as versões instaladas em **Configurações → Arquivos**. Cada versão tem saves e configurações
 separados. Ao criar uma pasta de versão, o app pode copiar os saves e configurações da 1.0.0 sem substituir os existentes.
-
-Uma atualização do recompilador pode exigir recompilar o código do jogo a partir dos seus arquivos extraídos.
-A fusão do projeto original 0.2.1 altera o gerador e seu identificador de compatibilidade.
 
 ## Compatibilidade dos controles
 
@@ -92,16 +93,22 @@ A disposição padrão é a da Nintendo: **A à direita, B embaixo**.
 
 ## Instalando (beta)
 
-1. Baixe o APK em [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) e instale (Android 11+, arm64,
-   Vulkan; cerca de 30 GB livres por versão do jogo).
-2. Para guardar os dados do jogo no cartão SD, abra primeiro **Configurações → Arquivos → Armazenamento dos dados
-   do jogo** e selecione o cartão. A escolha é mantida nos próximos inícios; mudar o armazenamento reinicia o app
-   e não move os arquivos existentes.
-3. Vá em **Configurar arquivos do jogo** e escolha a pasta com o seu `exefs` e `romfs`. A versão é reconhecida
-   pelos arquivos. O app copia o que precisa e compila o código do jogo no celular.
-4. Em celulares com Adreno, um driver Mesa Turnip (Configurações > Arquivos > Driver Vulkan) roda o jogo bem mais
-   rápido que o driver do sistema. Se o app parar ao abrir com "Vulkan driver is too old", toque e segure o ícone do
-   app e escolha **Escolher driver** para selecionar um antes de o jogo começar.
+1. Baixe o APK em [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) e instale (Android 11+, ARM64 e
+   Vulkan). Tenha a sua própria pasta extraída com `exefs` e `romfs`.
+2. Em **Arquivos do jogo**, escolha **Código do jogo**: **Nativo (experimental)** dispensa a compilação no celular;
+   **Recompilado** compila uma vez. Em **Arquivos do jogo**, escolha **Copiar** ou **Usar no lugar** e selecione a pasta
+   extraída. Usar no lugar pede acesso a todos os arquivos do Android; mantenha a pasta no mesmo local. Copiar exige
+   cerca de 16 GB adicionais para os dados do jogo, e o modo Recompilado também precisa de espaço para o código gerado.
+3. Se você possui o Passe de Expansão, instale o `romfs` extraído do DLC em **Configurações > DLC > Instalar DLC**.
+   Para trazer saves, use **Configurações > Saves** para importar um ZIP ou uma pasta de saves de emulador.
+4. Em celulares com Adreno, um driver Mesa Turnip pode ter desempenho melhor que o driver do sistema. Selecione-o em
+   **Configurações > Arquivos > Driver Vulkan**. Se o app informar que o driver Vulkan é antigo ao abrir, toque e
+   segure o ícone do app e escolha **Escolher driver** antes de iniciar o jogo.
+
+Atualizar da 0.2.x para a 0.2.3-beta não exige recompilar o código do jogo. Os shaders são compilados novamente uma
+vez, então os primeiros minutos podem ter travadinhas. Para relatar um problema, abra uma
+[issue](https://github.com/mamcjr/BOTWRecompAndroid/issues) com celular, GPU, driver, versão do jogo e um log de
+**Configurações > Arquivos > Salvar um arquivo de log**.
 
 ## Testando no Android (desenvolvedores)
 
@@ -113,6 +120,15 @@ android/build_gamelib.sh Dump/01007EF00011E000/exefs  # o código do jogo (cerca
 android/push_game.sh Dump/01007EF00011E000           # arquivos e código do jogo para o celular
 android/run_boot.sh 120                               # abre o jogo, log em android/out/boot.log
 ```
+
+## Apoie o projeto
+
+O BOTWRecompAndroid é um projeto gratuito e independente. Se você gosta dele e quer apoiar seu desenvolvimento, pode
+me patrocinar pelo GitHub. Esse apoio me ajuda a dedicar tempo à correção de bugs, à melhoria do desempenho e da
+compatibilidade e às próximas versões. O patrocínio é totalmente opcional: não libera recursos exclusivos nem garante
+correções específicas. Relatos de bugs, testes em outros aparelhos e contribuições também ajudam muito.
+
+[![Patrocine no GitHub](https://img.shields.io/badge/Patrocine-no%20GitHub-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/mamcjr)
 
 ## Créditos
 

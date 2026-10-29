@@ -122,3 +122,4 @@ uint64_t native_ticks(void);
 uint64_t guest_sym(const char *name);     // cached loader_find_symbol, fatal if missing
 void *hle_alloc(uint64_t size);           // zeroed guest-visible memory (never freed)
 extern const char *g_romfs_dir;
+extern const char *g_romfs_link;  // the player's own romfs/ used in place (<root>/romfs.link names it): NULL - romfs.bin

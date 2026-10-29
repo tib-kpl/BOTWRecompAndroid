@@ -14,6 +14,7 @@
 #include "kernel.h"
 
 const char *g_romfs_dir;
+const char *g_romfs_link;
 
 // rtld normally passes these to nn::init::Start: run every module's init/fini arrays.
 static void run_array(Cpu *c, uint64_t arr, uint64_t size) {
@@ -174,6 +175,18 @@ static void boot(const char *root) {
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
+    {   // the game files used in place: romfs.link names the player's own romfs/ (no romfs.bin; the movies from there too)
+        char link[1024], target[1024] = "";
+        snprintf(link, sizeof link, "%s/romfs.link", root);
+        FILE *f = fopen(link, "rb");
+        if (f) {
+            size_t n = fread(target, 1, sizeof target - 1, f);
+            fclose(f);
+            target[n] = 0;
+            while (n && (target[n - 1] == '\n' || target[n - 1] == '\r')) target[--n] = 0;
+            if (n) g_romfs_link = strdup(target), g_romfs_dir = g_romfs_link;
+        }
+    }
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
     char why[512];

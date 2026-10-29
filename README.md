@@ -28,18 +28,18 @@
 >
 > See [Android CI releases](docs/ANDROID-RELEASES.md) for build and signing details.
 
-A static recompilation of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0,
-1.8.2 and 1.9.0**) for Android. **1.9.0 support is experimental.** This is **not emulation**: the game's ARM64 code
-becomes C compiled for your phone, and its
-graphics (NVN) are translated to Vulkan.
+A port of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0, 1.8.2 and 1.9.0**) for
+Android. This is **not Switch emulation**: the game code can be recompiled into C for the phone or, in the experimental
+Native Mode, run directly on its ARM64 CPU. The game's graphics API (NVN) is translated to Vulkan.
 
 It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by peiikai (a recompilation of
 *Link's Awakening*) and its Android port, **[LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid)**.
 
 > [!WARNING]
-> **Beta.** Upstream testing focused on the POCO F7 Ultra (Adreno 830, Mesa Turnip driver); this fork's Odin 2 Portal
-> measurements are linked above. Expect bugs. The plan and the
-> state of each phase are in [docs/BOTW-PORT.md](docs/BOTW-PORT.md) (in Portuguese).
+> **Beta.** Tested primarily on one phone (POCO F7 Ultra, Adreno 830, Mesa Turnip driver). Performance and compatibility
+> vary by device; expect bugs, especially on GPUs that have not been tested on physical hardware. See the
+> [0.2.3-beta release notes](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.2.3-beta) and the
+> [development notes](docs/BOTW-PORT.md) (in Portuguese).
 
 ## Supported platform
 
@@ -48,37 +48,34 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
 
 ## Status
 
-- **Playable** from the title screen into the world, with saves, on the POCO F7 Ultra: 1.0.0 and 1.6.0 at 30 fps,
-  1.8.2 at 30 or up to 60 (about 40-47 fps in the open world with a Turnip driver).
-- **1.8.2** has Brazilian Portuguese, widescreen (Video > Aspect ratio "Unlocked": the view widens, the HUD goes to
-  the screen's edges) and SavageWindRecomp's frame pacing.
-- **1.9.0 (experimental):** title screen, save loading and open-world gameplay tested on the Odin 2 Portal.
-  The upstream terrain-crack fix for [report #21](https://github.com/mamcjr/BOTWRecompAndroid/issues/21) is integrated,
-  pending validation on the Odin. Performance depends on the scene; the 60 fps option is not a promise of sustained
-  60 fps. Upstream widescreen support is also integrated for this version.
-- **Video:** internal resolution, AMD FSR 1 / Snapdragon GSR 1 upscaling, output resolution, SMAA, FXAA and optional
-  experimental temporal stabilization (disabled by default).
-- **App:** game files set up from the phone (each version in its own folder, switched on the Game Files page), touch
-  controls, controllers, mods, menus in English, French and Portuguese, Vulkan driver choice (Turnip via adrenotools) and
-  driver compatibility options.
-- **New upstream features:** Expansion Pass import for 1.6.0 / 1.8.2 / 1.9.0, save import/export as ZIP files,
-  background game-code compilation, gyroscope bias correction and controller stick dead zones.
-  Video → Sync lag can improve speed but delay GPU readbacks; turn it off if Link's legs sink into the ground.
-- **Known gaps:** setting the game up on the phone compiles the game code there, and that has not been timed or
-  tested with BOTW yet (expect a long wait and a hot phone); GPUs other than Adreno 8xx take slower, safer paths;
-  thumbnails of saves made in the app are black; the audio still uses a simplified mixer.
-- **Known issue: stretched terrain after a Sheikah Tower.** Right after a tower's activation cutscene, the terrain
-  can show vertical "curtains" or spikes (cliffs and distant mountains stretched up into the sky). It happens with
-  every Vulkan driver and is being investigated. **Workaround:** once the tower is activated, load the save (the
-  autosave from right after the activation is fine) and the terrain is drawn correctly again.
+- **Playable** from the title screen into the world, with saves, on the tested POCO F7 Ultra. All four listed game
+  versions are supported in Recompiled Mode. Native Mode has been tested with 1.0.0 and 1.9.0; 1.6.0 and 1.8.2 still
+  need testing in that mode.
+- **Game code:** choose Recompiled Mode (build the code once on the phone) or experimental Native Mode (skip that
+  build). You can switch a Recompiled setup to Native Mode later.
+- **Game files:** copy the extracted files into app storage or, since **0.2.3-beta**, use them in place without an
+  additional copy of about 16 GB. In-place use requires Android all-files access and the source folder must remain
+  available.
+- **DLC, saves and mods:** install your own extracted Expansion Pass data; import and export saves as ZIP or import an
+  emulator save folder; use mods, including mods that add files and DLC mod folders. In-place mod use needs more testing.
+- **Video and controls:** optional 60 fps on supported game versions and experimental 60 fps in-engine cutscenes,
+  unlocked aspect ratio, internal/output resolution, FSR 1 or Snapdragon GSR 1 upscaling, FXAA/SMAA, touch controls,
+  physical controllers and gyro. The app offers a Vulkan driver selector and compatibility settings.
+- **0.2.3 fixes:** dark dots and lines on grassy ground, smoke spikes on hits, partial GAME OVER text, white water
+  with Sync lag enabled before loading, several unlocked aspect-ratio UI issues, and some crashes. The Mali shared
+  memory fix has not yet been confirmed on a physical Mali device.
+- **Known issues:** short grass appears only up close; water reflections can move with the camera; the pause menu
+  background can be black on Qualcomm's stock driver; Link may flicker on the first hit in Native Mode. After a
+  Sheikah Tower activation, terrain may stretch into vertical "curtains"; reload a save made after activation.
 
 > [!IMPORTANT]
 > Like LAS Recomp, this project is made almost entirely with AI (Claude, by Anthropic, through Claude Code), directed,
 > tested and reviewed by a human.
 
 > [!NOTE]
-> **No game files are included.** You need your own legally obtained dump of *Breath of the Wild* 1.0.0, 1.6.0,
-> 1.8.2 or 1.9.0 (`exefs` and `romfs`, extracted). Instructions on how to obtain it will not be provided.
+> **No game files or DLC are included.** You need your own legally obtained, extracted game files (`exefs` and
+> `romfs`). The app does not open NSP/XCI files or use `prod.keys`. Instructions on obtaining game files are not
+> provided.
 
 ### Using update 1.9.0
 
@@ -87,9 +84,6 @@ The APK imports the extracted files; it does not apply an update to an XCI or NS
 The version is detected automatically and stored in `v190` under the selected game data storage, including an SD card.
 Switch installed versions from **Settings → Files**. Each version has its own saves and settings;
 when first created, a version folder can be seeded from 1.0.0's saves and settings without replacing existing ones.
-
-After an update to the recompiler, existing game code may need to be rebuilt from your extracted files.
-The upstream merge for 0.2.1 changes the generator and game-code compatibility ID.
 
 ## Controller compatibility
 
@@ -102,14 +96,20 @@ The default layout is Nintendo-style: **A on the right, B at the bottom**.
 ## Installing (beta)
 
 1. Download the APK from [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) and install it (Android 11+,
-   arm64, Vulkan; about 30 GB free per game version).
-2. To keep game data on an SD card, first open **Settings → Files → Game data storage** and select the card.
-   The choice is saved across launches; changing storage restarts the app and does not move existing files.
-3. Go to **Set up game files** and choose the folder with your `exefs` and `romfs`. The version is told from
-   the files. The app copies what it needs and builds the game code on the phone.
-4. On Adreno phones, a Mesa Turnip driver (Settings > Files > Vulkan driver) runs the game much faster than the
-   system driver. If the app stops at start with "Vulkan driver is too old", long-press the app icon and choose
-   **Choose driver** to pick one before the game starts.
+   ARM64 and Vulkan). You need your own extracted game folder containing `exefs` and `romfs`.
+2. In **Game Files**, choose **Game code**: **Native (experimental)** skips the on-phone code build; **Recompiled**
+   builds it once. Under **Game files**, choose **Copy them** or **Use them in place**, then select the extracted folder.
+   In-place use asks for Android all-files access; keep that folder where it is. Copying needs roughly 16 GB more
+   storage for the game data, while Recompiled Mode also needs space for generated code.
+3. If you own the Expansion Pass, install its extracted DLC `romfs` through **Settings > DLC > Install DLC**. To bring
+   over saves, use **Settings > Saves** to import a ZIP or emulator save folder.
+4. On Adreno phones, a Mesa Turnip driver can perform better than the system driver. Select it under **Settings >
+   Files > Vulkan driver**. If the app reports that the Vulkan driver is too old at startup, long-press the app icon
+   and choose **Choose driver** before launching the game.
+
+Updating from 0.2.x to 0.2.3-beta does not require rebuilding game code. Shaders compile again once, so the first
+minutes may stutter. To report a problem, open an [issue](https://github.com/mamcjr/BOTWRecompAndroid/issues) with
+your phone, GPU, driver, game version and a log from **Settings > Files > Save a log file**.
 
 ## Testing on Android (developers)
 
@@ -121,6 +121,15 @@ android/build_gamelib.sh Dump/01007EF00011E000/exefs  # the game code (about an 
 android/push_game.sh Dump/01007EF00011E000           # game files and game code onto the phone
 android/run_boot.sh 120                               # start the game, log to android/out/boot.log
 ```
+
+## Support the project
+
+BOTWRecompAndroid is a free, independent project. If you enjoy it and would like to support its development, you can
+sponsor me on GitHub. Your support helps me dedicate time to fixing bugs, improving performance and compatibility, and
+working on future releases. Sponsorship is entirely optional: it does not unlock features or guarantee specific fixes.
+Bug reports, device tests, and contributions are also greatly appreciated.
+
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-on%20GitHub-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/mamcjr)
 
 ## Credits
 

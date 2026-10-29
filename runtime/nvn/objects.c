@@ -317,6 +317,20 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     static int env_lag = -2;
     if (env_lag == -2) env_lag = getenv("LARECOMP_SYNC_LAG") ? atoi(getenv("LARECOMP_SYNC_LAG")) : -1;
     int lag = env_lag >= 0 ? env_lag : g_settings.sync_lag ? 1 : 0;
+    // Only once the world has been on screen for a while (LAG_SETTLE frames, the pause menu and map counting): with the
+    // lag on from the start, some ponds stayed white for the whole session, and turned on later in play they were right
+    // (2026-10-28, POCO F7 Ultra; issue #43 on an Adreno 740) - the water's colour taken once, while loading, from a GPU
+    // result the lag made a frame old. So each load (the save, a fast travel) runs its first seconds without it.
+    if (lag > 0 && env_lag < 0) {
+        enum { LAG_SETTLE = 300 };
+        extern uint64_t vk_scene_frame(void), renderer_present_count(void);
+        static uint64_t world_since;
+        uint64_t now = renderer_present_count(), seen = vk_scene_frame();
+        bool world = !framepace_on_title() && seen && (now - seen < 20 || framepace_in_menu());
+        if (!world) world_since = 0;
+        else if (!world_since) world_since = now;
+        if (!world_since || now - world_since < LAG_SETTLE) lag = 0;
+    }
     extern int vk_ab(const char *what);
     int ab = vk_ab("synclag");
     bool lag_now = vk_async_on() && !flush && !whole && (ab >= 0 ? ab == 1 : lag > 0);

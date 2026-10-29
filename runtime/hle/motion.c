@@ -191,6 +191,17 @@ void motion_event(const SDL_Event *e) {
         to_screen(e->sensor.data, s);
         feed(SDL_GetSensorTypeForID(e->sensor.which), s, e->sensor.sensor_timestamp ? e->sensor.sensor_timestamp : SDL_GetTicksNS());
     } else if (e->type == SDL_EVENT_GAMEPAD_SENSOR_UPDATE) {
+        // A controller's sensors replace the phone's only once its gyroscope has moved: some report one that never
+        // does (a USB-C controller the phone sits in, GameSir X5 Lite: issue #78), and its zeros held the phone's off
+        static bool pad_live;
+        if (!pad_live && (SDL_SensorType)e->gsensor.sensor == SDL_SENSOR_GYRO) {
+            const float *g = e->gsensor.data;
+            if (fabsf(g[0]) + fabsf(g[1]) + fabsf(g[2]) > 0.02f) {
+                pad_live = true;
+                LOG("[motion] the controller's gyroscope moves: its sensors in place of the phone's\n");
+            }
+        }
+        if (!pad_live) return;
         pad_until_ns = SDL_GetTicksNS() + 500000000;
         feed((SDL_SensorType)e->gsensor.sensor, e->gsensor.data,
              e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : SDL_GetTicksNS());

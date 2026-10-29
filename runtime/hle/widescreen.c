@@ -118,8 +118,19 @@ bool widescreen_ui_centred(void) { return widescreen_allowed() && g_wide != 1.0f
 // screen edge, the middle ones (dialogs, prompts) stay, a blend in between. Only in the world, not in its menus
 // (pause, map), whose panes make up grids across the middle. Panes placed over things in the world (an enemy's health
 // bar) move the same way.
+// A menu open, or until 30 frames after: turning from one of its pages to another the game says it isn't for some
+// frames - the hearts and rupees moved out to the screen's edges and the pages past its sides showed (2026-10-28;
+// 8 frames weren't enough)
+bool widescreen_in_menu(void) {
+    extern uint64_t renderer_present_count(void);
+    static uint64_t last;
+    uint64_t now = renderer_present_count();
+    if (framepace_in_menu()) last = now + 1;
+    return last && now < last + 30;
+}
+
 float widescreen_hud_shift(float x) {
-    if (!widescreen_ui_centred() || framepace_in_menu() || !in_world()) return 0;
+    if (!widescreen_ui_centred() || widescreen_in_menu() || !in_world()) return 0;
     float ax = x < 0 ? -x : x, t = (ax - 180.0f) / (260.0f - 180.0f);
     if (t <= 0) return 0;
     if (t > 1) t = 1;
@@ -136,15 +147,16 @@ float widescreen_effect_stretch(uint64_t fs_hash) { (void)fs_hash; return 1.0f; 
 void widescreen_backdrop_seen(uint64_t hash) { (void)hash; }
 void widescreen_scene_ubo(const float *u, uint64_t size) { (void)u, (void)size; }
 
-// Presented part of the image (crop: uv origin and size) and its place in the window: the whole image. Out of the
-// world, in the middle 16:9 part of the window with bars: on the title screen the image's middle 16:9 part (its layout
-// there, through the widened layout camera, its artwork past it); on loading screens the whole image squeezed back
-// (drawn across all of it through a 16:9 camera of their own: cropped, their sides were cut off).
+// Presented part of the image (crop: uv origin and size) and its place in the window: the whole image. On the title
+// screen, in the middle 16:9 part of the window with bars: the image's middle 16:9 part (its layout there, through the
+// widened layout camera, its artwork past it). Loading screens too are the whole image now: their layout, drawn through
+// a 16:9 camera of their own, is narrowed to the middle part as it's drawn (vulkan/exec.c cbuf_info) - squeezed back
+// here instead, the image shrank to load and stretched back to the world.
 void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double *vx, double *vy, double *vw, double *vh) {
     (void)frame, (void)vy, (void)vh;
     crop[0] = crop[1] = 0, crop[2] = crop[3] = 1;
-    if (shape <= 1.001 || !widescreen_allowed() || in_world()) return;
-    if (framepace_on_title()) crop[2] = (float)(1.0 / shape), crop[0] = (1.0f - crop[2]) * 0.5f;
+    if (shape <= 1.001 || !widescreen_allowed() || in_world() || !framepace_on_title()) return;
+    crop[2] = (float)(1.0 / shape), crop[0] = (1.0f - crop[2]) * 0.5f;
     double w = *vw / shape;
     *vx += (*vw - w) * 0.5, *vw = w;
 }

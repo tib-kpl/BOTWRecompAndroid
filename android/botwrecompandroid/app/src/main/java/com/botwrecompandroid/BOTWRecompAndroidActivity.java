@@ -347,8 +347,10 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 }).setNegativeButton(R.string.action_cancel, null).show();
         });
     }
+    private static volatile boolean importInPlace;  // (the next game folder picked: its romfs/ used where it is)
 
     public static void pickGameFolder() {
+        importInPlace = false;
         self.runOnUiThread(() -> {
             try {
                 self.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_GAME);
@@ -357,6 +359,43 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 nativeImportDone(1);
             }
         });
+    }
+
+    // Game files used in place (Game Files > Game files: Use them in place): the native side reads the picked romfs/ by
+    // its path (runtime/services/fs.c, romfs.link), which Android allows only with the access to all files. Without it,
+    // the system's page for it opens and the setup waits for the folder to be chosen again.
+    public static void pickGameFolderInPlace() {
+        if (android.os.Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+            self.runOnUiThread(() -> {
+                try {
+                    self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:" + self.getPackageName())));
+                } catch (Exception e) {
+                    self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                }
+            });
+            nativeImportDetail("Allow BOTWRecompAndroid to access all files (the page Android just opened), then choose the folder again");
+            nativeImportDone(5);
+            return;
+        }
+        pickGameFolder();
+        importInPlace = true;
+    }
+
+    // A folder the file picker gave (its document id: "primary:Download/BOTW", "1A2B-3C4D:Games/BOTW", "raw:/storage/...")
+    // as a path the native side can open, or null (a cloud provider, or no such folder)
+    private static String documentPath(String id) {
+        if (id == null) return null;
+        String path;
+        if (id.startsWith("raw:")) path = id.substring(4);
+        else {
+            int c = id.indexOf(':');
+            if (c < 0) return null;
+            String vol = id.substring(0, c), rel = id.substring(c + 1);
+            File base = "primary".equalsIgnoreCase(vol) ? android.os.Environment.getExternalStorageDirectory() : new File("/storage/" + vol);
+            path = rel.isEmpty() ? base.getPath() : new File(base, rel).getPath();
+        }
+        return new File(path).isDirectory() ? path : null;
     }
 
     public static void pickDriver() {
@@ -678,6 +717,11 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
         java.util.Arrays.sort(kids);
         for (File k : kids) {
             String n = prefix + k.getName();
+            // (a file another app put in the save - a file manager with root, a save editor: #77 - keeps its owner,
+            // and this app can't open it)
+            if (!k.canRead())
+                throw new IOException(n + " can't be read: another app put it there, and it keeps that app's owner. " +
+                        "Bring a save in with Import saves instead (the folder there now is kept beside it).");
             if (k.isDirectory()) {
                 z.putNextEntry(new java.util.zip.ZipEntry(n + "/"));
                 z.closeEntry();
@@ -1065,6 +1109,23 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
                 Log.i(TAG, "game code from the picked folder: " + preLib.size + " bytes");
             }
             nativeImportProgress(copied, total);
+            if (importInPlace) {  // the romfs/ where it is: its path noted, no image built (runtime/services/fs.c)
+                String at = documentPath(romfs.id);
+                romfsFiles.clear();
+                romfsPaths.clear();
+                if (at == null || !new File(at, "System/Version.txt").canRead()) {
+                    nativeImportDetail("this folder can't be used in place (" + (at == null ? romfs.id : at) +
+                            "): choose Copy them, or a folder on the phone's storage");
+                    nativeImportDone(5);
+                    return;
+                }
+                try (OutputStream o = new FileOutputStream(new File(games, "romfs.link"))) {
+                    o.write((at + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                Log.i(TAG, "game data used in place: " + at);
+                nativeImportDone(0);
+                return;
+            }
             long[] sizes = new long[romfsFiles.size()];
             for (int i = 0; i < sizes.length; i++) sizes[i] = romfsFiles.get(i).size;
             romfsOpenError = null;
@@ -1321,8 +1382,21 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     // version's mods/): romfs/ and the notes (.txt) beside it. Answers nativeModImportDone "1|<name>" imported,
     // "0|<reason>" failed, "2|" cancelled.
     private static String modsDir;
+    private static volatile boolean modInPlace;  // (its folder noted in <dir>/<name>.link, not copied: runtime/mods.c)
+
+    public static void importModInPlace(String dir) {
+        if (android.os.Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+            self.runOnUiThread(() -> self.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:" + self.getPackageName()))));
+            nativeModImportDone("0|Allow BOTWRecompAndroid to access all files (the page Android just opened), then import the mod again.");
+            return;
+        }
+        importMod(dir);
+        modInPlace = true;
+    }
 
     public static void importMod(String dir) {
+        modInPlace = false;
         modsDir = dir;
         self.runOnUiThread(() -> {
             try {
@@ -1383,6 +1457,18 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             if (name.length() > 80) name = name.substring(0, 80);
             File mods = new File(modsDir != null ? modsDir : new File(getExternalFilesDir(null), "mods").getPath());
             if (!mods.isDirectory() && !mods.mkdirs()) throw new IOException("Could not create the mods folder.");
+            if (modInPlace) {  // its folder where it is: noted, not copied
+                String at = documentPath(mod.id);
+                if (at == null || !new File(at, "romfs").isDirectory())
+                    throw new IOException("This folder can't be used in place; choose Game files: Copy them, or a folder on the phone's storage.");
+                deleteTree(new File(mods, name));  // (a copy imported before: the noted folder from now on)
+                try (OutputStream o = new FileOutputStream(new File(mods, name + ".link"))) {
+                    o.write((at + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                nativeModImportDone("1|" + name);
+                return;
+            }
+            new File(mods, name + ".link").delete();  // (one noted before: the copy from now on)
             stage = new File(mods, ".import-" + name);
             deleteTree(stage);
             Doc romfsDoc = named(children(tree, mod.id), "romfs");

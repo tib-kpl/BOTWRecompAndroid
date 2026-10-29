@@ -21,24 +21,61 @@
 const char *g_save_dir = "save";
 static int romfs_fd = -1;
 
+// The game files used in place (main.c g_romfs_link: extracted/romfs.link names the player's own romfs/ folder): no
+// romfs.bin, its image made up from that folder (romfs_build.h romfs_virtual) - romfs_fd is then VIRT_FD, and every
+// read of the image goes through img_pread. Kept over a reboot (the same files).
+#define VIRT_FD (-2)
+static RomfsVirtual *romfs_virt;
+static ssize_t img_pread(int fd, void *dst, size_t n, uint64_t off) {
+    if (fd == VIRT_FD) return romfs_virt ? (ssize_t)romfs_virtual_read(romfs_virt, dst, n, off) : -1;
+    return pread(fd, dst, n, (off_t)off);
+}
+static uint64_t img_size(int fd) {
+    if (fd == VIRT_FD) return romfs_virt ? romfs_virtual_size(romfs_virt) : 0;
+    struct stat sb;
+    return fstat(fd, &sb) ? 0 : (uint64_t)sb.st_size;
+}
+
 // ------------------------------------------------------------------ RomFS file index (offset -> path)
 typedef struct { uint64_t start, size; char *path; int fd; const uint8_t *mem; } Overlay;
 // in-image patches (copies of RomFS tables with changes): header, dir meta, file hash, file meta
 typedef struct { uint64_t off, size; uint8_t *data; } Patch;
-static Patch patches[8];
-static int npatches;
-static Overlay *ov;
-static int ov_n, ov_cap;
-static uint8_t *ov_meta;
-static uint64_t ov_meta_off, ov_meta_size, ov_end;
 // Lets the runtime see which game files are being streamed (e.g. which level is loading).
 typedef struct { uint64_t off, size; char *path; uint32_t meta; } RomFile;
-static RomFile *rom_files;
-static int rom_nfiles;
-static uint64_t rom_data_off;
+// One image's mods: the patched tables, what's appended past its end, its file index. Two: the game's and the DLC's
+// (a mod folder named for the DLC's title changes the DLC's own files - Relics of the Past's Map/MainField units: the
+// game reads those from the DLC's image when it's installed, and the mod's events looped without them, #65). R: the
+// image this thread works on (rom_index and the reads set it); the names below are its fields.
+typedef struct {
+    Patch patches_[8];
+    int npatches_;
+    Overlay *ov_;
+    int ov_n_, ov_cap_;
+    uint8_t *ov_meta_;
+    uint64_t ov_meta_off_, ov_meta_size_, ov_end_;
+    RomFile *rom_files_;
+    int rom_nfiles_;
+    uint64_t rom_data_off_;
+    bool dlc;
+} RomImage;
+static RomImage img_game, img_dlc = {.dlc = true};
+static __thread RomImage *R = &img_game;
+#define patches (R->patches_)
+#define npatches (R->npatches_)
+#define ov (R->ov_)
+#define ov_n (R->ov_n_)
+#define ov_cap (R->ov_cap_)
+#define ov_meta (R->ov_meta_)
+#define ov_meta_off (R->ov_meta_off_)
+#define ov_meta_size (R->ov_meta_size_)
+#define ov_end (R->ov_end_)
+#define rom_files (R->rom_files_)
+#define rom_nfiles (R->rom_nfiles_)
+#define rom_data_off (R->rom_data_off_)
 
-// Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
-RT_ON_RESET(fs_reset) {
+static void image_reset(RomImage *img) {
+    RomImage *was = R;
+    R = img;
     for (int i = 0; i < ov_n; i++) {
         if (ov[i].fd >= 0) close(ov[i].fd);
         free(ov[i].path);
@@ -50,8 +87,19 @@ RT_ON_RESET(fs_reset) {
     ov_meta = NULL, ov_meta_off = ov_meta_size = ov_end = 0;
     npatches = 0;
     rom_files = NULL, rom_nfiles = 0, rom_data_off = 0;
+    R = was;
+}
+
+static int aoc_fd = -1;
+
+// Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
+RT_ON_RESET(fs_reset) {
+    image_reset(&img_game);
+    image_reset(&img_dlc);
+    if (aoc_fd >= 0) close(aoc_fd);
+    aoc_fd = -1;
     if (romfs_fd >= 0) close(romfs_fd);
-    romfs_fd = -1;
+    romfs_fd = -1;  // (romfs_virt stays: the same files next boot)
     g_save_dir = "save";
 }
 
@@ -95,7 +143,9 @@ static void rom_dir_path(const uint8_t *dmeta, uint32_t dsize, uint32_t dir, cha
 // ---- files a mod ADDS (names the game's RomFS doesn't have). The game parses the
 // RomFS tables itself, so they're extended: a copy of the file-meta table with the new entries appended (linked
 // into their directory's file list and the name hash buckets) is placed past the end of the image, the header,
-// directory table and hash table are patched to match. New files must go into existing directories.
+// directory table and hash tables are patched to match. Directories the game doesn't have are added the same way
+// (the directory table then goes past the end too): Relics of the Past adds 138 files to 1.6.0, 20 of them in a new
+// Model/Giant_Dark (issue #65 - the menu's mods replaced files only, and the game crashed looking up an added one).
 static uint32_t romfs_hash(uint32_t parent, const char *name, uint32_t len) {
     uint32_t hash = parent ^ 123456789;
     for (uint32_t i = 0; i < len; i++) { hash = (hash >> 5) | (hash << 27); hash ^= (uint8_t)name[i]; }
@@ -131,48 +181,98 @@ static void walk_new(const char *root, const char *rel, char **known, int nknown
     closedir(d);
 }
 
-// directory entry offset for "a/b/c" (NULL-terminated walk from the root, offset 0), -1 if missing
-static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
+// A growing copy of the directory table
+typedef struct { uint8_t *p; uint64_t n, cap; } DirTab;
+
+// directory entry offset for "a/b/c" (a walk from the root, offset 0). A missing one is -1, or made when hb is given:
+// appended, first in its parent's children and in its name's bucket of the directory hash table hb (nb buckets)
+static int64_t dir_lookup(DirTab *t, const char *path, uint8_t *hb, uint32_t nb) {
     uint32_t cur = 0;
     char buf[1024];
     strlcpy(buf, path, sizeof buf);
     for (char *tok = strtok(buf, "/"); tok; tok = strtok(NULL, "/")) {
-        uint32_t child;
-        memcpy(&child, dm + cur + 8, 4);
-        while (child != 0xFFFFFFFFu && child + 0x18 <= dsz) {
-            uint32_t nl;
-            memcpy(&nl, dm + child + 0x14, 4);
-            if (nl == strlen(tok) && !memcmp(dm + child + 0x18, tok, nl)) break;
-            memcpy(&child, dm + child + 4, 4);
+        uint32_t child, nl = (uint32_t)strlen(tok);
+        memcpy(&child, t->p + cur + 8, 4);
+        while (child != 0xFFFFFFFFu && child + 0x18 <= t->n) {
+            uint32_t cl;
+            memcpy(&cl, t->p + child + 0x14, 4);
+            if (cl == nl && !memcmp(t->p + child + 0x18, tok, nl)) break;
+            memcpy(&child, t->p + child + 4, 4);
         }
-        if (child == 0xFFFFFFFFu || child + 0x18 > dsz) return -1;
+        if (child == 0xFFFFFFFFu || child + 0x18 > t->n) {
+            if (!hb || !nb) return -1;
+            uint64_t sz = 0x18 + ((nl + 3) & ~3u);
+            if (t->n + sz > t->cap) { t->cap = (t->n + sz) * 2; t->p = realloc(t->p, t->cap); }
+            // parent, sibling (the parent's first child until now), first child dir, first file, next in its hash
+            // bucket, name length, name
+            uint32_t at = (uint32_t)t->n, none = 0xFFFFFFFFu, sib, bucket = romfs_hash(cur, tok, nl) % nb, next;
+            memcpy(&sib, t->p + cur + 8, 4);
+            memcpy(&next, hb + 4 * bucket, 4);
+            uint8_t *e = t->p + at;
+            memset(e, 0, sz);
+            memcpy(e, &cur, 4), memcpy(e + 4, &sib, 4), memcpy(e + 8, &none, 4), memcpy(e + 0xC, &none, 4);
+            memcpy(e + 0x10, &next, 4), memcpy(e + 0x14, &nl, 4), memcpy(e + 0x18, tok, nl);
+            memcpy(t->p + cur + 8, &at, 4);
+            memcpy(hb + 4 * bucket, &at, 4);
+            t->n += sz;
+            child = at;
+        }
         cur = child;
     }
     return cur;
 }
 
 static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
-    const char *mods = mods_dir();
-    if (!mods) return;
-    char root[1100];
-    snprintf(root, sizeof root, "%s/romfs", mods);
     char **known = malloc(sizeof *known * rom_nfiles);
     for (int i = 0; i < rom_nfiles; i++) known[i] = rom_files[i].path;
     qsort(known, rom_nfiles, sizeof *known, path_cmp);
     NewFile *nf = NULL;
     int n = 0, cap = 0;
-    walk_new(root, "", known, rom_nfiles, &nf, &n, &cap);
+    const char *mods = R->dlc ? NULL : mods_dir();  // (LARECOMP_MODS: the game's files)
+    if (mods) {
+        char root[1100];
+        snprintf(root, sizeof root, "%s/romfs", mods);
+        walk_new(root, "", known, rom_nfiles, &nf, &n, &cap);
+    }
+    int from_dir = n;
+    for (int i = 0; i < mods_file_count(); i++) {  // the menu's mods (LARECOMP_MODS's file first, as for replacements)
+        const char *rel, *host;
+        struct stat sb;
+        if (!mods_file(i, &rel, &host) || !rel || bsearch(&rel, known, rom_nfiles, sizeof *known, path_cmp)) continue;
+        bool dup = false;
+        for (int k = 0; k < from_dir && !dup; k++) dup = !strcmp(nf[k].rel, rel);
+        if (dup || stat(host, &sb) || !S_ISREG(sb.st_mode)) continue;
+        if (n == cap) { cap = cap ? cap * 2 : 64; nf = realloc(nf, sizeof *nf * cap); }
+        strlcpy(nf[n].rel, rel, sizeof nf[n].rel);
+        strlcpy(nf[n].host, host, sizeof nf[n].host);
+        nf[n].size = (uint64_t)sb.st_size;
+        n++;
+    }
     free(known);
     if (!n) return;
     rom_files = realloc(rom_files, sizeof(RomFile) * (rom_nfiles + n));
-    uint64_t hoff = h[5], hsz = h[6];
-    uint8_t *dcopy = malloc(dsz), *hcopy = malloc(hsz), *head = malloc(0x50);
-    memcpy(dcopy, dmeta, dsz);
-    if (pread(fd, hcopy, hsz, (off_t)hoff) != (ssize_t)hsz || pread(fd, head, 0x50, 0) != 0x50) return;
+    uint64_t hoff = h[5], hsz = h[6], dhoff = h[1], dhsz = h[2];
+    uint8_t *hcopy = malloc(hsz), *dhcopy = malloc(dhsz), *head = malloc(0x50);
+    if (img_pread(fd, hcopy, hsz, (off_t)hoff) != (ssize_t)hsz || img_pread(fd, dhcopy, dhsz, (off_t)dhoff) != (ssize_t)dhsz ||
+        img_pread(fd, head, 0x50, 0) != 0x50)
+        return;
+    DirTab dt = {malloc(dsz), dsz, dsz};
+    memcpy(dt.p, dmeta, dsz);
+    int new_dirs = 0;
+    for (int i = 0; i < n; i++) {  // the directories first: the table's size places what follows it
+        char dirp[1024];
+        strlcpy(dirp, nf[i].rel, sizeof dirp);
+        char *slash = strrchr(dirp, '/');
+        if (slash) *slash = 0; else dirp[0] = 0;
+        uint64_t before = dt.n;
+        dir_lookup(&dt, dirp, dhcopy, (uint32_t)(dhsz / 4));
+        if (dt.n != before) new_dirs++;
+    }
+    uint8_t *dcopy = dt.p;
     // the file-meta table to extend: the override-patched copy if there is one
     const uint8_t *base_meta = ov_meta;
     uint8_t *tmp = NULL;
-    if (!base_meta) { tmp = malloc(fsz); pread(fd, tmp, fsz, (off_t)h[7]); base_meta = tmp; }
+    if (!base_meta) { tmp = malloc(fsz); img_pread(fd, tmp, fsz, (off_t)h[7]); base_meta = tmp; }
     uint64_t extra = 0;
     for (int i = 0; i < n; i++) {
         const char *name = strrchr(nf[i].rel, '/');
@@ -183,12 +283,10 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
     uint8_t *meta = calloc(1, nsz);
     memcpy(meta, base_meta, fsz);
     free(tmp);
-    if (!ov_end) {
-        struct stat rs;
-        fstat(fd, &rs);
-        ov_end = (rs.st_size + 0xF) & ~0xFull;
-    }
-    uint64_t meta_at = ov_end;  // the new table first, then the new files' data
+    if (!ov_end) ov_end = (img_size(fd) + 0xF) & ~0xFull;
+    // past the end: the directory table when it grew, the file table, then the new files' data
+    bool dirs_moved = dt.n > dsz;
+    uint64_t dir_at = ov_end, meta_at = dirs_moved ? (dir_at + dt.n + 0xF) & ~0xFull : ov_end;
     uint64_t data_at = (meta_at + nsz + 0xF) & ~0xFull;
     uint32_t nb = (uint32_t)(hsz / 4);
     uint64_t o = fsz;
@@ -199,8 +297,8 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         char *slash = strrchr(dirp, '/');
         const char *name = slash ? slash + 1 : nf[i].rel;
         if (slash) *slash = 0; else dirp[0] = 0;
-        int64_t dir = dir_lookup(dcopy, dsz, dirp);
-        if (dir < 0) { LOG("[fs] mod file %s: directory not in the game's RomFS, skipped\n", nf[i].rel); continue; }
+        int64_t dir = dir_lookup(&dt, dirp, NULL, 0);
+        if (dir < 0) { LOG("[fs] mod file %s: its directory couldn't be added, skipped\n", nf[i].rel); continue; }
         uint32_t nl = (uint32_t)strlen(name), d32 = (uint32_t)dir, entry = (uint32_t)o, child;
         memcpy(&child, dcopy + dir + 0xC, 4);  // dir's first file -> becomes our sibling
         uint64_t rel = data_at - rom_data_off, size = nf[i].size;
@@ -222,29 +320,33 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         data_at = (data_at + size + 0xF) & ~0xFull;
         added++;
     }
-    // the new table goes before the new data (keep the overlay list sorted by start)
-    if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
-    memmove(ov + (ov_n - added) + 1, ov + (ov_n - added), sizeof *ov * added);
-    ov[ov_n - added] = (Overlay){meta_at, nsz, NULL, -1, meta};
-    ov_n++;
+    // the new tables go before the new data (keep the overlay list sorted by start)
+    int blobs = dirs_moved ? 2 : 1;
+    while (ov_n + blobs > ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
+    memmove(ov + (ov_n - added) + blobs, ov + (ov_n - added), sizeof *ov * added);
+    if (dirs_moved) ov[ov_n - added] = (Overlay){dir_at, dt.n, NULL, -1, dt.p};
+    ov[ov_n - added + blobs - 1] = (Overlay){meta_at, nsz, NULL, -1, meta};
+    ov_n += blobs;
     ov_end = data_at;
-    uint64_t fmeta_off = meta_at, fmeta_size = o;
+    uint64_t fmeta_off = meta_at, fmeta_size = o, dmeta_off = dir_at, dmeta_size = dt.n;
     memcpy(head + 7 * 8, &fmeta_off, 8);
     memcpy(head + 8 * 8, &fmeta_size, 8);
+    if (dirs_moved) memcpy(head + 3 * 8, &dmeta_off, 8), memcpy(head + 4 * 8, &dmeta_size, 8);
     patches[npatches++] = (Patch){0, 0x50, head};
-    patches[npatches++] = (Patch){h[3], dsz, dcopy};
+    if (!dirs_moved) patches[npatches++] = (Patch){h[3], dsz, dcopy};
     patches[npatches++] = (Patch){hoff, hsz, hcopy};
-    LOG("[fs] mods: %d new romfs files\n", added);
+    patches[npatches++] = (Patch){dhoff, dhsz, dhcopy};
+    LOG("[fs] mods: %d new romfs files%s\n", added, new_dirs ? " (and new directories)" : "");
 }
 
 static void rom_index(int fd) {
     uint64_t h[10];
-    if (pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h) return;
+    if (img_pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h) return;
     // header: size, dir hash (off,size), dir meta (off,size), file hash (off,size), file meta (off,size), data off
     uint64_t doff = h[3], dsz = h[4], foff = h[7], fsz = h[8];
     rom_data_off = h[9];
     uint8_t *dmeta = malloc(dsz), *fmeta = malloc(fsz);
-    if (pread(fd, dmeta, dsz, (off_t)doff) != (ssize_t)dsz || pread(fd, fmeta, fsz, (off_t)foff) != (ssize_t)fsz) return;
+    if (img_pread(fd, dmeta, dsz, (off_t)doff) != (ssize_t)dsz || img_pread(fd, fmeta, fsz, (off_t)foff) != (ssize_t)fsz) return;
     int cap = 4096;
     rom_files = malloc(sizeof(RomFile) * cap);
     for (uint64_t o = 0; o + 0x20 <= fsz;) {
@@ -270,9 +372,10 @@ static void rom_index(int fd) {
     // the menu's Mods page (runtime/mods.c: mods/<mod>/romfs, Android). The file-meta table is patched (in a copy) to
     // point them at data appended past the end of the image; reads there go to host files.
     mods_scan();
+    mods_select_dlc(R->dlc);  // (the DLC's image: the mods of its title)
     for (int i = 0; i < rom_nfiles; i++) {
         char host[1200];
-        if (!mods_override(rom_files[i].path, host, sizeof host) && !mods_romfs_override(rom_files[i].path, host, sizeof host))
+        if (!(!R->dlc && mods_override(rom_files[i].path, host, sizeof host)) && !mods_romfs_override(rom_files[i].path, host, sizeof host))
             continue;
         struct stat sb;
         if (stat(host, &sb)) continue;
@@ -281,9 +384,7 @@ static void rom_index(int fd) {
             memcpy(ov_meta, fmeta, fsz);
             ov_meta_off = foff;
             ov_meta_size = fsz;
-            struct stat rs;
-            fstat(fd, &rs);
-            ov_end = (rs.st_size + 0xF) & ~0xFull;
+            ov_end = (img_size(fd) + 0xF) & ~0xFull;
         }
         uint64_t rel = ov_end - rom_data_off, size = (uint64_t)sb.st_size;
         memcpy(ov_meta + rom_files[i].meta + 8, &rel, 8);
@@ -303,12 +404,13 @@ static void rom_index(int fd) {
     qsort(rom_files, rom_nfiles, sizeof *rom_files, rom_cmp);
     free(dmeta);
     free(fmeta);
-    LOG("[fs] romfs index: %d files\n", rom_nfiles);
+    LOG("[fs] %s index: %d files\n", R->dlc ? "the DLC's romfs" : "romfs", rom_nfiles);
+    mods_select_dlc(false);
 }
 
 // Virtual RomFS image read: original bytes, with the patched file table and appended replacement files.
 static ssize_t romfs_read(int fd, uint8_t *dst, uint64_t size, uint64_t off) {
-    if (!ov_n) return pread(fd, dst, size, (off_t)off);
+    if (!ov_n) return img_pread(fd, dst, size, (off_t)off);
     uint64_t done = 0;
     while (done < size) {
         uint64_t o = off + done, n = size - done;
@@ -330,7 +432,7 @@ static ssize_t romfs_read(int fd, uint8_t *dst, uint64_t size, uint64_t off) {
             if ((uint64_t)r < n) memset(dst + done + r, 0, n - r);
         } else {
             if (o + n > ov[0].start) n = ov[0].start - o;
-            ssize_t r = pread(fd, dst + done, n, (off_t)o);
+            ssize_t r = img_pread(fd, dst + done, n, (off_t)o);
             if (r < 0) r = 0;
             if ((uint64_t)r < n) memset(dst + done + r, 0, n - r);
             // overlay the patched tables (file meta, and with added files: header, dir meta, file hash)
@@ -358,10 +460,11 @@ const char *romfs_file_at(uint64_t off) {
 }
 
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
-typedef struct { int fd; uint64_t size; bool plain; } Storage;  // plain: another image than the game's (no mod overlay)
+typedef struct { int fd; uint64_t size; bool plain; RomImage *img; } Storage;  // plain: no mod overlay; img: the game's or the DLC's
 
 static void storage(Service *s, IpcReq *req, IpcResp *resp) {
     Storage *st = s->state;
+    if (st->img) R = st->img;  // (this thread's image: the reads and GetSize below)
     switch (req->cmd) {
     case 0: {  // Read(offset, size) -> B buffer
         uint64_t off = IN(uint64_t, 0), size = IN(uint64_t, 8);
@@ -372,7 +475,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         ssize_t n = st->plain ? pread(st->fd, (uint8_t *)(uintptr_t)b->addr, size, (off_t)off)
                               : romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
-        if (st->plain) break;
+        if (st->plain || R->dlc) break;
         {
             const char *path = romfs_file_at(off);
             static const char *last;
@@ -393,7 +496,22 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
 }
 
 static Service *open_romfs_storage(void) {
-    if (romfs_fd < 0) {
+    if (romfs_fd == -1 && g_romfs_link) {  // the player's own romfs/ folder, in place
+        if (!romfs_virt) {
+            uint64_t t0 = plat_now_ns();
+            char why[256];
+            romfs_virt = romfs_virtual_open(g_romfs_link, why, sizeof why);
+            if (!romfs_virt)
+                FATAL("The game files folder can't be read: %s. If it was moved or deleted, set up the game files again "
+                      "(Settings > Files > Set up game files).\n", why);
+            LOG("[fs] game data from %s in place: %.1f GB, its index made in %llu ms\n", g_romfs_link,
+                romfs_virtual_size(romfs_virt) / 1e9, (unsigned long long)((plat_now_ns() - t0) / 1000000));
+        }
+        romfs_fd = VIRT_FD;
+        R = &img_game;
+        rom_index(romfs_fd);
+    }
+    if (romfs_fd == -1) {  // (not VIRT_FD)
         char path[1024];
         snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // extracted/romfs.bin
         romfs_fd = open(path, O_RDONLY);
@@ -402,13 +520,13 @@ static Service *open_romfs_storage(void) {
         if (!romfs_image_ok(path, why, sizeof why))  // (else the game's SDK aborts on it with an svcBreak, nothing said)
             FATAL("The game data (romfs.bin) is incomplete or damaged: %s. Set up the game files again (Settings > Files > "
                   "Set up game files), or copy romfs.bin again whole.\n", why);
+        R = &img_game;
         rom_index(romfs_fd);
     }
     Storage *st = calloc(1, sizeof *st);
     st->fd = romfs_fd;
-    struct stat sb;
-    fstat(romfs_fd, &sb);
-    st->size = sb.st_size;
+    st->img = &img_game;
+    st->size = img_size(romfs_fd);
     return service_new("IStorage(romfs)", storage, st);
 }
 
@@ -430,24 +548,28 @@ const char *fs_aoc_image(void) {
 }
 
 static Service *open_aoc_storage(void) {
-    static int fd = -1;
     const char *path = fs_aoc_image();
+    int fd = aoc_fd;
     if (fd < 0 && path) {
         char why[128];
         if (!romfs_image_ok(path, why, sizeof why)) {
             LOG("[fs] the DLC's data (%s) is incomplete or damaged: %s\n", path, why);
             return NULL;
         }
-        fd = open(path, O_RDONLY);
-        if (fd >= 0) LOG("[fs] the DLC's data: %s\n", path);
+        fd = aoc_fd = open(path, O_RDONLY);
+        if (fd >= 0) {
+            LOG("[fs] the DLC's data: %s\n", path);
+            RomImage *was = R;
+            R = &img_dlc;
+            rom_index(fd);  // (its mods: the folders named for its title)
+            R = was;
+        }
     }
     if (fd < 0) return NULL;
     Storage *st = calloc(1, sizeof *st);
     st->fd = fd;
-    st->plain = true;
-    struct stat sb;
-    fstat(fd, &sb);
-    st->size = sb.st_size;
+    st->img = &img_dlc;
+    st->size = img_size(fd);
     return service_new("IStorage(aoc)", storage, st);
 }
 
@@ -656,6 +778,51 @@ static void copy_tree(const char *src, const char *dst) {
     closedir(d);
 }
 
+// The save's files this app can't use: another app put them there (a file manager with root, a save editor: issue #77,
+// 2026-10-28) and they keep its owner, so open() fails with EACCES and the game stops with svcBreak. Counts the ones
+// this app can't read (the first's path in unreadable) and those it reads but can't write.
+static void save_access(const char *p, int *bad, int *unread, char *unreadable, size_t n) {
+    DIR *d = opendir(p);
+    if (!d) {
+        if (access(p, R_OK)) { if (!(*unread)++) snprintf(unreadable, n, "%s", p); }
+        else if (access(p, W_OK)) (*bad)++;
+        return;
+    }
+    if (access(p, R_OK | W_OK | X_OK)) (*bad)++;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char c[2048];
+        snprintf(c, sizeof c, "%s/%s", p, e->d_name);
+        save_access(c, bad, unread, unreadable, n);
+    }
+    closedir(d);
+}
+
+// A save with files of another owner becomes this app's own: a copy made here in its place, the one before kept beside
+// it as <save>.before-own[-n]. Files it can't even read: a message saying what to do instead of the game's svcBreak.
+static void own_save(const char *root) {
+    int bad = 0, unread = 0;
+    char unreadable[2048] = "";
+    save_access(root, &bad, &unread, unreadable, sizeof unreadable);
+    if (unread)
+        FATAL("The game's save has %d file%s another app put there, which this app can't read (%s). Use Settings > Files > "
+              "Import saves to bring a save in: the folder there now is kept beside it.\n", unread, unread == 1 ? "" : "s",
+              unreadable);
+    if (!bad) return;
+    char tmp[1100], keep[1100];
+    struct stat sb;
+    snprintf(tmp, sizeof tmp, "%s.owning", root);
+    rm_rf(tmp, false);
+    copy_tree(root, tmp);
+    snprintf(keep, sizeof keep, "%s.before-own", root);
+    for (int n = 2; !stat(keep, &sb) && n < 100; n++) snprintf(keep, sizeof keep, "%s.before-own-%d", root, n);
+    if (rename(root, keep) || rename(tmp, root))
+        FATAL("The game's save has files another app put there, which this app can't write, and it couldn't make its own "
+              "copy (errno %d). Use Settings > Files > Import saves to bring the save in.\n", errno);
+    LOG("[fs] save %s: %d files or folders of another owner, now a copy of this app's (the one before: %s)\n", root, bad, keep);
+}
+
 static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
     if (getenv("LARECOMP_SAVE_DIR")) g_save_dir = getenv("LARECOMP_SAVE_DIR");  // test runs use a scratch copy
@@ -697,6 +864,7 @@ static Service *open_host_fs(const char *sub) {
     for (char *q = cmd + 1; *q; q++)
         if (*q == '/') { *q = 0; mkdir(cmd, 0755); *q = '/'; }
     mkdir(cmd, 0755);
+    own_save(fs->root);
     LOG("[fs] mounted host directory %s\n", fs->root);
     return service_new("IFileSystem", filesystem, fs);
 }

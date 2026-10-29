@@ -39,7 +39,8 @@ static void import_mod(void) {
     jobject act = (jobject)SDL_GetAndroidActivity();
     if (!env || !act) return;
     jclass c = env->GetObjectClass(act);
-    jmethodID m = env->GetStaticMethodID(c, "importMod", "(Ljava/lang/String;)V");
+    // (Game Files > Game files: Use them in place - the mod read where it is too, mods/<name>.link: runtime/mods.c)
+    jmethodID m = env->GetStaticMethodID(c, g_settings.files_in_place ? "importModInPlace" : "importMod", "(Ljava/lang/String;)V");
     bool called = false;
     if (m) {
         char dir[1200];  // (this game version's data folder: each version reads its own mods)
