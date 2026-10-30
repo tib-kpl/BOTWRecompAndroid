@@ -4002,8 +4002,8 @@ bool vk_heap_place(uint64_t size) {
     // on an Adreno 730 (issue #31). A page not tracked yet counts as written, so turning it on late is safe.
 #define NOT_PLACED() (gcopy_mode ? plat_write_tracking_enable(HEAP_BASE, HEAP_BASE + HEAP_MAX) : (void)0, false)
     if (!g_vk.map_placed || getenv("LARECOMP_VK_NO_PLACED")) return NOT_PLACED();
-    if (!vk_turnip_path_setting(g_vk.props.deviceName, g_settings.gpu_heap, VK_TURNIP_HEAP)) {
-        // (the start screen's Driver compatibility: Automatic leaves it to the Adreno 8xx it was made on)
+    if (!vk_turnip_heap_setting(g_vk.props.deviceName, g_settings.gpu_heap, g_vk.map_placed, vk_driver_is_turnip())) {
+        // The start screen's Automatic heap policy keeps the tested 740 exception.
         LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
             g_settings.gpu_heap < 0 ? "automatic GPU profile" : "settings");
         return NOT_PLACED();

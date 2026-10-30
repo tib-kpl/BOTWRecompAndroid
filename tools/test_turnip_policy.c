@@ -25,5 +25,18 @@ int main(void) {
         assert(!vk_turnip_path_setting(names[0], 0, path));
     }
     assert(!vk_turnip_path_auto("Adreno830", (enum VkTurnipPath)99));
+    const char *mapped[] = {"Adreno (TM) 735", "Adreno732", "Adreno750"};
+    for (size_t i = 0; i < sizeof mapped / sizeof *mapped; i++) {
+        assert(vk_turnip_heap_setting(mapped[i], -1, true, true));
+        assert(!vk_turnip_heap_setting(mapped[i], -1, false, true));
+        assert(!vk_turnip_heap_setting(mapped[i], -1, true, false));
+        assert(!vk_turnip_heap_setting(mapped[i], 0, true, true));
+        assert(vk_turnip_heap_setting(mapped[i], 1, false, false));
+        assert(!vk_turnip_path_setting(mapped[i], -1, VK_TURNIP_TARGET_READS));
+        assert(!vk_turnip_path_setting(mapped[i], -1, VK_TURNIP_LRZ));
+    }
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++)
+        assert(!vk_turnip_heap_setting(names[i], -1, true, true));
+    assert(vk_turnip_heap_setting("Adreno830", -1, false, false));
     puts("Turnip profiles: per-option 740 policy, 8xx compatibility, explicit overrides passed");
 }
