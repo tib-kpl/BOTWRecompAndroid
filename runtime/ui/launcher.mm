@@ -210,6 +210,11 @@ static std::string check_copied_files(const std::string &root) {
     // (the game reads its data through romfs.bin alone: on Android it's built straight from the picked folder, and romfs/
     // holds only the movies, opened by path)
     std::string linked = romfs_link_target(root);
+    struct stat lst;
+    if (!linked.empty() && stat(linked.c_str(), &lst) == 0 && S_ISREG(lst.st_mode)) {  // (in place: the player's romfs.bin)
+        char bad[128];
+        return romfs_image_ok(linked.c_str(), bad, sizeof bad) ? "" : "The game files folder was moved or can't be read";
+    }
     if (!linked.empty())  // (used in place: the player's own romfs/, runtime/services/fs.c)
         return file_exists(linked + "/System/Version.txt") ? "" : "The game files folder was moved or can't be read";
     if (!file_exists(root + "/romfs.bin")) return "Game data missing";
@@ -304,6 +309,9 @@ static bool romfs_check_result(int r, const char *why, int nfiles, const char *v
                 "come from the same version.");
     } else if (r == ROMFS_SET_MISSING) {
         set_failure(FAIL_MISSING);
+    } else if (r == ROMFS_SET_DAMAGED) {  // (a romfs.bin brought ready-made, romfs_check_image)
+        set_job("Game data incomplete: copy romfs.bin again whole", true,
+                "The romfs.bin in that folder can't be read whole. Copy it again from where it was made, or make it again.");
     } else {
         if (nfiles >= 0) fprintf(stderr, "[launcher] romfs: %d files, Version.txt %.16s\n", nfiles, version_txt[0] ? version_txt : "-");
         return true;
@@ -690,6 +698,37 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_botwrecompandroid_BOTWRecompAndro
     int r = romfs_check_set(version, p.data(), n, txt.c_str(), why, sizeof why);
     while (!txt.empty() && (txt.back() == '\n' || txt.back() == '\r' || txt.back() == ' ')) txt.pop_back();
     return romfs_check_result(r, why, n, txt.c_str());
+}
+
+static bool keep_loose(const char *rel);
+
+// A romfs.bin brought ready-made (the picked folder: exefs/ and romfs.bin - made on a PC from the game's own files, no
+// 41,000 files to copy through the file provider): nativeCheckRomfs for it, its descriptor (closed here) read from its
+// own tables and System/Version.txt. false = the failure is set (nativeImportDone(6) follows)
+extern "C" JNIEXPORT jboolean JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeCheckRomfsImage(JNIEnv *, jclass,
+                                                                                                              jint version, jint fd) {
+    char why[256] = "";
+    int r = romfs_check_image(version, fd, why, sizeof why);
+    close(fd);
+    if (r != ROMFS_SET_OK) fprintf(stderr, "[launcher] romfs.bin: %s\n", why);
+    return romfs_check_result(r, why, -1, "");
+}
+
+// The few files the runtime opens by path (keep_loose: the movies), out of a ready-made romfs.bin (its descriptor,
+// closed here) into this setup's romfs/. NULL, or why it failed.
+extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImageLoose(JNIEnv *env, jclass, jint fd) {
+    set_job("Taking the movies out of the game data...");
+    std::string romfs = setup_dest() + "/romfs";
+    mkdir(romfs.c_str(), 0755);
+    char why[256] = "";
+    bool ok = romfs_image_extract(fd, romfs.c_str(), keep_loose, why, sizeof why);
+    close(fd);
+    if (ok) return NULL;
+    fprintf(stderr, "[launcher] romfs.bin's movies: %s\n", why);
+    pthread_mutex_lock(&g_lock);
+    g_fail_detail = why;  // (nativeImportDone(5) follows)
+    pthread_mutex_unlock(&g_lock);
+    return env->NewStringUTF(why);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeImportProgress(JNIEnv *, jclass, jlong done, jlong total) {
@@ -2145,7 +2184,7 @@ extern "C" void launcher_run(const char *root) {
                     dl->AddLine(ImVec2(x, cy), ImVec2(x + u * 0.35f, cy + u * 0.35f), g, fs * 0.11f);
                     dl->AddLine(ImVec2(x + u * 0.35f, cy + u * 0.35f), ImVec2(x + u, cy - u * 0.4f), g, fs * 0.11f);
                 };
-                std::string src_d = tr("The folder with your own game folders (exefs/romfs) of The Legend of Zelda: Breath of "
+                std::string src_d = tr("The folder with your own game folders (exefs/romfs, or exefs and a romfs.bin) of The Legend of Zelda: Breath of "
                                        "the Wild for Nintendo Switch: version 1.0.0, 1.6.0, 1.8.2 or 1.9.0 (the last two in "
                                        "Brazilian Portuguese). The version is told from the files, and each one is set up in a place of "
                                        "its own, beside the others. The game isn't included with BOTWRecompAndroid.");

@@ -15,9 +15,12 @@
 #include <libavutil/time.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+#include <dirent.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <unistd.h>
 
 #include "../hle.h"
 #include "../settings.h"
@@ -101,7 +104,7 @@ HLE_FUNC("_ZNK5movie9MediaData8FindRectEPKcPiS3_S3_S3_", md_find_rect) {
     c->x[0] = 1;
 }
 
-// ------------------------------------------------------------------ Buffer (opaque, <= 0x40 bytes)
+// ------------------------------------------------------------------ Buffer (8-byte handle in the 2017 SDK, 0x40 in 2019's)
 typedef struct {
     uint64_t base, capacity;
     int32_t offset, size;
@@ -109,34 +112,56 @@ typedef struct {
     uint32_t u32;
     int32_t i32;
 } MBuffer;
-_Static_assert(sizeof(MBuffer) <= 0x40, "movie::Buffer size");
-#define BUF(x) ((MBuffer *)(uintptr_t)(x))
 
-HLE_FUNC("_ZN5movie6BufferC1Ev", buf_ctor) { memset(BUF(c->x[0]), 0, sizeof(MBuffer)); }
+static MBuffer *mbuf(uint64_t guest) {
+    MBuffer **p = (MBuffer **)(uintptr_t)guest;
+    if (!*p) *p = calloc(1, sizeof(MBuffer));
+    return *p;
+}
+#define BUF(x) mbuf(x)
+
+HLE_FUNC("_ZN5movie6BufferC1Ev", buf_ctor) { *(MBuffer **)(uintptr_t)c->x[0] = calloc(1, sizeof(MBuffer)); }
+HLE_FUNC("_ZN5movie6BufferC2Ev", buf_ctor_c2) { buf_ctor(c); }
 HLE_FUNC("_ZN5movie6BufferC1EPvm", buf_ctor_ext) {
-    MBuffer *b = BUF(c->x[0]);
-    memset(b, 0, sizeof *b);
+    MBuffer *b = calloc(1, sizeof(MBuffer));
     b->base = c->x[1];
     b->capacity = c->x[2];
     b->size = (int32_t)c->x[2];
+    *(MBuffer **)(uintptr_t)c->x[0] = b;
 }
+HLE_FUNC("_ZN5movie6BufferC2EPvm", buf_ctor_ext_c2) { buf_ctor_ext(c); }
 HLE_FUNC("_ZN5movie6BufferC1Em", buf_ctor_alloc) {
-    MBuffer *b = BUF(c->x[0]);
-    memset(b, 0, sizeof *b);
+    MBuffer *b = calloc(1, sizeof(MBuffer));
     b->base = (uint64_t)(uintptr_t)calloc(1, c->x[1] + 64);
     b->capacity = c->x[1];
     b->size = (int32_t)c->x[1];
+    *(MBuffer **)(uintptr_t)c->x[0] = b;
 }
-HLE_FUNC("_ZN5movie6BufferC1ERKS0_", buf_copy) { *BUF(c->x[0]) = *BUF(c->x[1]); }
+HLE_FUNC("_ZN5movie6BufferC2Em", buf_ctor_alloc_c2) { buf_ctor_alloc(c); }
+HLE_FUNC("_ZN5movie6BufferC1ERKS0_", buf_copy) {
+    MBuffer *b = calloc(1, sizeof(MBuffer));
+    *b = *BUF(c->x[1]);
+    *(MBuffer **)(uintptr_t)c->x[0] = b;
+}
+HLE_FUNC("_ZN5movie6BufferC2ERKS0_", buf_copy_c2) { buf_copy(c); }
 HLE_FUNC("_ZN5movie6BufferaSERKS0_", buf_assign) { *BUF(c->x[0]) = *BUF(c->x[1]); }
-HLE_FUNC("_ZN5movie6BufferD1Ev", buf_dtor) { (void)c; }
+HLE_FUNC("_ZN5movie6BufferD1Ev", buf_dtor) {
+    free(*(MBuffer **)(uintptr_t)c->x[0]);
+    *(uint64_t *)(uintptr_t)c->x[0] = 0;
+}
+HLE_FUNC("_ZN5movie6BufferD2Ev", buf_dtor_d2) { buf_dtor(c); }
 HLE_FUNC("_ZNK5movie6Buffer4BaseEv", buf_base) { c->x[0] = BUF(c->x[0])->base; }
+HLE_FUNC("_ZNK5movie6Buffer4DataEv", buf_data) { MBuffer *b = BUF(c->x[0]); c->x[0] = b->base + (uint64_t)(b->offset > 0 ? b->offset : 0); }
 HLE_FUNC("_ZNK5movie6Buffer4SizeEv", buf_size) { c->x[0] = (uint32_t)BUF(c->x[0])->size; }
 HLE_FUNC("_ZNK5movie6Buffer6OffsetEv", buf_offset) { c->x[0] = (uint32_t)BUF(c->x[0])->offset; }
+HLE_FUNC("_ZNK5movie6Buffer8CapacityEv", buf_capacity) { c->x[0] = BUF(c->x[0])->capacity; }
 // (BOTW's 2017 SDK: the same, not const)
+HLE_FUNC("_ZN5movie6Buffer4BaseEv", buf_base_old) { buf_base(c); }
+HLE_FUNC("_ZN5movie6Buffer4DataEv", buf_data_old) { buf_data(c); }
 HLE_FUNC("_ZN5movie6Buffer4SizeEv", buf_size_old) { buf_size(c); }
 HLE_FUNC("_ZN5movie6Buffer6OffsetEv", buf_offset_old) { buf_offset(c); }
-HLE_FUNC("_ZNK5movie6Buffer8CapacityEv", buf_capacity) { c->x[0] = BUF(c->x[0])->capacity; }
+HLE_FUNC("_ZN5movie6Buffer8CapacityEv", buf_capacity_old) { buf_capacity(c); }
+HLE_FUNC("_ZN5movie6Buffer11SetCapacityEm", buf_set_cap) { BUF(c->x[0])->capacity = c->x[1]; }
 HLE_FUNC("_ZN5movie6Buffer8SetRangeEii", buf_set_range) { BUF(c->x[0])->offset = (int32_t)c->x[1]; BUF(c->x[0])->size = (int32_t)c->x[2]; }
 HLE_FUNC("_ZN5movie6Buffer18SetDataAndCapacityEPvm", buf_set_data) {
     MBuffer *b = BUF(c->x[0]);
@@ -145,9 +170,13 @@ HLE_FUNC("_ZN5movie6Buffer18SetDataAndCapacityEPvm", buf_set_data) {
 }
 HLE_FUNC("_ZN5movie6Buffer12SetInt64DataEl", buf_set_i64) { BUF(c->x[0])->i64 = (int64_t)c->x[1]; }
 HLE_FUNC("_ZNK5movie6Buffer12GetInt64DataEv", buf_get_i64) { c->x[0] = (uint64_t)BUF(c->x[0])->i64; }
+HLE_FUNC("_ZN5movie6Buffer12GetInt64DataEv", buf_get_i64_old) { buf_get_i64(c); }
 HLE_FUNC("_ZN5movie6Buffer13SetUint32DataEj", buf_set_u32) { BUF(c->x[0])->u32 = (uint32_t)c->x[1]; }
 HLE_FUNC("_ZNK5movie6Buffer13GetUint32DataEv", buf_get_u32) { c->x[0] = BUF(c->x[0])->u32; }
+HLE_FUNC("_ZN5movie6Buffer13GetUint32DataEv", buf_get_u32_old) { buf_get_u32(c); }
 HLE_FUNC("_ZN5movie6Buffer12SetInt32DataEi", buf_set_i32) { BUF(c->x[0])->i32 = (int32_t)c->x[1]; }
+HLE_FUNC("_ZNK5movie6Buffer12GetInt32DataEv", buf_get_i32) { c->x[0] = (uint32_t)BUF(c->x[0])->i32; }
+HLE_FUNC("_ZN5movie6Buffer12GetInt32DataEv", buf_get_i32_old) { buf_get_i32(c); }
 
 HLE_FUNC("_ZN5movie12SetAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", movie_set_allocator) { (void)c; }
 HLE_FUNC("_ZN5movie17SetThreadPriorityEi", movie_set_thread_priority) { (void)c; }
@@ -244,10 +273,47 @@ static void ex_set_data_source(Cpu *c) {
         if (slash) snprintf(host, sizeof host, "%.*s/romfs/%s", (int)(slash - aoc), aoc, rel ? rel : "");
     }
     LOG("[movie] open %s -> %s\n", path ? path : "(null)", host);
+    if (getenv("LARECOMP_MOVIE_MISSING") && strstr(host, getenv("LARECOMP_MOVIE_MISSING")) && strrchr(host, '/'))
+        snprintf(strrchr(host, '/') + 1, 16, "missing.webm");  // (test: a movie the dump lacks)
+    else if (access(host, R_OK) != 0) {  // (a player's own romfs/ used in place: its names' case may differ - Android minds)
+        char *slash = strrchr(host, '/');
+        DIR *dir = NULL;
+        if (slash) { *slash = 0; dir = opendir(host); *slash = '/'; }
+        for (struct dirent *de; dir && (de = readdir(dir));)
+            if (!strcasecmp(de->d_name, slash + 1)) {
+                snprintf(slash + 1, sizeof host - (size_t)(slash + 1 - host), "%s", de->d_name);
+                LOG("[movie] found as %s\n", host);
+                break;
+            }
+        if (dir) closedir(dir);
+    }
+    bool stand_in = false;
     if (avformat_open_input(&e->fmt, host, NULL, NULL) < 0 || avformat_find_stream_info(e->fmt, NULL) < 0) {
-        LOG("[movie] cannot open %s\n", host);
-        c->x[0] = 1;
-        return;
+        // A movie that isn't there crashed the game (#113: the Zora's Domain cutscene, a dump used in place): an
+        // error, or no video track (tried: a null object at +0x188), are things it never sees on the Switch. In its
+        // place, another movie of the same folder from its last moments: a video track that ends at once.
+        if (e->fmt) avformat_close_input(&e->fmt);
+        char *slash = strrchr(host, '/');
+        DIR *dir = NULL;
+        if (slash) { *slash = 0; dir = opendir(host); *slash = '/'; }
+        for (struct dirent *de; dir && (de = readdir(dir));) {
+            size_t n = strlen(de->d_name);
+            if (n < 5 || strcasecmp(de->d_name + n - 5, ".webm")) continue;
+            char other[1024];
+            snprintf(other, sizeof other, "%.*s/%s", (int)(slash - host), host, de->d_name);
+            if (avformat_open_input(&e->fmt, other, NULL, NULL) >= 0 && avformat_find_stream_info(e->fmt, NULL) >= 0) {
+                LOG("[movie] cannot open %s: %s in its place, from its end\n", host, de->d_name);
+                stand_in = true;
+                break;
+            }
+            if (e->fmt) avformat_close_input(&e->fmt);
+        }
+        if (dir) closedir(dir);
+        if (!stand_in) {
+            LOG("[movie] cannot open %s, nor any movie beside it\n", host);
+            c->x[0] = 1;
+            return;
+        }
     }
     e->pkt = av_packet_alloc();
     e->ntracks = 0;
@@ -258,6 +324,8 @@ static void ex_set_data_source(Cpu *c) {
         if (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ||
             (e->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && g_settings.movie_audio && !getenv("LARECOMP_NO_MOVIE_AUDIO")))
             e->map[e->ntracks++] = (int)i;
+    if (stand_in && e->fmt->duration > 500000)  // (from the keyframe before its last 0.3 s)
+        av_seek_frame(e->fmt, -1, e->fmt->duration - 300000, AVSEEK_FLAG_BACKWARD);
     c->x[0] = 0;
 }
 
@@ -795,6 +863,7 @@ static void dec_get_output_buffer(Cpu *c) {
         uint8_t *dst = (uint8_t *)(uintptr_t)(b->base + (uint64_t)(b->offset > 0 ? b->offset : 0));
         int w = d->width, h = d->height;
         uint32_t n;
+        plat_write_prepare((uint64_t)(uintptr_t)dst, room);
         if (room == (uint64_t)w * h * 3 / 2) {
             // BOTW's buffer is width x height x 1.5 (3110400 bytes for its 1920x1080 movies): NV12 without padding -
             // the luma rows, then the chroma's right after them
@@ -872,9 +941,10 @@ RT_ON_RESET(movie_reset) {
     g_skip_held = false, g_skip_pressed_at = 0;
 }
 
-static void dec_get_counts(Cpu *c) {  // slot 14: (int*, int64*) queried after Configure
-    if (c->x[1]) *(int32_t *)(uintptr_t)c->x[1] = 0;
-    if (c->x[2]) *(int64_t *)(uintptr_t)c->x[2] = 0;
+static void dec_get_counts(Cpu *c) {  // slot 14: GetOutputBufferSize(int *size, int *alignment) queried after Configure
+    Decoder *d = self_state(c);
+    if (c->x[1]) *(int32_t *)(uintptr_t)c->x[1] = d ? (int32_t)d->out_cap : 0;
+    if (c->x[2]) *(int32_t *)(uintptr_t)c->x[2] = d && d->video ? 32 : 2;
     c->x[0] = 0;
 }
 

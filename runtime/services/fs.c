@@ -496,7 +496,9 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
 }
 
 static Service *open_romfs_storage(void) {
-    if (romfs_fd == -1 && g_romfs_link) {  // the player's own romfs/ folder, in place
+    struct stat lst;
+    bool link_file = g_romfs_link && stat(g_romfs_link, &lst) == 0 && S_ISREG(lst.st_mode);  // (their own romfs.bin)
+    if (romfs_fd == -1 && g_romfs_link && !link_file) {  // the player's own romfs/ folder, in place
         if (!romfs_virt) {
             uint64_t t0 = plat_now_ns();
             char why[256];
@@ -513,8 +515,10 @@ static Service *open_romfs_storage(void) {
     }
     if (romfs_fd == -1) {  // (not VIRT_FD)
         char path[1024];
-        snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // extracted/romfs.bin
+        if (link_file) snprintf(path, sizeof path, "%s", g_romfs_link);  // the player's romfs.bin, in place
+        else snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // extracted/romfs.bin
         romfs_fd = open(path, O_RDONLY);
+        if (link_file) LOG("[fs] game data from %s in place\n", path);
         if (romfs_fd < 0) FATAL("cannot open %s (set up the game files on the start screen)\n", path);
         char why[128];
         if (!romfs_image_ok(path, why, sizeof why))  // (else the game's SDK aborts on it with an svcBreak, nothing said)

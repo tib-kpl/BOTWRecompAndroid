@@ -1,6 +1,7 @@
 // Executes recorded NVN command lists with Vulkan (port of renderer.m; same structure, same behaviour).
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_timer.h>
+#include <ctype.h>
 #include <float.h>
 #include <math.h>
 #include <stdarg.h>
@@ -2514,8 +2515,8 @@ static void translate_program(void *arg) {
             while (*e == '+' || *e == ',') e++;
         }
         if (hit) {
-            char path[96];
-            snprintf(path, sizeof path, "build/fs_%016llx.glsl", (unsigned long long)h);
+            char path[96];  // (one file per vertex shader: an effect's fragment shader is shared by many)
+            snprintf(path, sizeof path, "build/fs_%016llx_vs%llx.glsl", (unsigned long long)h, (unsigned long long)p->code[0]);
             FILE *f = fopen(path, "wb");
             if (f) {
                 fprintf(f, "// fragment shader %016llx (code %llx)\n%s\n// ---- vertex shader (code %llx)\n%s\n",
@@ -4300,9 +4301,9 @@ static void gcopy_retire(uint64_t done) {
 // and copied into the slot by the GPU at the start of the submission. What a shader stored also goes back to guest
 // memory once its submission is done (the game reads some of it as uniform buffers, vertices, textures), and to the
 // range's last-uploaded copy, so that isn't taken for the CPU's write.
-typedef struct { uint64_t lo, hi; } GcRange;  // heap offsets, 256-aligned
+typedef struct { uint64_t lo, hi; bool store; } GcRange;  // heap offsets, 256-aligned
 #define GA_SIZE (128ull << 20)  // (the minimum maxStorageBufferRange)
-#define GA_RES (32ull << 20)    // [0, GA_RES): resident slots; the rest: the ring
+#define GA_RES (48ull << 20)    // [0, GA_RES): resident slots; the rest: the ring
 #define GA_SEG (8ull << 20)
 #define GA_NRES 512
 typedef struct { uint64_t lo, hi, off, checked; uint8_t *shadow; bool live; uint64_t *bseq; } GaRes;  // (bseq: per 256 B)
@@ -4450,7 +4451,7 @@ static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
             if (e->hi > uhi) { uhi = e->hi; grew = true; }
         }
     }
-    if (no && in_pass) return NULL;  // (merging copies slot to slot: not inside a render pass)
+    if (no && in_pass) vk_end_pass();  // (merging copies slot to slot: outside any render pass)
     uint64_t len = uhi - ulo;
     int slot = -1;
     for (int i = 0; i < ga_nres; i++) if (!ga_res[i].live && !ga_res[i].shadow) { slot = i; break; }
@@ -4595,7 +4596,7 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
     } while (0)
     for (int i = 0; i < m; i++) {
         uint64_t lo = r[i].lo, hi = r[i].hi;
-        if (store) {  // a storing shader's ranges: resident from now on
+        if (r[i].store) {  // a storing shader's bound ranges: resident from now on
             GaRes *e = gres_get(lo, hi, true);
             if (!e) { stat_gres_fail[0]++; return false; }
             gres_sync(e);
@@ -4623,12 +4624,19 @@ static bool gres_prepare(const GcRange *r, int m, bool store) {
             }
             if (in) {
                 uint64_t end = hi < in->hi ? hi : in->hi;
+                if (end < hi && n == GMAP_MAX - 1) {  // (one table slot left: copy the whole tail rather than overflow)
+                    uint64_t off = ga_load_copy(at, hi - at);
+                    if (off == ~0ull) { stat_gres_fail[hi - at > GA_SEG ? 3 : 2]++; return false; }
+                    GRES_ADD(at, hi - at, off);
+                    break;
+                }
                 gres_sync(in);
                 GRES_ADD(at, end - at, in->off + (at - in->lo));
                 stat_gres_res++;
                 at = end;
                 continue;
             }
+            if (next < hi && n == GMAP_MAX - 1) next = hi;
             uint64_t off = ga_load_copy(at, next - at);
             if (off == ~0ull) { stat_gres_fail[next - at > GA_SEG ? 3 : 2]++; return false; }
             GRES_ADD(at, next - at, off);
@@ -4652,11 +4660,16 @@ static VkDescriptorBufferInfo gmiss_info(void) {
 }
 
 static void gres_reset(void) {
+    pthread_mutex_lock(&gc_lock);
+    gc_nback = 0;  // (their shadow / bseq pointers and guest addresses belong to the boot being torn down)
+    pthread_mutex_unlock(&gc_lock);
     for (int i = 0; i < ga_nres; i++) { free(ga_res[i].shadow); free(ga_res[i].bseq); }
     memset(ga_res, 0, sizeof ga_res);
     ga_nres = 0;
     ga_res_top = 0;
     ga_head = GA_RES;
+    ga_ndirty = 0;
+    gl_n = 0;
     memset(ga_seg_seq, 0, sizeof ga_seg_seq);
 }
 
@@ -4774,22 +4787,32 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
             lo = lo > (uint64_t)margin ? (lo - (uint64_t)margin) & ~255ull : 0;
             int k = n++;
             while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }
-            r[k].lo = lo; r[k].hi = hi;
+            r[k] = (GcRange){lo, hi, store};
         }
     }
-    for (int i = 0; i < gl_n && n < 6 * 16; i++) {  // (the learned ranges: reached through pointers - gres_learn)
-        int k = n++;
-        while (k > 0 && r[k - 1].lo > gl_learned[i].lo) { r[k] = r[k - 1]; k--; }
-        r[k] = gl_learned[i];
-    }
     int m = 0;
-    for (int i = 0; i < n; i++) {  // merged (nearby ranges too: a table entry costs more than a small gap)
+    for (int i = 0; i < n; i++) {  // merged (nearby bound ranges too: a table entry costs more than a small gap)
         if (m && r[i].lo <= r[m - 1].hi + 4096) { if (r[i].hi > r[m - 1].hi) r[m - 1].hi = r[i].hi; }
         else r[m++] = r[i];
     }
-    if (m > GMAP_MAX) {  // (more ranges than the table holds: one covering them all)
-        r[0].hi = r[m - 1].hi;
-        m = 1;
+    if (m > GMAP_MAX) m = GMAP_MAX;
+    // The learned ranges (reached through pointers - gres_learn): newest first while table slots remain, never
+    // expanding a storing range's write-back or collapsing unrelated heap regions into one multi-megabyte span.
+    for (int i = gl_n - 1; i >= 0 && m < GMAP_MAX - 2; i--) {
+        uint64_t lo = gl_learned[i].lo, hi = gl_learned[i].hi;
+        bool covered = false;
+        for (int k = 0; k < m && !covered; k++) {
+            if (r[k].lo <= lo && hi <= r[k].hi) { covered = true; break; }
+            if (!r[k].store && lo <= r[k].hi + 4096 && hi + 4096 >= r[k].lo) {
+                if (lo < r[k].lo) r[k].lo = lo;
+                if (hi > r[k].hi) r[k].hi = hi;
+                covered = true;
+            }
+        }
+        if (covered) continue;
+        int k = m++;
+        while (k > 0 && r[k - 1].lo > lo) { r[k] = r[k - 1]; k--; }
+        r[k] = (GcRange){lo, hi, false};
     }
     uint64_t total = 0;
     for (int i = 0; i < m; i++) total += (r[i].hi - r[i].lo + 255) & ~255ull;
@@ -4819,7 +4842,7 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
         gmap_tab[i * 4 + 0] = (uint32_t)r[i].lo;
         gmap_tab[i * 4 + 1] = (uint32_t)len;
         gmap_tab[i * 4 + 2] = (uint32_t)(off >> 2);
-        if (store && gc_nback < 256)
+        if (r[i].store && !gres_init() && gc_nback < 256)
             gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq, NULL, NULL};
         off += (len + 255) & ~255ull;
     }
@@ -5109,6 +5132,12 @@ void vk_exec_reset(void) {
     gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");  // (until the next heap is placed: vk_heap_place)
     gres_reset();  // (the arena's resident ranges: keyed by the old heap's addresses)
 #endif
+    pthread_mutex_lock(&wb_lock);
+    for (int i = 0; i < WB_SLOTS; i++) wb_ent[i].busy = false;
+    pthread_mutex_unlock(&wb_lock);
+    pthread_mutex_lock(&cq_lock);
+    for (int i = 0; i < SUBS; i++) { cq[i].n = 0; cq[i].ts = false; }
+    pthread_mutex_unlock(&cq_lock);
     for (int i = 0; i < VC_TAB; i++)  // (the vertex cache: copies of the old pages)
         if (vc_tab[i].buf) vmaDestroyBuffer(g_vk.vma, vc_tab[i].buf, vc_tab[i].mem);
     memset(vc_tab, 0, sizeof vc_tab);
@@ -5744,6 +5773,30 @@ static void draw_(CmdRec *r, bool indexed) {
             }
         }
         for (int i = 0; i < nskip; i++) if (last_hash == skip[i]) { stat_skipped++; return; }
+        {   // LARECOMP_SKIPVS=1 (diagnosis): build/skipvs.txt lists vertex shader code addresses ("3da039b00,3da258600";
+            // empty: none) whose draws are skipped - re-read twice a second, so a draw can be found by toggling it while
+            // the game runs
+            static uint64_t vskip[32], vskip_frame = ~0ull;
+            static int nvskip, vskip_on = -1;
+            if (vskip_on < 0) vskip_on = getenv("LARECOMP_SKIPVS") != NULL;
+            uint64_t now = renderer_present_count();
+            if (vskip_on && now / 15 != vskip_frame) {
+                vskip_frame = now / 15;
+                char buf[512] = "";
+                FILE *f = fopen("build/skipvs.txt", "rb");
+                if (f) { buf[fread(buf, 1, sizeof buf - 1, f)] = 0; fclose(f); }
+                int n = 0;
+                for (const char *p = buf; *p && n < 32;) {
+                    while (*p && !isxdigit((unsigned char)*p)) p++;
+                    if (!*p) break;
+                    vskip[n++] = strtoull(p, (char **)&p, 16);
+                }
+                if (n != nvskip) LOG("[vk] skipvs: %d vertex shaders skipped\n", n);
+                nvskip = n;
+            }
+            for (int i = 0; i < nvskip; i++)
+                if (st.program->stages[0].code_addr == vskip[i]) { stat_skipped++; return; }
+        }
         {   // LARECOMP_LOG_FS_VB=<fs hash>:<stream> (diagnosis): that vertex stream's first 4 floats for the first draw of
             // that fragment shader each frame, as the draw reads them (beside LARECOMP_LOG_FS_CB: a per-instance
             // value and a constant that should change in the same frame)
@@ -6503,7 +6556,8 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
                     sn < (uint32_t)st.nstream ? st.stream[sn][0] : 0, sn < (uint32_t)st.nstream ? st.stream[sn][1] : 0,
                     sn < 16 ? (unsigned long long)st.vbuf[sn].addr : 0ull, sn < 16 ? (unsigned long long)st.vbuf[sn].size : 0ull);
             }
-    if (getenv("LARECOMP_DEBUG_DATA")) {  // vertex streams 0-1 and fragment cbufs: the first floats
+    if (getenv("LARECOMP_DEBUG_DATA")) {  // vertex streams 0-1 and fragment cbufs: the first floats (=2: vertex cbufs whole)
+        int full = atoi(getenv("LARECOMP_DEBUG_DATA")) >= 2;
         LOG("[draw]   depth range %.9g %.9g offset enables %#x factor %.9g units %.9g clamp %.9g\n",
             st.depth_range[0][0], st.depth_range[0][1], st.poly[3], st.poly_offset[0], st.poly_offset[1], st.poly_offset[2]);
         for (int c = 0; c < 18; c++) {
@@ -6514,7 +6568,39 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             if (!r.addr) continue;
             const float *u = (const float *)(uintptr_t)r.addr;
             LOG("[draw]   vcb%d %llx size %u:", c, (unsigned long long)r.addr, (unsigned)r.size);
-            for (int k = 0; k < 160 && k * 4 < (int)r.size; k++) LOG(" %.9g", u[k]);
+            for (int k = 0; k < (full ? 16384 : 160) && k * 4 < (int)r.size; k++) LOG(" %.9g", u[k]);
+            LOG("\n");
+        }
+        for (int i = 0; full && i < 16 && i < st.nattrib; i++) {  // integer attributes (bone indices): their range
+            uint32_t a = st.attrib[i], f = a & 0xFF, sn = (a >> 8) & 0x1F, n = f == 0x27 ? 4 : f == 0x0F ? 2 : f == 0x03 ? 1 : 0;
+            if (!(pr->vi->attr_mask & (1u << i)) || sn >= 16 || sn >= (uint32_t)st.nstream || !st.vbuf[sn].addr) continue;
+            uint64_t stride = st.stream[sn][0], nv = stride ? st.vbuf[sn].size / stride : 0;
+            const uint8_t *p = (const uint8_t *)(uintptr_t)st.vbuf[sn].addr + (a >> 13);
+            if (f == 0x25 || f == 0x0D) {  // (weights: vertices whose weights add up to nothing)
+                uint32_t w = f == 0x25 ? 4 : 2;
+                uint64_t z = 0, off3 = 0, off4 = 0;
+                for (uint64_t v = 0; v < nv; v++) {
+                    unsigned s = 0, s3 = 0;
+                    for (uint32_t k = 0; k < w; k++) s += p[v * stride + k], s3 += k < 3 ? p[v * stride + k] : 0;
+                    z += s == 0;
+                    off4 += s < 252 || s > 258;
+                    if (w != 4 || (s3 >= 252 && s3 <= 258)) continue;
+                    if (off3++ < 4) {  // (the vertex's whole record: its indices beside)
+                        LOG("[draw]   attr%d vertex %llu:", i, (unsigned long long)v);
+                        for (uint64_t k = 0; k < stride && k < 16; k++) LOG(" %u", ((const uint8_t *)(uintptr_t)st.vbuf[sn].addr)[v * stride + k]);
+                        LOG("\n");
+                    }
+                }
+                LOG("[draw]   attr%d unorm: %llu vertices, %llu with all-zero weights, %llu whose first 3 don't add to 1, %llu all 4\n",
+                    i, (unsigned long long)nv, (unsigned long long)z, (unsigned long long)off3, (unsigned long long)off4);
+                continue;
+            }
+            if (!n) continue;
+            unsigned mx = 0, hist[256] = {0};
+            for (uint64_t v = 0; v < nv; v++)
+                for (uint32_t k = 0; k < n; k++) { unsigned b = p[v * stride + k]; hist[b]++; if (b > mx) mx = b; }
+            LOG("[draw]   attr%d ints: %llu vertices, max %u, values used:", i, (unsigned long long)nv, mx);
+            for (unsigned b = 0; b < 256; b++) if (hist[b]) LOG(" %u", b);
             LOG("\n");
         }
         for (int s = 0; s < 8; s++) {  // (2 to 7: per-instance streams - a particle's own values)

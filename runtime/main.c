@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "gamelib.h"
 #include "paths.h"
@@ -175,7 +176,8 @@ static void boot(const char *root) {
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(romfs, sizeof romfs, "%s/romfs", root);
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
-    {   // the game files used in place: romfs.link names the player's own romfs/ (no romfs.bin; the movies from there too)
+    {   // the game files used in place: romfs.link names the player's own romfs/ (no romfs.bin; the movies from there
+        // too) - or their own romfs.bin, read as ours would be (the movies taken out of it into romfs/ at setup)
         char link[1024], target[1024] = "";
         snprintf(link, sizeof link, "%s/romfs.link", root);
         FILE *f = fopen(link, "rb");
@@ -184,7 +186,9 @@ static void boot(const char *root) {
             fclose(f);
             target[n] = 0;
             while (n && (target[n - 1] == '\n' || target[n - 1] == '\r')) target[--n] = 0;
-            if (n) g_romfs_link = strdup(target), g_romfs_dir = g_romfs_link;
+            struct stat st;
+            if (n) g_romfs_link = strdup(target);
+            if (n && !(stat(target, &st) == 0 && S_ISREG(st.st_mode))) g_romfs_dir = g_romfs_link;
         }
     }
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);

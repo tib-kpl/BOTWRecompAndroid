@@ -191,29 +191,33 @@ void motion_event(const SDL_Event *e) {
         to_screen(e->sensor.data, s);
         feed(SDL_GetSensorTypeForID(e->sensor.which), s, e->sensor.sensor_timestamp ? e->sensor.sensor_timestamp : SDL_GetTicksNS());
     } else if (e->type == SDL_EVENT_GAMEPAD_SENSOR_UPDATE) {
-        // A controller's sensors replace the phone's only once its gyroscope has moved for a quarter of a second: some
-        // report one that never does (a USB-C controller the phone sits in, GameSir X5 Lite: issue #78), and its zeros
-        // held the phone's off. One reading over a threshold wasn't enough: with that controller motion worked for
-        // the first aim and then stopped for good (a stray reading, then its zeros). And back to the phone's once the
-        // controller's gyroscope has read exactly zero for 2 s: a real one is never that still.
+        // A controller's sensors replace the phone's only once its gyroscope is alive: some report one that never is (a
+        // USB-C controller the phone sits in, GameSir X5 Lite: issue #78), and its zeros held the phone's off. Alive is
+        // readings that change from one to the next - a real gyroscope's noise does even lying still - 20 in a row:
+        // one stray reading switched to that controller for good (0.2.3), and a speed threshold (0.2.4) never let a
+        // slow aim or a resting controller take over (#78, #115). Back to the phone's after 2 s of readings that are
+        // zero or repeat: a dead or frozen sensor.
         static bool pad_live;
-        static uint64_t moving_ns, zero_ns;
+        static int changing;
+        static float last[3];
+        static uint64_t dead_ns;
         if ((SDL_SensorType)e->gsensor.sensor == SDL_SENSOR_GYRO) {
             const float *g = e->gsensor.data;
-            float mag = fabsf(g[0]) + fabsf(g[1]) + fabsf(g[2]);
+            bool alive = (g[0] != 0.0f || g[1] != 0.0f || g[2] != 0.0f) &&
+                         (g[0] != last[0] || g[1] != last[1] || g[2] != last[2]);
+            memcpy(last, g, sizeof last);
             uint64_t now = SDL_GetTicksNS();
             if (!pad_live) {
-                if (mag <= 0.05f) moving_ns = 0;
-                else if (!moving_ns) moving_ns = now;
-                else if (now - moving_ns > 250000000) {
-                    pad_live = true, zero_ns = 0;
-                    LOG("[motion] the controller's gyroscope moves: its sensors in place of the phone's\n");
+                changing = alive ? changing + 1 : 0;
+                if (changing >= 20) {
+                    pad_live = true, dead_ns = 0;
+                    LOG("[motion] the controller's gyroscope is alive: its sensors in place of the phone's\n");
                 }
-            } else if (mag != 0.0f) zero_ns = 0;
-            else if (!zero_ns) zero_ns = now;
-            else if (now - zero_ns > 2000000000) {
-                pad_live = false, moving_ns = 0, pad_until_ns = 0;
-                LOG("[motion] the controller's gyroscope reads zero: the phone's sensors again\n");
+            } else if (alive) dead_ns = 0;
+            else if (!dead_ns) dead_ns = now;
+            else if (now - dead_ns > 2000000000) {
+                pad_live = false, changing = 0, pad_until_ns = 0;
+                LOG("[motion] the controller's gyroscope reads zero or the same: the phone's sensors again\n");
             }
         }
         if (!pad_live) return;

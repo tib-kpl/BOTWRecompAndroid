@@ -40,6 +40,16 @@ void romfs_virtual_close(RomfsVirtual *v);
 // end the image, so a copy cut short loses them while its header still looks right). false = why says what's wrong.
 bool romfs_image_ok(const char *path, char *why, size_t why_size);
 
+// An image made elsewhere (a romfs.bin the player brings, read through a descriptor: the file picker's on Android).
+// romfs_image_fd_ok: romfs_image_ok for a descriptor. romfs_image_files: each file's path ("a/b/c"), offset in the
+// image and size, from its tables. romfs_check_image: romfs_check_set for it (ROMFS_SET_DAMAGED: not an image, or cut
+// short - why says). romfs_image_extract: the files keep(rel) picks, written under keep_dir/rel.
+bool romfs_image_fd_ok(int fd, char *why, size_t why_size);
+bool romfs_image_files(int fd, void (*each)(void *ud, const char *path, uint64_t off, uint64_t size), void *ud,
+                       char *why, size_t why_size);
+int romfs_check_image(int version, int fd, char *why, size_t why_size);
+bool romfs_image_extract(int fd, const char *keep_dir, bool (*keep)(const char *rel), char *why, size_t why_size);
+
 // Bytes of file data under dir (the image is about this plus its tables).
 uint64_t romfs_dir_bytes(const char *dir);
 
@@ -47,7 +57,7 @@ uint64_t romfs_dir_bytes(const char *dir);
 // relative paths and the first bytes of its System/Version.txt ("" without one): ROMFS_SET_OK; ROMFS_SET_OTHER_VERSION
 // - Version.txt names another version; ROMFS_SET_MISSING - fewer files than that version's whole romfs. More files
 // pass (mods). why: what was found, for the setup's failure line.
-enum { ROMFS_SET_OK, ROMFS_SET_OTHER_VERSION, ROMFS_SET_MISSING };
+enum { ROMFS_SET_OK, ROMFS_SET_OTHER_VERSION, ROMFS_SET_MISSING, ROMFS_SET_DAMAGED };
 int romfs_check_set(int version, const char *const *paths, int n, const char *version_txt, char *why, size_t why_size);
 // The same for a folder on disk (its files as the image takes them: hidden ones left out)
 int romfs_check_dir(int version, const char *dir, char *why, size_t why_size);
