@@ -17,7 +17,7 @@ enum { AA_OFF = 0, AA_SMAA = 1, AA_FXAA = 2 };
 // System language served to the game (runtime/services/am.c GetDesiredLanguage, services/hid_set.c GetLanguageCode):
 // the game picks its text language from it, as it would from the Switch's own system setting. LANG_AUTO follows the
 // host locale ($LC_ALL / $LC_MESSAGES / $LANG); the rest are the codes of the languages the game has text for.
-enum { LANG_AUTO = 0, N_LANGUAGES = 13 };
+enum { LANG_AUTO = 0, N_LANGUAGES = 15 };
 extern const char *const g_language_codes[N_LANGUAGES];  // what the game is told: "ja", "en-US", "es", ...
 extern const char *const g_language_names[N_LANGUAGES];  // for the menu ("Auto", "Japanese", ..., "Spanish")
 
@@ -36,6 +36,7 @@ typedef struct {
     bool movie_audio;
     bool show_fps;
     bool motion;          // the phone's (or a controller's) gyroscope as the controller's motion sensor (hle/motion.c)
+    int motion_source;    // whose: 0 automatic (a controller's once its gyroscope is alive), 1 the phone's, 2 a controller's
 #ifdef __ANDROID__
     bool touch_controls;  // on-screen controls while no controller is connected (ui/touch_controls.mm)
     int overlay_style;    // Show FPS's overlay (ui/perf_overlay.mm): 0 full, 1 compact (one line)
@@ -51,6 +52,7 @@ typedef struct {
     // (turnip_lrz, log_file). -1 Automatic: per-option GPU profiles in vulkan/turnip_policy.h;
     // 1 on, 0 off. Adreno 740 enables target reads only; the upstream 8xx profile stays unchanged.
     int gpu_heap;         // Turnip: the game's memory mapped as GPU memory (vulkan/exec.c vk_heap_place); off: CPU copies
+                          // (its Automatic: on for any Turnip that can place it - vulkan/device.c vk_turnip_heap_on)
     int inplace_reads;    // Turnip: draws sample targets they write as they are (vulkan/exec.c resolve_feedback); off: copies
     int turnip_lrz;       // Turnip's low-resolution Z; off: TU_DEBUG=nolrz before the driver loads (vulkan/device.c)
     bool log_file;        // the log in a file as well (platform/android.c), to send with a report

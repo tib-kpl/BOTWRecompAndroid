@@ -166,22 +166,45 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
 
 #ifdef __ANDROID__
 // BC textures on a GPU without BC (Mali, and others outside Adreno): decoded on the CPU at upload (bcdec, MIT /
-// Unlicense) into the smallest plain format that holds them - BC4 R8, BC5 RG8 (2x the size), BC1/2/3/7 RGBA8 (4-8x),
-// BC6H RGBA16F. They used to become RGBA8 images left unwritten: colored 4x4 garbage on every BC texture (a
-// Mali-G615, 2026-10-17).
+// Unlicense) into the smallest plain format that holds them - BC4 R8, BC5 RG8 (2x the size), BC2/3/7 RGBA8 (4x),
+// BC6H RGBA16F - and BC1 into ASTC 4x4 where the GPU has it (bc1_astc), else RGBA8 (8x). They used to become RGBA8
+// images left unwritten: colored 4x4 garbage on every BC texture (a Mali-G615, 2026-10-17).
 #define BCDEC_STATIC
 #define BCDEC_IMPLEMENTATION
 #define BCDEC_BC4BC5_PRECISE  // (signed BC4 / BC5: the game's normal maps)
 #include "../bcdec.h"
+#include "../bc1_astc.h"
 
+// BC1 (most of BOTW's textures: ~150 MB of them around a village, ~1.1 GB as RGBA8 - the Mali phones' "low memory"
+// kills and 1-5 fps after a few minutes, #143 #155 #162) into ASTC 4x4 instead where the GPU samples it (every Mali):
+// the same block, 2x BC1's size, the colours within a step or two (bc1_astc.c). LARECOMP_BC1_ASTC=0: RGBA8 as before.
+static bool bc1_astc(void) {
+    static int ok = -1;
+    if (ok < 0) {
+        const char *e = getenv("LARECOMP_BC1_ASTC");
+        VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        ok = (!e || atoi(e)) && format_supports(VK_FORMAT_ASTC_4x4_UNORM_BLOCK, need) &&
+             format_supports(VK_FORMAT_ASTC_4x4_SRGB_BLOCK, need);
+        if (ok) LOG("[vk] BC1 textures as ASTC 4x4\n");
+    }
+    return ok;
+}
+
+// The format a BC texture is decoded into without BC; *bpp: its bytes per texel (0: ASTC 4x4 blocks - bc1_to_astc)
 static VkFormat bc_target(VkFormat bc, uint32_t *bpp) {
     switch (bc) {
+    case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+        if (bc1_astc()) { *bpp = 0; return VK_FORMAT_ASTC_4x4_UNORM_BLOCK; }
+        *bpp = 4; return VK_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_BC1_RGB_SRGB_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+        if (bc1_astc()) { *bpp = 0; return VK_FORMAT_ASTC_4x4_SRGB_BLOCK; }
+        *bpp = 4; return VK_FORMAT_R8G8B8A8_SRGB;
     case VK_FORMAT_BC4_UNORM_BLOCK: *bpp = 1; return VK_FORMAT_R8_UNORM;
     case VK_FORMAT_BC4_SNORM_BLOCK: *bpp = 1; return VK_FORMAT_R8_SNORM;
     case VK_FORMAT_BC5_UNORM_BLOCK: *bpp = 2; return VK_FORMAT_R8G8_UNORM;
     case VK_FORMAT_BC5_SNORM_BLOCK: *bpp = 2; return VK_FORMAT_R8G8_SNORM;
     case VK_FORMAT_BC6H_UFLOAT_BLOCK: case VK_FORMAT_BC6H_SFLOAT_BLOCK: *bpp = 8; return VK_FORMAT_R16G16B16A16_SFLOAT;
-    case VK_FORMAT_BC1_RGB_SRGB_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK:
+    case VK_FORMAT_BC2_SRGB_BLOCK:
     case VK_FORMAT_BC3_SRGB_BLOCK: case VK_FORMAT_BC7_SRGB_BLOCK: *bpp = 4; return VK_FORMAT_R8G8B8A8_SRGB;
     default: *bpp = 4; return VK_FORMAT_R8G8B8A8_UNORM;
     }
@@ -433,14 +456,35 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (depthfmt) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     else if (format_supports(vf, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkImageCreateFlags flags = 0;
-    static int no_mut = -1;  // (LARECOMP_VK_NO_MUTABLE=1, a measurement: render targets without it - Turnip's UBWC)
-    if (no_mut < 0) no_mut = getenv("LARECOMP_VK_NO_MUTABLE") != NULL;
-    if (!depthfmt && !(no_mut && (t->flags & 8)))
+    // Render targets (NVN's COMPRESSIBLE flag) without MUTABLE_FORMAT, but for their sRGB / UNORM twin named in a format
+    // list: a Mali driver doesn't compress (AFBC) an image whose views may take any format - each pass's loads and
+    // stores move it whole (from p5r-android's notes). BOTW views none in another format (title, world: logged) but the
+    // window's sRGB; a view that asks for one gets the image's own (vk_view). On Turnip it made no difference (UBWC,
+    // docs/BOTW-PORT.md), and it once broke a compressed image there (exec.c post_image): Mali only.
+    // LARECOMP_VK_RT_FORMAT_LIST=1 / 0 (LARECOMP_VK_NO_MUTABLE=1 as 1).
+    static int rt_list = -1;
+    if (rt_list < 0) {
+        const char *e = getenv("LARECOMP_VK_RT_FORMAT_LIST");
+        rt_list = e ? atoi(e) != 0 : getenv("LARECOMP_VK_NO_MUTABLE") != NULL || g_vk.props.vendorID == 0x13B5;
+        if (rt_list) LOG("[vk] render targets without mutable formats (their sRGB twin in a format list)\n");
+    }
+    VkFormat twin = vf == VK_FORMAT_R8G8B8A8_UNORM ? VK_FORMAT_R8G8B8A8_SRGB : vf == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_R8G8B8A8_UNORM
+                  : vf == VK_FORMAT_B8G8R8A8_UNORM ? VK_FORMAT_B8G8R8A8_SRGB : vf == VK_FORMAT_B8G8R8A8_SRGB ? VK_FORMAT_B8G8R8A8_UNORM
+                  : vf == VK_FORMAT_A8B8G8R8_UNORM_PACK32 ? VK_FORMAT_A8B8G8R8_SRGB_PACK32
+                  : vf == VK_FORMAT_A8B8G8R8_SRGB_PACK32 ? VK_FORMAT_A8B8G8R8_UNORM_PACK32 : VK_FORMAT_UNDEFINED;
+    VkFormat listed[2] = {vf, twin};
+    VkImageFormatListCreateInfo fl = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, .viewFormatCount = 2,
+                                      .pViewFormats = listed};
+    bool fixed = rt_list && !depthfmt && (t->flags & 8) && (!twin || g_vk.api >= VK_API_VERSION_1_2);
+    b->fixed_fmt = fixed;
+    b->view_alt = fixed ? twin : VK_FORMAT_UNDEFINED;
+    if (!depthfmt && (!fixed || twin))
         flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     if (type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
         flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;  // (its slices rendered to through 2D views: vk_view)
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = fixed && twin ? &fl : NULL,
+                            .flags = flags, .imageType = type, .format = vf,
                             .extent = {tw, th, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
@@ -452,6 +496,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, ci.pNext = NULL, b->fixed_fmt = false;
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
         depthfmt = false;
     }
@@ -543,6 +588,10 @@ int vk_texture_count(void) {
             (unsigned long long)g_tex_stat_init, (unsigned long long)g_tex_stat_reused, (unsigned long long)g_tex_stat_reinit,
             (unsigned long long)g_tex_stat_fin_owner, (unsigned long long)g_tex_stat_fin_copy,
             (unsigned long long)g_tex_stat_reg);
+        extern uint64_t g_tex_drain_ns, g_tex_drains;
+        LOG("[tex-diag] slot replacements waited for the render thread: %llu, %.1f ms in all\n",
+            (unsigned long long)__atomic_exchange_n(&g_tex_drains, 0, __ATOMIC_RELAXED),
+            __atomic_exchange_n(&g_tex_drain_ns, 0, __ATOMIC_RELAXED) / 1e6);
         for (int i = g_nlive >= 3 ? g_nlive - 3 : 0; i < g_nlive; i++) {
             NvnTexture *t = g_live[i];
             LOG("[tex-sample #%d] addr=%llx %ux%ux%u fmt=%#x tgt=%u flags=%#x refs=%u fin=%d label=%s\n",
@@ -765,7 +814,16 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
     uint64_t frame = vk_frame_counter();
     if (b->uploaded && b->checked_frame == frame) return;
-    if (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
+    // A texture that never changed since its upload is checked every 8th frame - but a linear one (flag 0x40 / 0x10)
+    // every frame: BOTW fills its terrain height tiles (256x256 R16, 64x64, linear) on the CPU and draws them into the
+    // terrain's arrays (512x512x8 RGBA8) right away, once. Read up to 7 frames late, an array layer was built from the
+    // tile's old contents and kept them: the stretched "curtains" after a fast travel or a tower, until the save was
+    // loaded again (2026-11-01, POCO, 1.9.0: in two sessions of fast travels none with every frame, and the first ones
+    // back at once with every 8th; a bisection over the GPU-drawn textures had pointed at that array). There are few
+    // linear textures, and page tracking makes most checks free. LARECOMP_LIN_STAGGER=1: every 8th frame, as before.
+    static int lin_every = -1;
+    if (lin_every < 0) lin_every = !getenv("LARECOMP_LIN_STAGGER");
+    if (b->uploaded && !b->dynamic && !(lin_every && (t->flags & 0x50)) && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
     VkFmt mf = fmt_of(t->format);
@@ -778,8 +836,10 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     static int always_full = -1;
     if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") ? 1 : 0;
     bool full = b->dynamic || !b->uploaded || always_full;
-    bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
-    if (!full && periodic) { full = true; full_hash_budget -= total; }
+    // (safety net: a full hash now and then - one larger than the frame's budget too, as the frame's first: a texture
+    // over 4 MB never fit it, and a change its samples missed stayed unseen - TOTKRecompAndroid's 26 MB terrain atlas, 20 s)
+    bool periodic = frame - b->full_frame >= 120 && (full_hash_budget >= total || full_hash_budget == (4u << 20));
+    if (!full && periodic) { full = true; full_hash_budget = full_hash_budget > total ? full_hash_budget - total : 0; }
     if (!b->tp) b->tp = texpatch_identify(t) + 1;  // (button prompts / Hero Mode icon: re-uploaded when their look changes)
     bool restyle = b->tp > 0 && b->uploaded && b->tp_gen != texpatch_generation();
     // The OS's page write tracking (exec.c vk_pages_changed, shared with the vertex cache): texture memory the CPU
@@ -795,7 +855,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             b->wgen = now;
             if (!ch && b->uploaded && !restyle) {
                 if (!periodic) { prof_tex_watch_skips++; return; }
-                if (b->dynamic) full_hash_budget -= total;  // (the others took theirs above)
+                if (b->dynamic) full_hash_budget = full_hash_budget > total ? full_hash_budget - total : 0;  // (the others took theirs above)
             }
         }
     }
@@ -889,16 +949,18 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * bsize, src + (uint64_t)y * LIN_STRIDE(l.wb * bsize), l.wb * bsize);
                 else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, bsize, l.block_height_log2, l.block_depth_log2);
                 if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, blocks, l.w, l.h, l.wb * bsize);
-                VkSpan s = vk_transient((uint64_t)l.wb * 4 * l.hb * 4 * bpp, 16);
+                uint64_t out_size = bpp ? (uint64_t)l.wb * 4 * l.hb * 4 * bpp : (uint64_t)l.wb * l.hb * 16;
+                VkSpan s = vk_transient(out_size, 16);
                 uint64_t decode_start = texture_trace_on() ? SDL_GetTicksNS() : 0;
-                bc_decode(b->bc_vf, blocks, l.wb, l.hb, bsize, s.ptr, bpp);
+                if (bpp) bc_decode(b->bc_vf, blocks, l.wb, l.hb, bsize, s.ptr, bpp);
+                else bc1_to_astc(blocks, s.ptr, (uint64_t)l.wb * l.hb);
                 uint64_t decode_ns = decode_start ? SDL_GetTicksNS() - decode_start : 0;
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.wb * 4, .bufferImageHeight = l.hb * 4,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                                         .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
                 vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
                 vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
-                texture_trace_record(TEX_TRACE_BC, (uint64_t)l.wb * l.hb * bsize, (uint64_t)l.wb * 4 * l.hb * 4 * bpp, decode_ns);
+                texture_trace_record(TEX_TRACE_BC, (uint64_t)l.wb * l.hb * bsize, out_size, decode_ns);
                 continue;
             }
 #endif
@@ -1106,6 +1168,12 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
 #ifdef __ANDROID__
         else if (b->bc_vf && is_bc(vf)) { uint32_t bpp; fmt = bc_target(vf, &bpp); }  // (decoded BC: its sRGB / UNORM view)
 #endif
+        if (b->fixed_fmt && fmt != b->format && fmt != b->view_alt) {  // (not in its format list: create_image)
+            static int nlog;
+            if (nlog++ < 8) LOG("[vk] a view of render target %ux%u (nvn %#x) as nvn %#x: in its own format\n", t->width, t->height,
+                                t->format, v->format);
+            fmt = b->format;
+        }
     }
     uint32_t lv0 = v && (v->setmask & 1) ? v->base_level : 0;
     uint32_t nlv = v && (v->setmask & 1) && v->num_levels ? v->num_levels : b->levels - (lv0 < b->levels ? lv0 : 0);

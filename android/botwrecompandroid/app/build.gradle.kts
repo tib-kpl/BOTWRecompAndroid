@@ -24,8 +24,8 @@ android {
         applicationId = "com.botwrecomp.android"
         minSdk = 30
         targetSdk = 36
-        versionCode = providers.gradleProperty("ciVersionCode").orNull?.toInt() ?: 25
-        versionName = providers.gradleProperty("ciVersionName").getOrElse("0.2.5-beta")
+        versionCode = providers.gradleProperty("ciVersionCode").orNull?.toInt() ?: 30
+        versionName = providers.gradleProperty("ciVersionName").getOrElse("0.2.10-beta")
         ndk {
             abiFilters += "arm64-v8a"
         }

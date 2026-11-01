@@ -525,6 +525,23 @@ static uint32_t block_current(int64_t timeout_ns) {
     waitlist_add(t);
 #ifdef __ANDROID__
     int kind0 = t->wait_kind;
+    {   // LARECOMP_KWAIT_SPIN_US=<us>: a short wait first without sleeping (the kernel lock let go meanwhile) - the
+        // main thread hands work to its job workers and waits for their results many times a frame, each wake-up a
+        // futex and maybe a sleeping core brought back. A/B in one run (LARECOMP_AB=<n>:kspin), 1.9.0 with FSR 1 +
+        // FXAA (GPU-bound near 20 ms): 50 us +4%, +1.4%, +0.4% in three runs, 150 us nothing. Off by default: with the
+        // default settings the frame sits at the 60 fps cap with the GPU as the limit, where a spin is only CPU heat.
+        static long spin_ns = -1;
+        if (spin_ns < 0) { const char *e = getenv("LARECOMP_KWAIT_SPIN_US"); spin_ns = (e ? atol(e) : 0) * 1000; }
+        extern int vk_ab(const char *what);
+        if (spin_ns > 0 && (timeout_ns < 0 || timeout_ns > spin_ns) && vk_ab("kspin") != 0) {
+            pthread_mutex_unlock(&g_klock);
+            for (uint64_t end = plat_now_ns() + (uint64_t)spin_ns; plat_now_ns() < end;) {
+                if (__atomic_load_n(&t->wait_kind, __ATOMIC_ACQUIRE) != kind0 || g_rt_unwind) break;
+                __asm__ volatile("yield");
+            }
+            pthread_mutex_lock(&g_klock);
+        }
+    }
 #endif
     while (t->wait_kind != WAIT_NONE) {
         if (g_rt_unwind) {  // reboot: give up the wait (the thread unwinds when its svc returns)
@@ -990,7 +1007,22 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x0A: longjmp(t_cur->unwind, 1);  // ExitThread: back to thread_main, which signals the thread object
     case 0x0B: {  // SleepThread (in slices of at most 50 ms: a reboot doesn't wait out a long sleep)
         int64_t ns = (int64_t)x[0];
-        if (ns <= 0) { sched_yield(); break; }
+        if (ns <= 0) {
+            // A yield returns at once, without the host's: the game's job workers spin on yields, and a host sched_yield
+            // took ~30 us - each look at the job queue came that much later (TOTKRecompAndroid, 2026-10-31: +6% fps,
+            // +14% with core 0's too, whose yield still hands the core on: its queue, svc_blocks).
+            // LARECOMP_HOST_YIELD=1: the host's yield as before; =2: skipped off core 0 only. LARECOMP_AB=<n>:yield.
+#ifdef __ANDROID__
+            static int host_yield = -1;
+            if (host_yield < 0) host_yield = getenv("LARECOMP_HOST_YIELD") ? atoi(getenv("LARECOMP_HOST_YIELD")) : 0;
+            extern int vk_ab(const char *what);
+            int ab = vk_ab("yield");
+            bool c0 = t_cur && __atomic_load_n(&t_cur->core, __ATOMIC_ACQUIRE) == 0;
+            if (ab >= 0 ? ab == 1 : host_yield == 0 || (host_yield == 2 && !c0)) break;
+#endif
+            sched_yield();
+            break;
+        }
         for (uint64_t end = plat_now_ns() + (uint64_t)ns, now; !g_rt_unwind && (now = plat_now_ns()) < end;) {
             uint64_t d = end - now < 50000000 ? end - now : 50000000;
             struct timespec ts = {(time_t)(d / 1000000000), (long)(d % 1000000000)};
