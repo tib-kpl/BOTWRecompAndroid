@@ -176,6 +176,7 @@ static bool compat_group(VkExtensionProperties *ep, uint32_t ne, uint32_t api, i
 }
 
 static bool env_on(const char *name) { const char *v = getenv(name); return v && atoi(v); }
+bool vk_driver_is_turnip(void);  // (defined below: the host-import choice looks at the driver before that)
 
 // ---- synchronization2 without it (Mali's older drivers): Vulkan 1.0's barriers, submissions and timestamps. The
 // stage / access bits below 32 are 1.0's own; the split-up ones above map to the 1.0 bit they came from. (From LAS
