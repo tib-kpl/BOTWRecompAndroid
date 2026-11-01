@@ -16,7 +16,7 @@ EXE = '.exe' if sys.platform == 'win32' else ''
 textures = (ROOT / 'runtime/nvn/vulkan/textures.c').read_text()
 execution = (ROOT / 'runtime/nvn/vulkan/exec.c').read_text()
 texture_helpers = textures[textures.index('static uint8_t *upload_scratch;'):textures.index('uint64_t prof_tex_checks,')]
-arena_helper = execution[execution.index('static uint64_t ga_load_copy('):execution.index('static bool gres_prepare(')]
+arena_helper = execution[execution.index('static uint64_t ga_load_copy('):execution.index('// The table entries a load range takes')]
 # Upstream handles every failed/disabled placement with this production macro,
 # rather than the fork's former wrapper around try_heap_place(). Exercise that
 # policy without mocking the whole Vulkan allocator.
