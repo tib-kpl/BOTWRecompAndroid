@@ -38,7 +38,7 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
 
 #ifdef __ANDROID__
 extern "C" bool touch_edit_available(void);  // ui/touch_controls.mm
-extern "C" void touch_edit_begin(void);
+extern "C" void touch_edit_begin_layout(int icons);  // (1 the action layout, 0 the classic one)
 extern "C" void touch_layout_reset(void);
 
 // No controller: the on-screen controls' layout instead of bindings (Android has no keyboard to bind, as a rule)
@@ -51,10 +51,17 @@ static void touch_layout_draw(void) {
     ImGui::Spacing();
     bool can = touch_edit_available();
     ImGui::BeginDisabled(!can);
-    if (ImGui::Button(tr("Edit touch layout"), ImVec2(-1, 0))) touch_edit_begin();
+    if (g_settings.touch_scheme == 1) {  // (two layouts: the icons' in the world, the classic one in the game's menus)
+        if (ImGui::Button(tr("Edit the action layout"), ImVec2(-1, 0))) touch_edit_begin_layout(1);
+        if (ImGui::Button(tr("Edit the classic layout"), ImVec2(-1, 0))) touch_edit_begin_layout(0);
+    } else if (ImGui::Button(tr("Edit touch layout"), ImVec2(-1, 0))) touch_edit_begin_layout(0);
     ImGui::EndDisabled();
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", tr("While editing, touch a button to select it, then - and + change its own size."));
+    ImGui::PopTextWrapPos();
     bool def = true;
     for (int i = 0; i < TOUCH_NCTL; i++) def &= g_settings.touch_pos[i][0] < 0;
+    for (int i = 0; i < TOUCH_NCTL2; i++) def &= g_settings.touch_pos2[i][0] < 0;
     ImGui::BeginDisabled(def);
     if (ImGui::Button(tr("Reset layout to defaults"), ImVec2(-1, 0))) touch_layout_reset();
     ImGui::EndDisabled();
@@ -77,14 +84,28 @@ static void touch_layout_draw(void) {
         ImGui::PopTextWrapPos();
     };
     ImGui::Spacing();
+    bool icons = g_settings.touch_scheme == 1;
+    if (ImGui::Checkbox(tr("Action icons in the world"), &icons)) g_settings.touch_scheme = icons ? 1 : 0, settings_save();
+    hint("While playing in the world, buttons drawn as what they do (attack, jump, the bow...) instead of A, B, ZR. The "
+         "game's menus keep the classic buttons. Edit the layout while playing to move them.");
+    if (icons) {  // (the bow and throw buttons' drag: ui/touch_controls.mm recompute)
+        float as = (g_settings.touch_aim_sens > 0.1f ? g_settings.touch_aim_sens : 1.0f) * 100;
+        ImGui::TextUnformatted(tr("Aim sensitivity (bow, throw)"));
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##AimSens", &as, 25, 200, "%.0f%%")) g_settings.touch_aim_sens = as / 100;
+        if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
+        if (ImGui::Checkbox(tr("Simple controls in talks"), &g_settings.touch_talk)) settings_save();
+        hint("In a conversation only the stick, A and B stay on the screen. Off: all the buttons stay.");
+    }
+    ImGui::Spacing();
     if (ImGui::Checkbox(tr("Camera by dragging"), &g_settings.touch_drag_camera)) settings_save();
     hint("The camera turns while a finger moves on the right half of the screen and stops when it stops, as in phone "
          "shooters, instead of a stick held to one side.");
-    if (g_settings.touch_drag_camera) {
+    if (g_settings.touch_drag_camera || g_settings.touch_scheme == 1) {  // (the action layout's camera drags too: #199)
         float sens = g_settings.touch_drag_sens * 100;
         ImGui::TextUnformatted(tr("Drag sensitivity"));
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderFloat("##DragSens", &sens, 25, 300, "%.0f%%")) g_settings.touch_drag_sens = sens / 100;
+        if (ImGui::SliderFloat("##DragSens", &sens, 25, 400, "%.0f%%")) g_settings.touch_drag_sens = sens / 100;
         if (ImGui::IsItemDeactivatedAfterEdit()) settings_save();
     }
     if (ImGui::Checkbox(tr("Sticks only while touched"), &g_settings.touch_sticks_hidden)) settings_save();

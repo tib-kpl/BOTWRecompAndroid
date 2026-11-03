@@ -42,7 +42,7 @@ typedef struct {
     int overlay_style;    // Show FPS's overlay (ui/perf_overlay.mm): 0 full, 1 compact (one line)
     float overlay_pos[2]; // its top left, a share of the screen, dragged there with a finger (negative: the corner)
     bool event_fps_unlock;  // in-game cutscenes and talks at the chosen frame rate, not 30 (hle/framepace.c)
-    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps
+    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps, 3: 20 fps
     bool shader_int32;    // shader address math in 32-bit words even where the driver offers 64-bit (vulkan/exec.c)
     bool native_code;     // Android: the game's own code on the CPU, no build of it (runtime/native.c); off by default
     bool files_in_place;  // Android: a setup reads the picked romfs/ where it is, no copy (services/fs.c); off by default
@@ -59,6 +59,14 @@ typedef struct {
     char gpu_model[64];   // the GPU of the last start ("Adreno (TM) 830v1"): turnip_lrz's Automatic, before the driver
 #define TOUCH_NCTL 19  // (ui/touch_controls.mm: LAS's 12, then the right stick, L3 / R3 and the d-pad)
     float touch_pos[TOUCH_NCTL][2];  // each on-screen control's place, a share of the screen (negative: default)
+    // The icon layout (ui/touch_controls.mm), in the world only - the classic one above stays in the game's menus:
+    // touch_scheme 1 (0: the classic one everywhere), its controls' places of their own
+#define TOUCH_NCTL2 22
+    int touch_scheme;
+    float touch_pos2[TOUCH_NCTL2][2];
+    float touch_size[TOUCH_NCTL], touch_size2[TOUCH_NCTL2];  // each control's own size (times touch_scale; 0: 1)
+    float touch_aim_sens;  // the icon layout's bow / throw drag: how fast it turns the aim (1: the default)
+    bool touch_talk;       // the icon layout gives way to a talk: only the stick, A and B (false: all its controls stay)
     float touch_scale, touch_opacity;
     // FPS-style touch play (ui/touch_controls.mm): the camera by dragging a finger (its speed tilts the right stick)
     // instead of holding a stick, at touch_drag_sens; the sticks drawn only while a finger holds them; each stick's

@@ -552,16 +552,22 @@ static void tab_display(void) {
         // isn't loaded yet: the 1.8.2 choices.)
         extern int g_game_version;
         bool sixty = g_game_version == 0 || g_game_version >= 182;
-        if (!sixty && g_settings.fps_mode > 1) g_settings.fps_mode = 1;
-        static const char *fr[] = {"Auto (20 / 30)", "30 fps"};
-        static const char *fr60[] = {"Auto (30 / 60)", "30 fps", "60 fps"};
-        opt_choice("Frame rate", &g_settings.fps_mode, sixty ? fr60 : fr, sixty ? 3 : 2, 1,
-                   sixty ? "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
-                           "either way). 30 fps: steady and cooler - the phone heats less. 60 fps: always aims for 60 "
-                           "(game versions 1.8.2 and 1.9.0; 1.0.0 and 1.6.0 run at 30)."
-                         : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in 30. "
-                           "30 fps: always 30 - where a frame takes longer, the game runs slightly slower instead of "
-                           "dropping to 20.");
+        if (!sixty && g_settings.fps_mode == 2) g_settings.fps_mode = 1;
+        // display order -> fps_mode (20 fps came last, 3, after the ini's values)
+        static const char *fr[] = {"Auto (20 / 30)", "20 fps", "30 fps"};
+        static const char *fr60[] = {"Auto (30 / 60)", "20 fps", "30 fps", "60 fps"};
+        static const int fr_mode[] = {0, 3, 1, 2};
+        int fi = 0;
+        for (int i = 0; i < 4; i++) if (fr_mode[i] == g_settings.fps_mode) fi = i;
+        if (opt_choice("Frame rate", &fi, sixty ? fr60 : fr, sixty ? 4 : 3, 2,
+                       sixty ? "Auto: 60 fps where your device keeps up, 30 where it doesn't (the game's clock stays right "
+                               "either way). 20 fps: for slower devices - steady, and the coolest. 30 fps: steady and "
+                               "cooler - the phone heats less. 60 fps: always aims for 60 (game versions 1.8.2 and 1.9.0; "
+                               "1.0.0 and 1.6.0 run at 30)."
+                             : "Auto: the game picks, as on the Switch, and drops to 20 fps where a frame doesn't fit in "
+                               "30. 20 fps: always 20, for slower devices. 30 fps: always 30 - where a frame takes longer, "
+                               "the game runs slightly slower instead of dropping to 20."))
+            g_settings.fps_mode = fr_mode[fi];
         if (sixty)
             opt_toggle("Cutscenes at 60 fps (experimental)", &g_settings.event_fps_unlock, false,
                        "In-game cutscenes and talks run at the chosen frame rate instead of 30. Some of them count frames "
@@ -788,6 +794,18 @@ RT_ON_RESET(menu_reset) {
 
 static int name_filter(ImGuiInputTextCallbackData *d) { return d->EventChar < 0x20 ? 1 : 0; }
 
+// The name's length in letters (UTF-8 code points), cut to g_kbd_max of them: a byte count let Cyrillic through at half
+// the length, cut in the middle of a letter (#165)
+static int kbd_letters(void) {
+    int n = 0;
+    for (char *p = g_kbd_text; *p; p++) {
+        if ((*p & 0xc0) == 0x80) continue;
+        if (n == g_kbd_max) { *p = 0; break; }
+        n++;
+    }
+    return n;
+}
+
 #ifdef __ANDROID__
 // Touch (no controller): typed with Android's keyboard, which covers the lower half - so at the top, in the menu's
 // larger font, with OK / Cancel buttons (there's no Enter / Esc to press; the keyboard's own Enter still confirms)
@@ -810,7 +828,7 @@ static void keyboard_draw_touch(ImGuiIO &io, float scale, bool appearing) {
     ImGui::InputText("##name", g_kbd_text, (size_t)(g_kbd_max * 4 + 1 < (int)sizeof g_kbd_text ? g_kbd_max * 4 + 1 : sizeof g_kbd_text),
                      ImGuiInputTextFlags_CallbackCharFilter, name_filter);
     ImGui::PopFont();
-    if ((int)strlen(g_kbd_text) > g_kbd_max) g_kbd_text[g_kbd_max] = 0;
+    int letters = kbd_letters();
     float bw = 340 * scale, bh = 120 * scale, sp = ImGui::GetStyle().ItemSpacing.x;
     // one row: the count at the left, the buttons at the right (placed, not SameLine: the same top for both)
     float y = ImGui::GetCursorPosY(), x0 = ImGui::GetCursorPosX(), xr = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
@@ -822,7 +840,7 @@ static void keyboard_draw_touch(ImGuiIO &io, float scale, bool appearing) {
     ImGui::PopFont();
     ImGui::PushFont(small);
     ImGui::SetCursorPos(ImVec2(x0, y + (bh - ImGui::GetTextLineHeight()) * 0.5f));
-    ImGui::TextDisabled("%d / %d", (int)strlen(g_kbd_text), g_kbd_max);
+    ImGui::TextDisabled("%d / %d", letters, g_kbd_max);
     ImGui::PopFont();
     ImGui::End();
     ImGui::PopStyleVar(5);
@@ -856,8 +874,8 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
         ImGui::InputText("##name", g_kbd_text, (size_t)(g_kbd_max * 4 + 1 < (int)sizeof g_kbd_text ? g_kbd_max * 4 + 1 : sizeof g_kbd_text),
                          ImGuiInputTextFlags_CallbackCharFilter, name_filter);
         ImGui::PopFont();
-        if ((int)strlen(g_kbd_text) > g_kbd_max) g_kbd_text[g_kbd_max] = 0;
-        ImGui::TextDisabled("Enter  confirm      Esc  cancel      (%d / %d)", (int)strlen(g_kbd_text), g_kbd_max);
+        int letters = kbd_letters();
+        ImGui::TextDisabled("Enter  confirm      Esc  cancel      (%d / %d)", letters, g_kbd_max);
     } else {  // controller: on-screen keyboard (osk.mm, shared with our menus' text fields)
         int r = osk_keys(g_kbd_text, sizeof g_kbd_text, g_kbd_max, appearing, scale, g_font_big);
         if (r) g_kbd = r > 0 ? 2 : 3;  // (Start / + confirms in menu_handle_event too)

@@ -91,6 +91,30 @@ foi testado**, incluindo confirmar/voltar remapeados nos menus do app; AYN Thor 
 Abra **Configurações → Controles** para verificar a detecção e remapear os botões do jogo e dos menus do app.
 A disposição padrão é a da Nintendo: **A à direita, B embaixo**.
 
+## Touch Controls Overhaul
+
+Desde a **0.2.12-beta**, enquanto você joga no mundo, os controles de toque mostram o que cada botão faz, com os
+ícones do próprio jogo lidos dos seus arquivos. Os menus do jogo continuam com os botões clássicos.
+
+![Controles de toque no mundo](docs/images/touch-controls-overhaul.jpg)
+
+- **Seu equipamento nos botões:** o ataque, o arco e o escudo mostram o que está equipado, e o poder mostra a runa
+  selecionada (1.6.0, 1.8.2 e 1.9.0).
+- **Leque de runas:** toque no poder para usar a runa; segure para abrir um leque com as suas runas e solte sobre a que
+  quiser.
+- **Gestos:**
+  - **Arco e arremessar:** segure e arraste o mesmo dedo para mirar (com o controle por movimento ligado, mova o celular); a sensibilidade fica em Controles.
+  - **Câmera:** arraste em qualquer ponto da metade direita.
+  - **Troca de arma e de escudo:** segure e escolha com um segundo dedo.
+  - **Surf com escudo:** toque duas vezes no escudo e segure.
+- **Minimapa no alto:** com os controles de toque na tela, o minimapa, a hora, a temperatura e o sensor vão para o
+  canto superior direito. Com um controle, ficam no lugar de sempre. Toque no minimapa para abrir o mapa; o botão da
+  Sheikah Slate abre a luneta.
+- **Seu próprio layout:** em **Controles**, edite o layout de ação ou o clássico. Arraste os botões, e selecione um
+  para aumentá-lo ou diminuí-lo com **−** e **+**.
+
+![Leque de runas](docs/images/touch-controls-overhaul-runes.jpg)
+
 ## Instalando (beta)
 
 1. Baixe o APK em [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) e instale (Android 11+, ARM64 e
@@ -155,6 +179,14 @@ correções específicas. Relatos de bugs, testes em outros aparelhos e contribu
 - O driver Turnip do [Mesa](https://www.mesa3d.org) (MIT), que os jogadores carregam por conta própria.
 - Fontes: [Baloo 2](https://github.com/EkType/Baloo2) (OFL), DejaVu Sans (licença Bitstream Vera). O robô do Android
   é reproduzido ou modificado a partir de trabalho criado e compartilhado pelo Google (CC BY 3.0).
+- Contribuições por pull request:
+  - [3122380113](https://github.com/3122380113): a compilação sem FFmpeg de volta
+    ([#97](https://github.com/mamcjr/BOTWRecompAndroid/pull/97)); o som que voltava mudo depois de o app ficar em
+    segundo plano ([#96](https://github.com/mamcjr/BOTWRecompAndroid/pull/96)).
+  - [todwang96](https://github.com/todwang96): o heap da GPU ligado no Adreno 7xx com o Turnip, sem ele o texto ficava em
+    branco ([#103](https://github.com/mamcjr/BOTWRecompAndroid/pull/103)).
+  - [Ureta93](https://github.com/Ureta93): arquivos de configuração salvos com quebras de linha do Windows
+    ([#187](https://github.com/mamcjr/BOTWRecompAndroid/pull/187)).
 - Feito com o [Claude Code](https://claude.com/claude-code) (Anthropic).
 
 *The Legend of Zelda* e *Breath of the Wild* são marcas da Nintendo. Este projeto não é afiliado nem endossado pela

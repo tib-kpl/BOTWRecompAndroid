@@ -24,8 +24,8 @@ android {
         applicationId = "com.botwrecomp.android"
         minSdk = 30
         targetSdk = 36
-        versionCode = providers.gradleProperty("ciVersionCode").orNull?.toInt() ?: 30
-        versionName = providers.gradleProperty("ciVersionName").getOrElse("0.2.10-beta")
+        versionCode = providers.gradleProperty("ciVersionCode").orNull?.toInt() ?: 33
+        versionName = providers.gradleProperty("ciVersionName").getOrElse("0.2.13-beta")
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -97,8 +97,9 @@ val prepareBotwRecompAndroid by tasks.registering {
     val icon = repo.resolve("assets/artwork/triforce-icon-v2.png")
     val background = repo.resolve("assets/artwork/great-plateau-background-v2.png")
     val touchSkin = repo.resolve("assets/artwork/sheikah-touch-atlas-v1.png")
+    val touchActions = repo.resolve("assets/artwork/touch-actions-v1.png")
     val libs = listOf("libSDL3.so", "libshaderc_shared.so", "libavcodec.so", "libavformat.so", "libavutil.so", "libswscale.so")
-    inputs.files(smaa, font, icon, background, touchSkin)
+    inputs.files(smaa, font, icon, background, touchSkin, touchActions)
     inputs.files(libs.map { deps.resolve("lib/$it") }.filter { it.exists() })
     if (deps.resolve("gen").exists()) inputs.dir(deps.resolve("gen"))  // (the game code's builder, below)
     inputs.files(listOf("tools/gen.py", "tools/lifter.py", "tools/analyze.py", "tools/nso.py", "tools/passes.py", "tools/patches.py",
@@ -122,6 +123,7 @@ val prepareBotwRecompAndroid by tasks.registering {
         icon.copyTo(out.resolve("assets/res/icon.png"), overwrite = true)
         background.copyTo(out.resolve("assets/res/launcher-background.png"), overwrite = true)
         touchSkin.copyTo(out.resolve("assets/res/sheikah-touch-atlas.png"), overwrite = true)
+        touchActions.copyTo(out.resolve("assets/res/touch-actions.png"), overwrite = true)
         icon.copyTo(out.resolve("res/mipmap-xxxhdpi/ic_launcher.png"), overwrite = true)
         // the game code's builder (docs/las/ANDROID-PORT.md, Fase 6; android/deps/build_gen_deps.sh): its programs and
         // libraries as native libraries (Android runs binaries only from nativeLibraryDir), the rest as assets/gen

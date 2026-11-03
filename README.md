@@ -93,6 +93,29 @@ has been tested**, including remapped confirm/back buttons in app menus; AYN Tho
 Open **Settings → Controls** to check detection and remap buttons for both the game and app menus.
 The default layout is Nintendo-style: **A on the right, B at the bottom**.
 
+## Touch Controls Overhaul
+
+Since **0.2.12-beta**, the touch controls show what each button does while you play in the world, with the game's own
+icons read from your game files. The game's menus keep the classic buttons.
+
+![Touch controls in the world](docs/images/touch-controls-overhaul.jpg)
+
+- **Your gear on the buttons:** attack, the bow and the shield show what you have equipped, and power shows the selected
+  rune (1.6.0, 1.8.2 and 1.9.0).
+- **Rune fan:** tap power to use the rune; hold it to open a fan of your runes and let go over the one you want.
+- **Gestures:**
+  - **Bow and throw:** hold and drag the same finger to aim (with motion controls on, move the phone instead); its sensitivity is in Controls.
+  - **Camera:** drag anywhere on the right half.
+  - **Weapon and shield pickers:** hold, then choose with a second finger.
+  - **Shield surfing:** double-tap the shield and hold.
+- **Minimap at the top:** while the touch controls are on screen, the minimap, time, temperature and sensor move to the
+  top right corner. With a controller they stay in their usual place. Tap the minimap to open the map; the Sheikah Slate
+  button opens the scope.
+- **Your own layout:** in **Controls**, edit the action layout or the classic one. Drag the buttons, and select one to
+  make it bigger or smaller with **−** and **+**.
+
+![Rune fan](docs/images/touch-controls-overhaul-runes.jpg)
+
 ## Installing (beta)
 
 1. Download the APK from [Releases](https://github.com/tib-kpl/BOTWRecompAndroid/releases) and install it (Android 11+,
@@ -164,6 +187,14 @@ Bug reports, device tests, and contributions are also greatly appreciated.
 - [Mesa](https://www.mesa3d.org)'s Turnip driver (MIT), which players load themselves.
 - Fonts: [Baloo 2](https://github.com/EkType/Baloo2) (OFL), DejaVu Sans (Bitstream Vera license). The Android robot
   is reproduced or modified from work created and shared by Google (CC BY 3.0).
+- Contributions through pull requests:
+  - [3122380113](https://github.com/3122380113): builds without FFmpeg again
+    ([#97](https://github.com/mamcjr/BOTWRecompAndroid/pull/97)); sound that came back silent after the app sat in the
+    background ([#96](https://github.com/mamcjr/BOTWRecompAndroid/pull/96)).
+  - [todwang96](https://github.com/todwang96): the GPU heap kept on for Adreno 7xx under Turnip, blank text otherwise
+    ([#103](https://github.com/mamcjr/BOTWRecompAndroid/pull/103)).
+  - [Ureta93](https://github.com/Ureta93): settings files saved with Windows line endings
+    ([#187](https://github.com/mamcjr/BOTWRecompAndroid/pull/187)).
 - Made with [Claude Code](https://claude.com/claude-code) (Anthropic).
 
 *The Legend of Zelda* and *Breath of the Wild* are trademarks of Nintendo. This project is not affiliated with or

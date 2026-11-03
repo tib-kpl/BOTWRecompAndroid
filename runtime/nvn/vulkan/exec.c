@@ -321,7 +321,7 @@ void vk_pace_frame(void) {
         avg = 0;
         slow_since = probe_at = 0;
         probe_wait = 10000000000ull;
-        pace_slow = pace_on && g_settings.fps_mode == 1;
+        pace_slow = pace_on && (g_settings.fps_mode == 1 || g_settings.fps_mode == 3);
         last = 0;  // discard the transition frame's timing, including menu time and resource reallocation
         LOG("[pace] settings changed: fresh %s pacing history\n", g_settings.fps_mode ? "fixed" : "auto");
     }
@@ -364,8 +364,9 @@ void vk_pace_frame(void) {
         // running the threads at clocks that would finish them in 13 ms of their 33. LARECOMP_AB=<n>:adpf30: the 60
         // fps budget on side B)
         bool fixed30 = g_settings.fps_mode == 1 && AB("adpf30") != 1;
-        plat_frame_work_gpu((uint64_t)(hint_busy * 1e6), no_gpu ? 0 : gpu, (follow && pace_slow) || fixed30 ? 33333333ull : 16666667ull,
-                            (uint64_t)(game_busy * 1e6));
+        uint64_t budget = g_settings.fps_mode == 3 ? 50000000ull  // (Frame rate 20: 20 fps's)
+                          : (follow && pace_slow) || fixed30 ? 33333333ull : 16666667ull;
+        plat_frame_work_gpu((uint64_t)(hint_busy * 1e6), no_gpu ? 0 : gpu, budget, (uint64_t)(game_busy * 1e6));
     }
 #endif
 #ifdef __ANDROID__
@@ -436,9 +437,9 @@ void vk_pace_frame(void) {
     idx = (idx + 1) % 60;
     if (!pace_on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
 #ifdef __ANDROID__
-    if (g_settings.fps_mode) {  // (Video: Frame rate 30 / 60) fixed: no measuring, no trials
-        bool slow = g_settings.fps_mode == 1;
-        if (slow != pace_slow) LOG("[pace] frame rate set to %d fps\n", slow ? 30 : 60);
+    if (g_settings.fps_mode) {  // (Video: Frame rate 20 / 30 / 60) fixed: no measuring, no trials
+        bool slow = g_settings.fps_mode == 1 || g_settings.fps_mode == 3;
+        if (slow != pace_slow) LOG("[pace] frame rate set to %d fps\n", g_settings.fps_mode == 3 ? 20 : slow ? 30 : 60);
         pace_slow = slow;
         return;
     }
@@ -1540,8 +1541,10 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
 // Linear render targets (NVN flag 0x40, rows nvn_linear_rt_pitch apart; or 0x10, at the texture's stride) are
 // written back whatever their size up to a slot: BOTW's terrain height tiles (8 levels of 256x256 R16) are drawn on
 // the GPU and read by the CPU's height queries (f_100f841cc) - the feet's placement on the terrain (f_100d1a080) put
-// Link and the NPCs into the ground without them. LARECOMP_WB_LINEAR=0: off.
-#define WB_LINEAR_MAX (512u * 1024)
+// Link and the NPCs into the ground without them. LARECOMP_WB_LINEAR=0: off. Up to 1 MB: a 512x512 RGBA8 linear
+// target (1 MB, at 3e8449000 in a 1.9.0 run) the CPU reads to place the ground's fallen leaves was left out at 512 KB -
+// it read zeros, and leaf patches came and went on any ground around Link (#168, 2026-11-03).
+#define WB_LINEAR_MAX (1024u * 1024)
 #define WB_SLOT (WB_MAX > WB_LINEAR_MAX ? WB_MAX : WB_LINEAR_MAX)
 // Two pools of slots: WB_SMALL of WB_MAX bytes for the small targets, WB_BIG of WB_SLOT for the linear ones (the terrain
 // heights). A 1.9.0 frame queues ~30 write-backs (1x1 to 24x24: exposure, depth bounds, the feet's 1x1 targets) and 32
@@ -1583,6 +1586,22 @@ static bool wb_eligible(NvnTexture *t, TexBackend *b, uint32_t lv) {
     if (only >= 0 && t->format != (uint32_t)only && tegra_total_size(&t->layout) > 4096) return false;
     static int lin = -1;  // (linear targets too, up to a slot; LARECOMP_WB_LINEAR=0: not)
     if (lin < 0) lin = !getenv("LARECOMP_WB_LINEAR") || atoi(getenv("LARECOMP_WB_LINEAR"));
+    {   // LARECOMP_WB_ADDR=<hex>[-<hex>][+...] (bisecting): targets at those addresses (or in those ranges) too, up to
+        // a slot
+        static uint64_t lo[16], hi[16];
+        static int nwant = -1;
+        if (nwant < 0) {
+            nwant = 0;
+            for (const char *e = getenv("LARECOMP_WB_ADDR"); e && *e && nwant < 16;) {
+                lo[nwant] = hi[nwant] = strtoull(e, (char **)&e, 16);
+                if (*e == '-') hi[nwant] = strtoull(e + 1, (char **)&e, 16);
+                nwant++;
+                while (*e == ',' || *e == '+') e++;
+            }
+        }
+        for (int i = 0; i < nwant; i++)
+            if (t->addr >= lo[i] && t->addr <= hi[i] && tegra_total_size(&t->layout) <= WB_SLOT) return true;
+    }
     return t->addr >= HEAP_BASE && tegra_total_size(&t->layout) <= ((lin && (t->flags & 0x50)) ? WB_SLOT : WB_MAX);
 }
 
@@ -2087,6 +2106,23 @@ static void begin_pass(void) {
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
+    {   // A destroyed view reaching the driver (#176, Mali: a crash in vkCmdBeginRendering after ~30 min): say which
+        // (textures.c vk_view_is_dead; LARECOMP_CHECK_VIEWS=0 off)
+        extern bool vk_view_is_dead(VkImageView v);
+        static int nlog;
+        int bad = -1;
+        for (uint32_t i = 0; i < pass_ncolor && bad < 0; i++) if (vk_view_is_dead(ca[i].imageView)) bad = (int)i;
+        if (bad < 0 && has_d && vk_view_is_dead(da.imageView)) bad = 8;
+        if (bad < 0 && has_s && vk_view_is_dead(sa.imageView)) bad = 9;
+        if (bad >= 0) {
+            NvnTexture *t = bad < 8 ? st.rt.color[bad] : st.rt.depth;
+            TexBackend *b = t ? t->backend : NULL;
+            if (nlog++ < 50)
+                LOG("[vk] DEAD VIEW in a pass: slot %d tex %p addr %llx %ux%u nvn %#x backend %p image %p frame %llu\n", bad,
+                    (void *)t, t ? (unsigned long long)t->addr : 0ull, t ? t->width : 0, t ? t->height : 0, t ? t->format : 0,
+                    (void *)b, b ? (void *)b->image : NULL, (unsigned long long)vk_frame_counter());
+        }
+    }
     vk_begin_rendering(cb, &ri, pass_color, pass_depth != VK_FORMAT_UNDEFINED ? pass_depth : pass_stencil,
                        (VkSampleCountFlagBits)pass_samples);
     if (g_debug_frame) pass_dump_b = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
@@ -2123,6 +2159,14 @@ static void pass_size(int *w, int *h) {
 
 static bool g_wide_backdrop;  // (this draw is a layout pane showing a target widened to the window: cbuf_info, scissor_rect)
 static bool g_off_layout;  // (this draw is a menu layout's pane placed past the 16:9 screen's sides: scissor_rect)
+// The map is open: its terrain pane (cb3-hashed fs e91b1fb6, 1280x608, full-width) was drawn this frame or the one
+// before, with a game menu up. Its layout then spreads out with its stretched terrain (cbuf_info) and isn't clipped to
+// the 16:9 part (scissor_rect).
+static uint64_t g_map_frame;
+static bool map_open(float g) {
+    extern bool widescreen_in_menu(void);
+    return g > 1.001f && g_map_frame && renderer_present_count() - g_map_frame <= 2 && widescreen_in_menu();
+}
 
 static VkRect2D scissor_rect(void) {
     int w, h;
@@ -2130,6 +2174,16 @@ static VkRect2D scissor_rect(void) {
     if (!w) return (VkRect2D){{0, 0}, {pass_w, pass_h}};
     int x = st.scissor[0][0], y = st.scissor[0][1], sw = st.scissor[0][2], sh = st.scissor[0][3];
     float sx = vp_sx, sy = vp_sy, ox = vp_ox, oy = vp_oy;
+    {   // The minimap group up top (widescreen.c widescreen_hud_top): a scissor of it (the map's own) goes up with its panes
+        extern float widescreen_hud_top(float x, float y);
+        NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+        if (t0 && vk_texture_scale_group(t0) == RS_OUT && sw < 16384 && sh < 16384 &&
+            !(x <= 0 && y <= 0 && x + sw >= (int)t0->width && y + sh >= (int)t0->height)) {
+            float k = t0->height / 720.0f;  // (target pixels a layout unit)
+            float dy = widescreen_hud_top((x + sw * 0.5f - t0->width * 0.5f) / k, (t0->height * 0.5f - (y + sh * 0.5f)) / k);
+            if (dy != 0) y -= (int)lroundf(dy * k);
+        }
+    }
     {   // Widescreen (1.8.2): the HUD's camera widens with the scene's (widescreen.c rt_persp_update), which puts the 16:9
         // layout in the centred 16:9 part of the wide final image - a scissor of part of that image (the minimap's) goes
         // there too: scaled straight across, it cut the minimap's left half off
@@ -2138,9 +2192,15 @@ static VkRect2D scissor_rect(void) {
         if (t0 && !ox && !oy && fabsf(sx - sy) > 0.01f * sy && !(x <= 0 && y <= 0 && x + sw >= (int)t0->width && y + sh >= (int)t0->height) &&
             widescreen_ui_centred() && vk_texture_scale_group(t0) == RS_OUT) {
             // (and moves with the HUD's panes out to the edge: widescreen_hud_shift, in 1280-wide layout units)
-            extern float widescreen_hud_shift(float x);
-            float k = t0->width / 1280.0f;
-            x += (int)lroundf(widescreen_hud_shift(((float)x + sw * 0.5f - t0->width * 0.5f) / k) * k);
+            extern float widescreen_hud_shift(float x, float y);
+            extern float widescreen_factor(void);
+            float k = t0->width / 1280.0f, g = widescreen_factor();
+            x += (int)lroundf(widescreen_hud_shift(((float)x + sw * 0.5f - t0->width * 0.5f) / k,
+                                                   (t0->height * 0.5f - (y + sh * 0.5f)) / (t0->height / 720.0f)) * k);
+            if (map_open(g)) {  // (the map's clips spread out with it, g times as wide about the middle: cbuf_info)
+                float c = (x + sw * 0.5f - t0->width * 0.5f) * g;
+                sw = (int)lroundf(sw * g), x = (int)lroundf(t0->width * 0.5f + c - sw * 0.5f);
+            }
             float u = fminf(sx, sy);
             ox = ((float)w - t0->width * u) * 0.5f, oy = ((float)h - t0->height * u) * 0.5f;
             sx = sy = u;
@@ -2168,7 +2228,7 @@ static VkRect2D scissor_rect(void) {
         extern float widescreen_factor(void);
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
         float g = widescreen_factor();
-        if (t0 && g_off_layout && g > 1.001f && widescreen_ui_centred() && widescreen_in_menu() &&
+        if (t0 && g_off_layout && g > 1.001f && widescreen_ui_centred() && widescreen_in_menu() && !map_open(g) &&
             vk_texture_scale_group(t0) == RS_OUT) {
             int b0 = (int)floorf(w * (1 - 1 / g) * 0.5f), b1 = w - b0;
             if (x < b0) { sw -= b0 - x; x = b0; }
@@ -3834,11 +3894,57 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
         // (widescreen.c widescreen_hud_shift), in its own copy. nn::ui2d's panes: the layout camera's projection in
         // cb3[0..3], the pane's matrix in cb3[4..6] (its x at [4][3]); its text: one matrix, projection times the pane's,
         // whose origin (the text's start) shows where it is - its rows 0 plus a share of row 3 move it on the screen.
-        extern float widescreen_hud_shift(float x);
+        extern float widescreen_hud_shift(float x, float y);
         extern float widescreen_factor(void);
         extern bool widescreen_ui_centred(void);
         const float *f = (const float *)(uintptr_t)r.addr;
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
+        {   // LARECOMP_LOG_PANES=n (finding the HUD's pieces: widescreen.c widescreen_hud_top): every nth frame (1: 600th), the
+            // layouts' panes (x, y in layout units) and texts (their matrix)
+            static int lp = -1;
+            if (lp < 0) {
+                const char *e = getenv("LARECOMP_LOG_PANES");
+                lp = e ? atoi(e) > 1 ? atoi(e) : 600 : 0;
+            }
+            uint64_t pf = renderer_present_count();
+            if (lp && pf % lp == 0 && t0 && f[12] == 0 && f[13] == 0 && f[14] == -1.0f && f[1] == 0 && f[2] == 0)
+                LOG("[panes] frame %llu fs %016llx size %#llx %s x %.1f y %.1f sx %.3f sy %.3f proj %.4f %.4f row0 %.3f %.3f %.3f %.3f row1 %.3f %.3f %.3f %.3f w %.3f\n",
+                    (unsigned long long)pf, (unsigned long long)g_cur_fs_hash, (unsigned long long)size, f[15] == 0 ? "pane" : "text",
+                    size >= 0x230 ? f[19] : 0, size >= 0x230 ? f[23] : 0, size >= 0x230 ? f[16] : 0, size >= 0x230 ? f[21] : 0, f[0], f[5],
+                    f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[15]);
+        }
+        if (t0 && vk_texture_scale_group(t0) == RS_OUT && f[12] == 0 && f[13] == 0 && f[14] == -1.0f && f[1] == 0 && f[2] == 0 &&
+            f[0] > 0) {
+            // The minimap group up top with the on-screen controls (widescreen.c widescreen_hud_top): a pane's y (f[23],
+            // layout units) and a text's origin (its rows 1 plus a share of row 3: 360 layout units an NDC unit) - and
+            // the widescreen move out to the edge below, done here too
+            extern float widescreen_hud_top(float x, float y);
+            extern float widescreen_hud_shift(float x, float y);
+            bool centred = widescreen_ui_centred();
+            float g = centred ? widescreen_factor() : 1.0f, a = fabsf(f[5] / f[0]);
+            bool pane = size >= 0x230 && f[15] == 0 && (fabsf(a - 16.0f / 9.0f * g) < 0.01f || fabsf(a - 16.0f / 9.0f) < 0.01f);
+            bool text = !pane && f[15] > 1.0f;
+            float lx = pane ? f[19] : text ? f[3] / f[15] * g * 640.0f : 0, ly = pane ? f[23] : text ? f[7] / f[15] * 360.0f : 0;
+            if (pane && g_cur_fs_hash == 0xd1d87dfe0c81ad63ull && lx > 290.0f && ly < -140.0f) {
+                extern void widescreen_minimap_seen(void);  // (the minimap's disc, at 510, -240: it's on screen)
+                widescreen_minimap_seen();
+            }
+            if (pane && g_cur_fs_hash == 0x9b989759db6e6606ull && fabsf(lx) < 1.0f && ly < -200.0f && ly > -270.0f) {
+                extern void widescreen_talk_seen(void);  // (a talk's box, at 0, -235)
+                widescreen_talk_seen();
+            }
+            float dy = pane || text ? widescreen_hud_top(lx, ly) : 0;
+            if (dy != 0) {
+                VkSpan c = vk_transient_copy(f, size, 256);
+                float *m = (float *)c.ptr, dx = centred ? widescreen_hud_shift(lx, ly) : 0;
+                if (pane) m[23] += dy, m[19] += dx;
+                else {
+                    for (int i = 0; i < 4; i++) m[4 + i] += dy / 360.0f * m[12 + i];
+                    for (int i = 0; dx != 0 && i < 4; i++) m[i] += dx / (640.0f * g) * m[12 + i];
+                }
+                return ubo_span(c, size);
+            }
+        }
         if (widescreen_ui_centred() && t0 && vk_texture_scale_group(t0) == RS_OUT && f[12] == 0 && f[13] == 0 && f[14] == -1.0f &&
             f[1] == 0 && f[2] == 0) {
             float g = widescreen_factor();
@@ -3862,6 +3968,31 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 // the sides, 2026-10-28), at any scale (the Game Over fade animates it)
                 VkSpan c = vk_transient_copy(f, size, 256);
                 for (int i = 16; i < 20; i++) ((float *)c.ptr)[i] *= g;
+                if (g_cur_fs_hash == 0xe91b1fb6e1eb920bull) g_map_frame = renderer_present_count();  // (the map's terrain)
+                return ubo_span(c, size);
+            } else if (map_open(g) && size >= 0x230 && f[15] == 0 && f[0] > 0 &&
+                       (fabsf(fabsf(f[5] / f[0]) - 16.0f / 9.0f * g) < 0.01f || fabsf(fabsf(f[5] / f[0]) - 16.0f / 9.0f) < 0.01f)) {
+                // The map (map_open): its terrain is stretched g times across the wide screen (full-width above), so
+                // everything placed on it - markers, names, the frame's pieces - goes g times farther from the middle,
+                // keeping its own shape. In the middle 16:9 part they drifted off their places as the map moved
+                // sideways, and the frame stopped short of the screen's sides (2026-11-02). (A layout through its own
+                // 16:9 camera: narrowed to the widened camera's first, as below.)
+                VkSpan c = vk_transient_copy(f, size, 256);
+                float *m = (float *)c.ptr;
+                if (fabsf(fabsf(f[5] / f[0]) - 16.0f / 9.0f) < 0.01f) for (int i = 0; i < 4; i++) m[i] /= g;
+                // (A piece of a layout-wide window, or of the map's dark frame - four panes about the middle, their
+                // rectangles reaching +-750, past the layout's sides: stretched whole, or they stopped 50 units short
+                // of the screen's edges. A pane past the layout's side - the frame's side pillars, at +-699: moved by
+                // the margin it gained, as far over the screen's edge as it was over the 16:9 part's.)
+                bool past = fabsf(f[19]) < 1.0f && (f[134] < -640.5f || f[134] + f[132] > 640.5f);
+                if (full_width_window(f) || past) for (int i = 16; i < 20; i++) m[i] *= g;
+                else m[19] = fabsf(f[19]) <= 640.0f ? f[19] * g : f[19] + copysignf(640.0f * (g - 1), f[19]);
+                return ubo_span(c, size);
+            } else if (map_open(g) && f[15] > 1.0f && f[0] > 0) {  // (the map's texts: their origin, the same)
+                VkSpan c = vk_transient_copy(f, size, 256);
+                float *m = (float *)c.ptr;
+                if (fabsf(fabsf(f[5] / f[0]) - 16.0f / 9.0f) < 0.01f) for (int i = 0; i < 3; i++) m[i] /= g;  // (narrowed, its
+                else m[3] *= g;                                                                                // origin kept)
                 return ubo_span(c, size);
             } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && g > 1.001f && fabsf(f[5] / f[0] - 16.0f / 9.0f) < 0.01f) {
                 // A layout drawn through a camera of its own left at 16:9 - the inventory's cursor, the loading
@@ -3878,7 +4009,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                     for (int i = 16; i < 20; i++) m[i] *= g;
                 return ubo_span(c, size);
             } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f) {
-                float d = widescreen_hud_shift(f[19]);
+                float d = widescreen_hud_shift(f[19], f[23]);
                 if (d != 0) {
                     panefix_log("hud-shift", f);
                     VkSpan c = vk_transient_copy(f, size, 256);
@@ -3892,7 +4023,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 for (int i = 0; i < 4; i++) ((float *)c.ptr)[i] /= g;
                 return ubo_span(c, size);
             } else if (f[15] > 1.0f) {
-                float d = widescreen_hud_shift(f[3] / f[15] * g * 640.0f);  // (layout x of the origin: 640 g units a side)
+                float d = widescreen_hud_shift(f[3] / f[15] * g * 640.0f, f[7] / f[15] * 360.0f);  // (layout x, y of the origin)
                 if (d != 0) {
                     VkSpan c = vk_transient_copy(f, size, 256);
                     float *m = (float *)c.ptr, k = d / (640.0f * g);  // (that many NDC units)
@@ -6036,6 +6167,20 @@ static void draw_(CmdRec *r, bool indexed) {
             }
         }
         if (g_debug_frame && getenv("LARECOMP_LOG_FSHASH")) LOG("[fshash] fs=%llx hash %016llx\n", (unsigned long long)fs, (unsigned long long)last_hash);
+        {   // LARECOMP_COUNT_FS=<fs hash> (diagnosis): that fragment shader's draws a frame, logged when the count changes
+            // (#168: do the ground's leaves stop being drawn, or get drawn somewhere else?)
+            static uint64_t want = ~0ull, frame = ~0ull;
+            static unsigned n, last_n = ~0u;
+            if (want == ~0ull) want = getenv("LARECOMP_COUNT_FS") ? strtoull(getenv("LARECOMP_COUNT_FS"), NULL, 16) : 0;
+            if (want) {
+                uint64_t f = renderer_present_count();
+                if (f != frame) {
+                    if (n != last_n) LOG("[fscount] frame %llu: %u draws\n", (unsigned long long)frame, n);
+                    last_n = n, n = 0, frame = f;
+                }
+                if (last_hash == want) n++;
+            }
+        }
         g_cur_fs_hash = last_hash;
         {   // Widescreen: a menu's layout pane that shows a picture of the world (the blurred world behind the pause
             // menu: a copy of the scene, a target widened to the window's shape) widens with it - drawn in the middle

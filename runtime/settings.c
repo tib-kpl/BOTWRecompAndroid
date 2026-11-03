@@ -41,9 +41,15 @@ Settings g_settings = {
     .overlay_pos = {-1, -1},
     .touch_pos = {{-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1},
                   {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
+    .touch_scheme = 1,
+    .touch_pos2 = {{-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1},
+                   {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1},
+                   {-1, -1}},
     .touch_scale = 1.0f,
     .touch_opacity = 1.0f,
     .touch_drag_sens = 1.0f,
+    .touch_aim_sens = 1.0f,
+    .touch_talk = true,
     .gpu_heap = -1,
     .inplace_reads = -1,
     .turnip_lrz = -1,
@@ -244,10 +250,10 @@ void settings_load(void) {
         char key[64];
 #ifdef __ANDROID__
         char val[512] = "";  // (a key with nothing after "=": mods_off when every mod is on)
-        if (sscanf(line, " %63[^= ] = %511[^\n]", key, val) < 1) continue;
+        if (sscanf(line, " %63[^= ] = %511[^\r\n]", key, val) < 1) continue; val[strcspn(val, "\r\n")] = 0;
 #else
         char val[128] = "";
-        if (sscanf(line, " %63[^= ] = %127[^\n]", key, val) < 1) continue;
+        if (sscanf(line, " %63[^= ] = %127[^\r\n]", key, val) < 1) continue; val[strcspn(val, "\r\n")] = 0;
 #endif
         if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
@@ -264,7 +270,7 @@ void settings_load(void) {
 #ifdef __ANDROID__
         else if (!strcmp(key, "touch_controls")) g_settings.touch_controls = atoi(val) != 0;
         else if (!strcmp(key, "cutscenes_60")) g_settings.event_fps_unlock = atoi(val) != 0;
-        else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : 0;
+        else if (!strcmp(key, "frame_rate")) g_settings.fps_mode = !strcmp(val, "30") ? 1 : !strcmp(val, "60") ? 2 : !strcmp(val, "20") ? 3 : 0;
         else if (!strcmp(key, "shader_int32")) g_settings.shader_int32 = atoi(val) != 0;
         else if (!strcmp(key, "sync_lag")) g_settings.sync_lag = atoi(val) != 0;
         else if (!strcmp(key, "native_code")) g_settings.native_code = atoi(val) != 0;
@@ -285,6 +291,26 @@ void settings_load(void) {
             char *q = val;
             for (int i = 0; i < TOUCH_NCTL * 2 && *q; i++) {
                 g_settings.touch_pos[i / 2][i % 2] = strtof(q, &q);
+                while (*q == ',' || *q == ' ') q++;
+            }
+        }
+        else if (!strcmp(key, "touch_scheme")) g_settings.touch_scheme = atoi(val);
+        else if (!strcmp(key, "touch_aim_sens")) g_settings.touch_aim_sens = (float)atof(val);
+        else if (!strcmp(key, "touch_talk")) g_settings.touch_talk = atoi(val) != 0;
+        else if (!strcmp(key, "touch_sizes") || !strcmp(key, "touch_icons_sizes")) {  // (a size per control)
+            bool two = key[6] == 'i';
+            float *s = two ? g_settings.touch_size2 : g_settings.touch_size;
+            int n = two ? TOUCH_NCTL2 : TOUCH_NCTL;
+            char *q = val;
+            for (int i = 0; i < n && *q; i++) {
+                s[i] = strtof(q, &q);
+                while (*q == ',' || *q == ' ') q++;
+            }
+        }
+        else if (!strcmp(key, "touch_icons_layout")) {  // (the icon layout's: as touch_layout)
+            char *q = val;
+            for (int i = 0; i < TOUCH_NCTL2 * 2 && *q; i++) {
+                g_settings.touch_pos2[i / 2][i % 2] = strtof(q, &q);
                 while (*q == ',' || *q == ' ') q++;
             }
         }
@@ -348,7 +374,7 @@ void settings_save(void) {
 #endif
 #ifdef __ANDROID__
     fprintf(f, "touch_controls = %d\n", g_settings.touch_controls);
-    fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : "auto");
+    fprintf(f, "frame_rate = %s\n", g_settings.fps_mode == 1 ? "30" : g_settings.fps_mode == 2 ? "60" : g_settings.fps_mode == 3 ? "20" : "auto");
     fprintf(f, "cutscenes_60 = %d\n", g_settings.event_fps_unlock);
     fprintf(f, "shader_int32 = %d\nsync_lag = %d\nnative_code = %d\nfiles_in_place = %d\n", g_settings.shader_int32,
             g_settings.sync_lag, g_settings.native_code, g_settings.files_in_place);
@@ -364,6 +390,14 @@ void settings_save(void) {
     fprintf(f, "touch_scale = %.2f\ntouch_opacity = %.2f\ntouch_layout = ", g_settings.touch_scale, g_settings.touch_opacity);
     for (int i = 0; i < TOUCH_NCTL; i++)
         fprintf(f, "%s%.4f,%.4f", i ? "," : "", g_settings.touch_pos[i][0], g_settings.touch_pos[i][1]);
+    fprintf(f, "\ntouch_scheme = %d\ntouch_aim_sens = %.2f\ntouch_talk = %d\ntouch_icons_layout = ", g_settings.touch_scheme,
+            g_settings.touch_aim_sens, g_settings.touch_talk ? 1 : 0);
+    for (int i = 0; i < TOUCH_NCTL2; i++)
+        fprintf(f, "%s%.4f,%.4f", i ? "," : "", g_settings.touch_pos2[i][0], g_settings.touch_pos2[i][1]);
+    fprintf(f, "\ntouch_sizes = ");
+    for (int i = 0; i < TOUCH_NCTL; i++) fprintf(f, "%s%.2f", i ? "," : "", g_settings.touch_size[i]);
+    fprintf(f, "\ntouch_icons_sizes = ");
+    for (int i = 0; i < TOUCH_NCTL2; i++) fprintf(f, "%s%.2f", i ? "," : "", g_settings.touch_size2[i]);
     fprintf(f, "\n");
 #endif
     fprintf(f, "upscaler = %s\n", g_settings.upscaler == UPSCALE_METALFX ? "metalfx" : g_settings.upscaler == UPSCALE_FSR1 ? "fsr1" :
