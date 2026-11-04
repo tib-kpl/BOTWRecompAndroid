@@ -11,6 +11,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <sys/mman.h>
+#endif
 
 #include "../../hle.h"
 #include "../../kernel.h"
@@ -363,9 +366,15 @@ void vk_pace_frame(void) {
         // (Frame rate 30, fixed: no 60 fps trial to make room for - the budget is 30 fps's, so the governor stops
         // running the threads at clocks that would finish them in 13 ms of their 33. LARECOMP_AB=<n>:adpf30: the 60
         // fps budget on side B)
+        // Three quarters of the frame, not all of it: the governor lowers the clocks until the work just fits its
+        // target, and a phone whose frames weigh near 33 ms then went over it every few frames - each a vsync late, 50
+        // ms: 17-20 fps at any quality where 0.2.6 held 30 (Mali-G925, #89; 0.2.9 brought the 33 ms budget)
         bool fixed30 = g_settings.fps_mode == 1 && AB("adpf30") != 1;
-        uint64_t budget = g_settings.fps_mode == 3 ? 50000000ull  // (Frame rate 20: 20 fps's)
-                          : (follow && pace_slow) || fixed30 ? 33333333ull : 16666667ull;
+        uint64_t budget = g_settings.fps_mode == 3 ? 37500000ull  // (Frame rate 20: 20 fps's, three quarters)
+                          : (follow && pace_slow) || fixed30 ? 25000000ull : 16666667ull;
+        static double budget30 = -1;  // (LARECOMP_ADPF30_MS=<ms>, a test: the 30 fps budget instead of 25 ms)
+        if (budget30 < 0) budget30 = getenv("LARECOMP_ADPF30_MS") ? atof(getenv("LARECOMP_ADPF30_MS")) : 0;
+        if (budget30 > 0 && budget == 25000000ull) budget = (uint64_t)(budget30 * 1e6);
         plat_frame_work_gpu((uint64_t)(hint_busy * 1e6), no_gpu ? 0 : gpu, budget, (uint64_t)(game_busy * 1e6));
     }
 #endif
@@ -437,9 +446,11 @@ void vk_pace_frame(void) {
     idx = (idx + 1) % 60;
     if (!pace_on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
 #ifdef __ANDROID__
-    if (g_settings.fps_mode) {  // (Video: Frame rate 20 / 30 / 60) fixed: no measuring, no trials
+    if (g_settings.fps_mode) {  // (Video: Frame rate 20 / 30 / 40-45 / 60) fixed: no measuring, no trials
+        extern int vk_between_fps(void);
         bool slow = g_settings.fps_mode == 1 || g_settings.fps_mode == 3;
-        if (slow != pace_slow) LOG("[pace] frame rate set to %d fps\n", g_settings.fps_mode == 3 ? 20 : slow ? 30 : 60);
+        if (slow != pace_slow)
+            LOG("[pace] frame rate set to %d fps\n", g_settings.fps_mode == 3 ? 20 : slow ? 30 : g_settings.fps_mode == 4 ? vk_between_fps() : 60);
         pace_slow = slow;
         return;
     }
@@ -505,7 +516,8 @@ static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *en
 #ifdef __ANDROID__
     static int fast = -1;
     if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") ? atoi(getenv("LARECOMP_FAST_COUNTERS")) : 0;
-    if ((!pace_slow && pace_on > 0 && (fast || g_settings.fps_mode == 2)) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
+    // (Frame rate 45 as 60: the game in its 60 fps way)
+    if ((!pace_slow && pace_on > 0 && (fast || g_settings.fps_mode == 2 || g_settings.fps_mode == 4)) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
         uint64_t max = start_entry[1] + ns_to_gpu_ticks(PACE_FAST_NS);
         return value > max ? max : value;
     }
@@ -1453,10 +1465,14 @@ static void st_defaults(void) {
 void vk_exec_init(void) {
     prof = getenv("LARECOMP_VK_PROF") != NULL;
 #ifdef __ANDROID__
+    extern void vk_memfd_probe(void);
+    vk_memfd_probe();  // (LARECOMP_MEMFD_PROBE=1: memfd_probe.c)
     gcopy_mode = !g_vk.host_import && !getenv("LARECOMP_VK_NO_GCOPY");
     if (gcopy_mode) LOG("[vk] no heap import: shader global memory through CPU copies\n");
     // (for good, without placed memory: the vertex cache and the texture checks fed by write tracking - vc_flush)
-    if (gcopy_mode && !g_vk.map_placed) plat_write_tracking_enable(HEAP_BASE, HEAP_BASE + HEAP_MAX);
+    // (nor with an exported file to map there: vk_heap_place turns it on if that fails)
+    extern bool vk_heap_file_asked(void);
+    if (gcopy_mode && !g_vk.map_placed && !vk_heap_file_asked()) plat_write_tracking_enable(HEAP_BASE, HEAP_BASE + HEAP_MAX);
 #endif
     if (prof) {
         prof_up_ns = 0;
@@ -1898,6 +1914,7 @@ static void vk_end_pass_at(int line) {
 }
 
 static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
+static int rt_kind(uint32_t f);
 
 // The frame the 3D scene's G-buffer was last drawn in (a pass of 3+ scene-sized targets with depth): widescreen.c
 // keeps the title screen and loading screens - no scene - at 16:9
@@ -1941,6 +1958,9 @@ static void begin_pass(void) {
     }
 #endif
     if (dl_on == 2) renderer_flush();  // (LARECOMP_VK_DEVLOST_TRACE=2: each pass its own submission)
+#ifdef __ANDROID__
+    vk_bc_shadows_resolve(st.rt.color, st.rt.cview, st.rt.has_cview, st.rt.ncolor);  // (BC textures drawn into before: decoded, unless this pass draws on)
+#endif
     st.rt_dirty = false;
     VkCommandBuffer cb = vk_cmd();
     static int no_barrier = -1;  // (LARECOMP_VK_NO_PASS_BARRIER=1: none - unsafe, a measurement of what it costs)
@@ -1985,23 +2005,45 @@ static void begin_pass(void) {
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         pass_color[i] = VK_FORMAT_UNDEFINED;
         if (!t) continue;
+        uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
+        if (lv) vk_tex_upload_for_mips(t);
         renderer_mark_gpu_owned(t);
-        VkImageView v = vk_view(t, &st.rt.cview[i], st.rt.has_cview[i], true, TEXTYPE_2D);
+        VkFormat vf = VK_FORMAT_UNDEFINED;  // the attachment's format and extent
+        uint32_t ew = 0, eh = 0;
+        VkImageView v = VK_NULL_HANDLE;
+#ifdef __ANDROID__
+        if (st.rt.has_cview[i]) {  // (a decoded BC texture drawn into as blocks: its shadow image)
+            vk_tex(t, true);
+            v = vk_bc_shadow_view(t, &st.rt.cview[i], &vf, &ew, &eh);
+        }
+#endif
+        bool bc_shadow = v != VK_NULL_HANDLE;
+        if (!v) v = vk_view(t, &st.rt.cview[i], st.rt.has_cview[i], true, TEXTYPE_2D);
         TexBackend *b = t->backend;
         if (!v) continue;
+        if (!vf) {
+            bool view_fmt = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4);
+            if (view_fmt && vk_format(t->format) != b->format && rt_kind(st.rt.cview[i].format) != rt_kind(t->format)) {
+                // Through a view of another output type (the draws' shaders follow it: rt_format) into an image made
+                // in another format (ASTC / BC decoded, no shadow): outputs of the wrong type are undefined - not drawn.
+                static int nlog;
+                if (nlog++ < 4) LOG("[vk] target %ux%u (nvn %#x) drawn into as nvn %#x: not drawn (image format %d)\n",
+                                    t->width, t->height, t->format, st.rt.cview[i].format, b->format);
+                continue;
+            }
+            vf = view_fmt && vk_format(t->format) == b->format ? vk_format(st.rt.cview[i].format) : b->format;
+            ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
+        }
         ca[i].imageView = v;
         ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         bool fresh = (int)renderer_texture_level_fresh(t) | (int)renderer_texture_frame_fresh(t);  // both: each marks its state
-        if (renderer_texture_first_write(t) || fresh) {
+        if ((renderer_texture_first_write(t) || fresh) && !bc_shadow) {  // (a shadow holds the blocks: bc_shadow_fill)
             ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             ca[i].clearValue.color.float32[3] = fresh ? 0.0f : 1.0f;
         }
-        pass_color[i] = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && vk_format(t->format) == b->format
-                      ? vk_format(st.rt.cview[i].format) : b->format;
-        uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
-        uint32_t ew = level_extent(b->width, lv), eh = level_extent(b->height, lv);
+        pass_color[i] = vf;
         static int log_height_tiles = -1;
         if (log_height_tiles < 0) log_height_tiles = getenv("LARECOMP_LOG_HEIGHT_TILES") != NULL;
         if (log_height_tiles && (t->flags & 0x50) && t->width >= 128) {
@@ -2945,6 +2987,13 @@ static int rt_kind(uint32_t f) {
     case 0x04: case 0x09: case 0x0C: case 0x10: case 0x15: case 0x18: case 0x28: case 0x2D: case 0x30: return 1;
     default: return 0;
     }
+}
+
+// Colour target i's format as the draws write it: its view's, when the view names one. BOTW draws its BC4 noise volume
+// through a view as RGBA16_UINT (a texel a block); typed by the texture's own format (BC: float), the fragment shader
+// wrote floats to an integer target - zero blocks on Mali.
+static uint32_t rt_format(int i) {
+    return st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) ? st.rt.cview[i].format : st.rt.color[i]->format;
 }
 
 // ================================================================== graphics pipelines
@@ -3963,6 +4012,8 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f &&
                        full_width_pane(f)) {
                 panefix_log("full-width", f);
+                extern void widescreen_band_seen(void);  // (a screen of its own: the HUD stays put, widescreen_hud_shift)
+                widescreen_band_seen();
                 // A pane as wide as the layout, about its middle (the Game Over screen's black, a menu's dimming, a
                 // loading screen's band) covers the widened screen, not only its middle 16:9 part (the world showed at
                 // the sides, 2026-10-28), at any scale (the Game Over fade animates it)
@@ -4005,8 +4056,11 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 VkSpan c = vk_transient_copy(f, size, 256);
                 float *m = (float *)c.ptr;
                 for (int i = 0; i < 4; i++) m[i] /= g;
-                if (full_width_pane(f))
+                if (full_width_pane(f)) {
                     for (int i = 16; i < 20; i++) m[i] *= g;
+                    extern void widescreen_band_seen(void);
+                    widescreen_band_seen();
+                }
                 return ubo_span(c, size);
             } else if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f) {
                 float d = widescreen_hud_shift(f[19], f[23]);
@@ -4195,6 +4249,14 @@ static uint64_t gmem_tried;  // heap size the import was last attempted for (gme
 // own bytes, as with the desktop's import - no CPU copies (gcopy_prepare), and what a compute pass writes the next
 // draw reads (the game's lighting: lights listed by compute, read by the fragment shaders). Freed on reset (vkFreeMemory
 // unmaps it; runtime/main.c then remaps the whole window). LARECOMP_VK_NO_PLACED=1: off (CPU copies).
+bool vk_heap_file_possible(void) { return g_vk.mem_fd; }  // (the start screen's Driver compatibility)
+
+// The heap through an exported file asked for (the setting, or LARECOMP_VK_MEMFD) and possible here (vk_heap_place)
+bool vk_heap_file_asked(void) {
+    const char *e = getenv("LARECOMP_VK_MEMFD");
+    return g_vk.mem_fd && (e ? atoi(e) != 0 : g_settings.heap_file);
+}
+
 bool vk_heap_place(uint64_t size) {
 #ifdef __ANDROID__
     extern void vk_async_drain(void);
@@ -4208,8 +4270,17 @@ bool vk_heap_place(uint64_t size) {
     // isn't an Adreno 8xx (Automatic) had neither: every vertex and index buffer copied each frame, ~150 MB, 7-9 fps
     // on an Adreno 730 (issue #31). A page not tracked yet counts as written, so turning it on late is safe.
 #define NOT_PLACED() (gcopy_mode ? plat_write_tracking_enable(HEAP_BASE, HEAP_BASE + HEAP_MAX) : (void)0, false)
-    if (!g_vk.map_placed || getenv("LARECOMP_VK_NO_PLACED")) return NOT_PLACED();
-    if (!vk_turnip_heap_setting(g_vk.props.deviceName, g_settings.gpu_heap, g_vk.map_placed, vk_driver_is_turnip())) {
+    // Without placed maps, the same through an exported file (VK_KHR_external_memory_fd, a dma-buf) mapped at the heap's
+    // address by mmap (after legendszaonandroid's VULKAN_BACKEND.md, MIT; memfd_probe.c tests it): Mali and Xclipse
+    // have neither the placed map nor the import, and their CPU copies with write tracking were slow and ran the
+    // process out of memory mappings (#196). Off unless the start screen's Driver compatibility turns it on
+    // (g_settings.heap_file) - untried on a Mali yet (the import there lost the menus' text and ran out of memory, #44
+    // #118); on the POCO's Turnip, forced in place of the placed map, the world played as with it (2026-11-03).
+    // LARECOMP_VK_MEMFD=1 / 0: on / off whatever the setting.
+    extern bool vk_heap_file_asked(void);
+    bool memfd = vk_heap_file_asked();
+    if ((!g_vk.map_placed && !memfd) || getenv("LARECOMP_VK_NO_PLACED")) return NOT_PLACED();
+    if (memfd ? g_settings.gpu_heap == 0 : !vk_turnip_heap_setting(g_vk.props.deviceName, g_settings.gpu_heap, g_vk.map_placed, vk_driver_is_turnip())) {
         // The start screen's Automatic heap policy keeps the tested 740 exception.
         LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
             g_settings.gpu_heap < 0 ? "automatic GPU profile" : "settings");
@@ -4238,7 +4309,9 @@ bool vk_heap_place(uint64_t size) {
             (unsigned long long)(size >> 20), (unsigned long long)align);
         return NOT_PLACED();
     }
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+    VkExternalMemoryBufferCreateInfo ebi = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT};
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = memfd ? &ebi : NULL, .size = size,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};  // (ubo_direct)
@@ -4256,13 +4329,30 @@ bool vk_heap_place(uint64_t size) {
         if (type < 0 || (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) type = (int)i;
         if (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) break;
     }
+    {   // LARECOMP_VK_MEMFD_TYPE=<n> (a test): the exported file's memory type - which one a driver gives a map the CPU
+        // runs fast in and the GPU sees, memfd_probe.c tells
+        const char *e = getenv("LARECOMP_VK_MEMFD_TYPE");
+        if (memfd && e && atoi(e) >= 0 && (uint32_t)atoi(e) < mp.memoryTypeCount && (mr.memoryTypeBits & (1u << atoi(e)))) type = atoi(e);
+    }
     VkDeviceMemory mem = VK_NULL_HANDLE;
-    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
-                               .memoryTypeIndex = (uint32_t)type};
+    VkExportMemoryAllocateInfo exi = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = memfd ? &exi : NULL,
+                               .allocationSize = mr.size, .memoryTypeIndex = (uint32_t)type};
     VkResult r = type < 0 ? VK_ERROR_FEATURE_NOT_PRESENT : vkAllocateMemory(g_vk.dev, &ai, NULL, &mem);
     if (r == VK_SUCCESS) r = vkBindBufferMemory(g_vk.dev, buf, mem, 0);
     void *p = NULL;
-    if (r == VK_SUCCESS) {
+    if (r == VK_SUCCESS && memfd) {  // (the file mapped over the heap's anonymous pages; the map keeps it open)
+        int fd = -1;
+        VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
+                                   .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT};
+        r = vkGetMemoryFdKHR(g_vk.dev, &gi, &fd);
+        if (r == VK_SUCCESS) {
+            p = mmap((void *)(uintptr_t)HEAP_BASE, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+            if (p == MAP_FAILED) p = NULL, r = VK_ERROR_MEMORY_MAP_FAILED;
+            close(fd);
+        }
+    } else if (r == VK_SUCCESS) {
         VkMemoryMapPlacedInfoEXT pl = {.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_PLACED_INFO_EXT, .pPlacedAddress = (void *)(uintptr_t)HEAP_BASE};
         VkMemoryMapInfoKHR mi = {.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_INFO_KHR, .pNext = &pl, .flags = VK_MEMORY_MAP_PLACED_BIT_EXT,
                                  .memory = mem, .offset = 0, .size = VK_WHOLE_SIZE};
@@ -4281,8 +4371,9 @@ bool vk_heap_place(uint64_t size) {
     gmem_placed = true;
     gcopy_mode = false;
     gwin_mode = size > g_vk.props.limits.maxStorageBufferRange && !getenv("LARECOMP_VK_NO_GWIN");
-    LOG("[vk] guest heap %llu MB is GPU memory (placed at %llx, memory type %d, flags 0x%x, storage range %llu MB)%s\n",
-        (unsigned long long)(size >> 20), (unsigned long long)HEAP_BASE, type, (unsigned)mp.memoryTypes[type].propertyFlags,
+    LOG("[vk] guest heap %llu MB is GPU memory (%s at %llx, memory type %d, flags 0x%x, storage range %llu MB)%s\n",
+        (unsigned long long)(size >> 20), memfd ? "an exported file mapped" : "placed", (unsigned long long)HEAP_BASE, type,
+        (unsigned)mp.memoryTypes[type].propertyFlags,
         (unsigned long long)(g_vk.props.limits.maxStorageBufferRange >> 20), gwin_mode ? "; draws reach global memory through windows" : "");
     return true;
 }
@@ -5880,6 +5971,9 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
         }
     }
     vk_end_pass();
+#ifdef __ANDROID__
+    vk_bc_shadows_resolve(NULL, NULL, NULL, 0);  // (BC textures drawn into: decoded before anything outside a pass reads them)
+#endif
     VkCommandBuffer cb = vk_cmd();
     bool chained = dchain && cb == dchain_cb && dchain_ok();
     if (chained) stat_dchained++;
@@ -6062,7 +6156,7 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.flip_y = fkey.flip_y = nvn_window_origin() == 0;
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));
 #ifdef __ANDROID__
     if (maxwell_gmem_miss_log)  // (copy mode: early depth tests for the shaders that log misses - ShaderKey)
         fkey.no_ds_write = !st.rt.depth || !((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)));
@@ -6530,7 +6624,7 @@ static void draw_(CmdRec *r, bool indexed) {
             // Targets the fragment shader doesn't output keep their contents on Metal, but are undefined in Vulkan
             // (NVIDIA writes black): mask them. Foliage depth pre-passes left black silhouettes (user 2026-10-08).
             k.write_mask[i] = ((pr->fs_out_mask >> (i * 4)) & 0xF) ? (st.channel_mask >> (i * 4)) & 0xF : 0;
-            if (((st.color_state[0] >> i) & 1) && !rt_kind(st.rt.color[i]->format)) {
+            if (((st.color_state[0] >> i) & 1) && !rt_kind(rt_format(i))) {
                 k.blend_on |= (uint8_t)(1u << i);
                 memcpy(k.blend[i], st.blend[i], 8);
             }
@@ -7143,6 +7237,9 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     if (!t || !dst || dst < HEAP_BASE) return;
     t = alias_read(t);
     vk_end_pass();
+#ifdef __ANDROID__
+    vk_bc_shadows_resolve(NULL, NULL, NULL, 0);
+#endif
     const FormatInfo *fi;
     int32_t rg[6];
     int level;
@@ -7211,6 +7308,9 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     NvnTexture *st_ = (NvnTexture *)(uintptr_t)src->tex, *dt = (NvnTexture *)(uintptr_t)dst->tex;
     if (!st_ || !dt) return;
     vk_end_pass();
+#ifdef __ANDROID__
+    vk_bc_shadows_resolve(NULL, NULL, NULL, 0);
+#endif
     if (dl_on == 2) renderer_flush();  // (LARECOMP_VK_DEVLOST_TRACE=2: each copy its own submission, waited on)
     gp_mark(vk_cmd(), "copy texture %ux%u -> %ux%u", st_->width, st_->height, dt->width, dt->height);
     dl_note("copy texture %ux%u f%#x -> %ux%u f%#x (%p -> %p)", st_->width, st_->height, st_->format, dt->width, dt->height,

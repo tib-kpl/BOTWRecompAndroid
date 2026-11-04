@@ -42,7 +42,7 @@ typedef struct {
     int overlay_style;    // Show FPS's overlay (ui/perf_overlay.mm): 0 full, 1 compact (one line)
     float overlay_pos[2]; // its top left, a share of the screen, dragged there with a finger (negative: the corner)
     bool event_fps_unlock;  // in-game cutscenes and talks at the chosen frame rate, not 30 (hle/framepace.c)
-    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps, 3: 20 fps
+    int fps_mode;         // 0: the game's own choice (30 / 60, the frame pacer), 1: 30 fps, 2: 60 fps, 3: 20 fps, 4: 45 fps
     bool shader_int32;    // shader address math in 32-bit words even where the driver offers 64-bit (vulkan/exec.c)
     bool native_code;     // Android: the game's own code on the CPU, no build of it (runtime/native.c); off by default
     bool files_in_place;  // Android: a setup reads the picked romfs/ where it is, no copy (services/fs.c); off by default
@@ -52,16 +52,20 @@ typedef struct {
     // (turnip_lrz, log_file). -1 Automatic: per-option GPU profiles in vulkan/turnip_policy.h;
     // 1 on, 0 off. Adreno 740 enables target reads only; the upstream 8xx profile stays unchanged.
     int gpu_heap;         // Turnip: the game's memory mapped as GPU memory (vulkan/exec.c vk_heap_place); off: CPU copies
-                          // (its Automatic: on for any Turnip that can place it - vulkan/device.c vk_turnip_heap_on)
+                          // (Automatic follows vulkan/turnip_policy.h, including the tested Adreno 740 exception)
     int inplace_reads;    // Turnip: draws sample targets they write as they are (vulkan/exec.c resolve_feedback); off: copies
     int turnip_lrz;       // Turnip's low-resolution Z; off: TU_DEBUG=nolrz before the driver loads (vulkan/device.c)
     bool log_file;        // the log in a file as well (platform/android.c), to send with a report
     char gpu_model[64];   // the GPU of the last start ("Adreno (TM) 830v1"): turnip_lrz's Automatic, before the driver
+    bool heap_file;       // the game's memory as GPU memory through an exported file mapped at its address, where the driver
+                          // can't place it (Mali, Xclipse; experimental): vulkan/exec.c vk_heap_place, at the game's start
+    char driver_env[256]; // the driver's own switches, NAME=value separated by spaces (Turnip's FD_DEV_FEATURES, TU_DEBUG;
+                          // #227): set when the app starts, before the driver loads (vulkan/device.c)
 #define TOUCH_NCTL 19  // (ui/touch_controls.mm: LAS's 12, then the right stick, L3 / R3 and the d-pad)
     float touch_pos[TOUCH_NCTL][2];  // each on-screen control's place, a share of the screen (negative: default)
     // The icon layout (ui/touch_controls.mm), in the world only - the classic one above stays in the game's menus:
     // touch_scheme 1 (0: the classic one everywhere), its controls' places of their own
-#define TOUCH_NCTL2 22
+#define TOUCH_NCTL2 24
     int touch_scheme;
     float touch_pos2[TOUCH_NCTL2][2];
     float touch_size[TOUCH_NCTL], touch_size2[TOUCH_NCTL2];  // each control's own size (times touch_scale; 0: 1)

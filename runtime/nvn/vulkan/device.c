@@ -7,6 +7,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __ANDROID__
+#include <android/native_window.h>
+#include <dlfcn.h>
+#endif
 
 #include "../../paths.h"
 #include "../../settings.h"
@@ -447,6 +451,16 @@ void vk_device_fault_report(void) {
             (unsigned long long)vend[i].vendorFaultData);
 }
 
+#ifdef __ANDROID__
+// The display's vsync for the frame pacer (nvn/objects.c). The pacer's 30 fps grid had no tie to the display: its
+// phase was wherever the last long frame (a load, a menu) left it, and when that put the queueBuffer within ~1.5 ms
+// before the compositor's latch, frames went out alternately one vsync late and one early (50 / 16.7 ms at 60 Hz,
+// 41.7 / 25 ms at 120 Hz) for minutes, at a steady 30 fps. VK_GOOGLE_display_timing (Android's own swapchain, any
+// GPU) gives the vsync period and when earlier frames reached the screen; the pacer keeps each frame queued half a
+// vsync before one (backend_vsync_offset). LARECOMP_PACE_VSYNC=0: off, the extension not even enabled.
+static bool display_timing;
+#endif
+
 static void create_device(void) {
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
@@ -551,12 +565,21 @@ static void create_device(void) {
     g_vk.exec_stats = getenv("LARECOMP_SHADER_STATS") &&
                       has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME) && executable_have.pipelineExecutableInfo;
     if (g_vk.exec_stats) ext[n_ext++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
+    // ... or by exporting device memory as a file (a dma-buf) and mapping that at the heap's address ourselves: the same
+    // result on drivers without placed maps or the host import (Mali, Xclipse; exec.c vk_heap_place - after
+    // legendszaonandroid's VULKAN_BACKEND.md, MIT). Before the placed ones: those two are dropped by count below.
+    g_vk.mem_fd = has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
+                  (g_vk.api >= VK_API_VERSION_1_1 || has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME));
+    if (g_vk.mem_fd) ext[n_ext++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
     // the guest heap as GPU memory mapped at its own address (exec.c vk_heap_place; Turnip has it)
-    g_vk.map_placed = has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
+    g_vk.map_placed =has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME) && has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
     if (g_vk.map_placed) {
         ext[n_ext++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
         ext[n_ext++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
     }
+    const char *pv = getenv("LARECOMP_PACE_VSYNC");
+    display_timing = has_ext(ep, ne, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) && (!pv || atoi(pv));
+    if (display_timing) ext[n_ext++] = VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME;
 #endif
     free(ep);
 
@@ -1044,9 +1067,54 @@ static void android_create_surface(struct ANativeWindow *aw) {
     surface_aw = aw;
 }
 
+// Frame rate 40 / 45 (#207, #216): between 30 and 60, at a rate the screen shows evenly - 40 fps is three vsyncs at
+// 120 Hz, 45 two at 90 Hz; at 60 Hz neither is (25 / 16.7 ms frames), so 30 there. The POCO F7 Ultra's system kept
+// its 120 Hz when asked for 45 fps content (2026-11-03): the screen's own rate decides, read once a second.
+int vk_between_fps(void) {
+    static int fps = 45;
+    static uint64_t next;
+    uint64_t now = SDL_GetTicksNS();
+    if (now >= next) {
+        next = now + 1000000000ull;
+        const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
+        float hz = m ? m->refresh_rate : 0;
+        int f = hz > 110 ? 40 : hz > 80 ? 45 : hz > 50 ? 30 : 45;
+        if (f != fps) LOG("[vk] Frame rate 40 / 45: %d fps on a %.0f Hz screen\n", f, hz);
+        fps = f;
+    }
+    return fps;
+}
+
+// ... and while it's set the window says so (40 or 45 fps content): a system that can switch to a rate where it's even
+// may (a 120 Hz screen that offers 90 for 45); otherwise the system's own choice again. Asked again for a new window
+// (from the background).
+static void android_frame_rate(struct ANativeWindow *aw) {
+    static struct ANativeWindow *asked_aw;
+    static float asked = -1;
+    float want = g_settings.fps_mode == 4 && vk_between_fps() != 30 ? (float)vk_between_fps() : 0.0f;
+    if (aw == asked_aw && want == asked) return;
+    // (libnativewindow's, looked up, not linked. Android 12+: with the change strategy ALWAYS - the plain call changes
+    // the refresh only when it's seamless, and 120 -> 90 Hz isn't on the POCO F7 Ultra: it stayed at 120)
+    static int (*set_rate)(struct ANativeWindow *, float, int8_t);
+    static int (*set_rate2)(struct ANativeWindow *, float, int8_t, int8_t);
+    static bool looked;
+    if (!looked) {
+        looked = true;
+        void *lib = dlopen("libnativewindow.so", RTLD_NOW);
+        set_rate = lib ? (int (*)(struct ANativeWindow *, float, int8_t))dlsym(lib, "ANativeWindow_setFrameRate") : NULL;
+        set_rate2 = lib ? (int (*)(struct ANativeWindow *, float, int8_t, int8_t))dlsym(lib, "ANativeWindow_setFrameRateWithChangeStrategy") : NULL;
+    }
+    int8_t compat = want > 0 ? ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE : ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT;
+    int r = set_rate2 ? set_rate2(aw, want, compat, 1 /* ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS */)
+          : set_rate ? set_rate(aw, want, compat) : -1;
+    if (want != asked) LOG("[vk] the window asks for %.0f fps content (%d)\n", want, r);
+    asked_aw = aw, asked = want;
+}
+
 static bool android_surface_ready(void) {  // false: no window to draw into now
     struct ANativeWindow *aw = android_window();
     if (!aw) { surface_lost = true; return false; }
+    android_frame_rate(aw);
     if (aw == surface_aw && !surface_lost) return true;
     vkDeviceWaitIdle(g_vk.dev);
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
@@ -1190,6 +1258,77 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 }
 
+#ifdef __ANDROID__
+// (display_timing) Written by the render thread after each present, read by the game's thread (the pacer): a vsync
+// (when the latest timed frame reached the screen), the vsync period, and the time from the game's hand-over of a
+// frame to its queueBuffer (the median of the last 9: after a load the render thread's backlog runs to tens of ms,
+// and an average of it kept moving for seconds after), ns. vs_fit: the latest frame reached the screen on the grid.
+static uint64_t vs_anchor, vs_period, vs_delay;
+static bool vs_fit;
+static uint32_t present_id;
+static uint64_t present_asked;  // when the game's thread handed over the frame being presented (vk_present_now)
+
+static void vsync_update(uint64_t queued) {
+    uint64_t asked = present_asked, d = asked && queued > asked ? queued - asked : 0;
+    present_asked = 0;
+    if (d && d < 100000000) {
+        static uint64_t last_d[9];
+        static unsigned n_d;
+        last_d[n_d++ % 9] = d;
+        uint64_t s[9];
+        unsigned n = n_d < 9 ? n_d : 9;
+        for (unsigned i = 0; i < n; i++) {  // (insertion sort: 9 at most)
+            unsigned j = i;
+            for (; j && s[j - 1] > last_d[i]; j--) s[j] = s[j - 1];
+            s[j] = last_d[i];
+        }
+        __atomic_store_n(&vs_delay, s[n / 2], __ATOMIC_RELAXED);
+    }
+    uint64_t p = vs_period;
+    if (present_id % 32 == 1 || !p || !vs_fit) {  // (about once a second: the panel's rate may change)
+        VkRefreshCycleDurationGOOGLE rc;
+        if (vkGetRefreshCycleDurationGOOGLE(g_vk.dev, g_vk.swapchain, &rc) == VK_SUCCESS)
+            p = rc.refreshDuration >= 4000000 && rc.refreshDuration <= 50000000 ? rc.refreshDuration : 0;
+        uint64_t was = vs_period;  // (the period is measured: it moves by microseconds)
+        if (!p != !was || (p > was ? p - was : was - p) > was / 100) LOG("[pace] display vsync %.3f ms\n", p / 1e6);
+        __atomic_store_n(&vs_period, p, __ATOMIC_RELAXED);
+    }
+    VkPastPresentationTimingGOOGLE past[8];
+    uint32_t n = 8;
+    if (vkGetPastPresentationTimingGOOGLE(g_vk.dev, g_vk.swapchain, &n, past) < 0) n = 0;  // (INCOMPLETE: the newest 8)
+    uint64_t a = 0;
+    for (uint32_t i = 0; i < n; i++) if (past[i].actualPresentTime > a) a = past[i].actualPresentTime;
+    if (a <= vs_anchor) return;
+    if (vs_anchor && p) {
+        uint64_t r = (a - vs_anchor) % p;
+        __atomic_store_n(&vs_fit, (r < p - r ? r : p - r) < p / 8, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&vs_anchor, a, __ATOMIC_RELAXED);
+}
+
+bool backend_vsync_offset(uint64_t t, uint64_t grid, int64_t *off, uint64_t *period) {
+    uint64_t a = __atomic_load_n(&vs_anchor, __ATOMIC_RELAXED), p = __atomic_load_n(&vs_period, __ATOMIC_RELAXED);
+    uint64_t d = __atomic_load_n(&vs_delay, __ATOMIC_RELAXED);
+    // (no timings yet, or none for 2 s: the app in the background, a surface made again)
+    if (!a || !p || !d || !__atomic_load_n(&vs_fit, __ATOMIC_RELAXED) || t < a || t - a > 2000000000ull) return false;
+    // (60 Hz only, for now: at 120 Hz the half-vsync lead is 4 ms, and on a POCO F7 Ultra the frames shown 25 / 42 ms
+    // rose from 2% to 10-12% with it, where at 60 Hz they fell from 6% to 0.2% - SurfaceFlinger's present times, 2026-11-03)
+    if (p < 12000000ull) return false;
+    uint64_t k = (grid + p / 2) / p, kp = k * p;
+    if (!k || (grid > kp ? grid - kp : kp - grid) > p / 16) return false;
+    uint64_t q = t + d;                                  // when it would reach queueBuffer
+    int64_t lead = (int64_t)((p - (q - a) % p) % p);     // ... that long before the next vsync
+    *off = lead - (int64_t)(p / 2);
+    *period = p;
+    return true;
+}
+#else
+bool backend_vsync_offset(uint64_t t, uint64_t grid, int64_t *off, uint64_t *period) {
+    (void)t, (void)grid, (void)off, (void)period;
+    return false;
+}
+#endif
+
 // End rendering into the window image and present it. shot_path: also save the window image as PNG.
 void vk_frame_end(const char *shot_path) {
     if (!cur_frame.ok) return;
@@ -1210,9 +1349,16 @@ void vk_frame_end(const char *shot_path) {
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
 #ifdef __ANDROID__
     uint64_t trace_start = vk_timing_trace_on() ? SDL_GetTicksNS() : 0;
+    // (Android times only the presents that carry an id; desiredPresentTime 0: shown as soon as it can be, as before)
+    VkPresentTimeGOOGLE when = {.presentID = ++present_id};
+    VkPresentTimesInfoGOOGLE times = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, .swapchainCount = 1,
+                                      .pTimes = &when};
+    if (display_timing) pi.pNext = &times;
+    uint64_t queued = plat_now_ns();
 #endif
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
 #ifdef __ANDROID__
+    if (display_timing && r >= 0) vsync_update(queued);
     if (trace_start) vk_timing_trace_wait(VK_TIMING_PRESENT, SDL_GetTicksNS() - trace_start);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();  // (SUBOPTIMAL: every frame of an unrotated swapchain)
     else if (r == VK_ERROR_SURFACE_LOST_KHR) surface_lost = true;
@@ -1301,10 +1447,10 @@ static void present_game_half(void) {
     reboot_test_frame(renderer_present_count());
 }
 
-void vk_present_now(NvnTexture *t);
+void vk_present_now(NvnTexture *t, uint64_t asked);
 void backend_present(NvnTexture *t) {
     if (!vk_async_on()) {
-        vk_present_now(t);
+        vk_present_now(t, plat_now_ns());
         return;
     }
     g_game_frames++;
@@ -1318,7 +1464,8 @@ void backend_represent(void) {
 }
 
 #ifdef __ANDROID__
-void vk_present_now(NvnTexture *t) {  // (the window's half of backend_present)
+void vk_present_now(NvnTexture *t, uint64_t asked) {  // (the window's half of backend_present; asked: when the game's
+    present_asked = asked;                              // thread handed it over)
 #else
 void backend_present(NvnTexture *t) {
 #endif
@@ -1326,6 +1473,9 @@ void backend_present(NvnTexture *t) {
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
     vk_end_pass();
+#ifdef __ANDROID__
+    vk_bc_shadows_resolve(NULL, NULL, NULL, 0);  // (BC textures drawn into: decoded, as before anything outside a pass)
+#endif
     static const float black[4] = {0, 0, 0, 1};
     uint64_t t0 = SDL_GetTicksNS();
     bool have = vk_frame_begin(black);
@@ -1727,6 +1877,8 @@ static void quick_exit_handler(void) {
 #ifdef __ANDROID__
 static bool g_lrz_at_start = true;
 bool vk_lrz_at_start(void) { return g_lrz_at_start; }  // (the start screen: a change needs a restart)
+static char g_driver_env_at_start[256];  // (the same for the driver's switches, g_settings.driver_env)
+const char *vk_driver_env_at_start(void) { return g_driver_env_at_start; }
 const char *vk_gpu_name(void) { return g_vk.props.deviceName; }
 #endif
 
@@ -1741,6 +1893,20 @@ void ui_window_init(void) {
     {   // Driver compatibility (the start screen's Settings > Prelaunch): applied before the driver loads
         extern void android_log_file(bool on);
         android_log_file(g_settings.log_file);
+        {   // The driver's own switches from the settings (#227: Samsung phones under Turnip want
+            // FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1): NAME=value pairs separated by spaces, each up to the next space;
+            // a TU_DEBUG given there wins over LRZ's below
+            char buf[sizeof g_settings.driver_env], *save = NULL;
+            snprintf(buf, sizeof buf, "%s", g_settings.driver_env);
+            snprintf(g_driver_env_at_start, sizeof g_driver_env_at_start, "%s", g_settings.driver_env);
+            for (char *p = strtok_r(buf, " \t;", &save); p; p = strtok_r(NULL, " \t;", &save)) {
+                char *eq = strchr(p, '=');
+                if (!eq || eq == p) continue;
+                *eq = 0;
+                setenv(p, eq + 1, 1);
+                LOG("[vk] driver setting from the settings: %s=%s\n", p, eq + 1);
+            }
+        }
         // Turnip reads TU_DEBUG once, when it starts: low-resolution Z off (it can drop draws on some Adreno GPUs).
         // Automatic needs the GPU before Vulkan names it: the kernel's (the GPU driver reads it from the app too), else
         // the last start's; unknown: on.

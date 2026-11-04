@@ -8,6 +8,8 @@ int g_game_version;
 volatile int g_movie_playing;
 Settings g_settings;
 static uint64_t now;
+static int between_fps;
+int vk_between_fps(void) { return between_fps; }
 uint64_t plat_now_ns(void) { return now; }
 
 int main(int argc, char **argv) {
@@ -22,7 +24,8 @@ int main(int argc, char **argv) {
     }
     g_guest_lo = (uintptr_t)calloc(1, 0x2000000);
     assert(g_guest_lo && framepace_on());
-    g_settings.fps_mode = fps == 60 ? 2 : 1;
+    between_fps = fps;
+    g_settings.fps_mode = fps == 60 ? 2 : fps == 40 || fps == 45 ? 4 : 1;
     assert(!framepace_on_title());  // screen holder not initialized yet
     assert(framepace_target() == fps);
 
@@ -61,9 +64,9 @@ int main(int argc, char **argv) {
         assert(isfinite(ratio) && ratio > 0 && ratio <= 1.5f);
         elapsed += ratio / 30.0;
     }
-    assert(fabs(elapsed - 60.0) < 0.1);  // 60 seconds in both modes, not double-speed at 60 fps
+    assert(fabs(elapsed - 60.0) < 0.1);  // 60 seconds at every tested frame rate
     assert(fabs(VF(float, (uintptr_t)vfr, VFR_RATIO) - 30.0 / fps) < 0.01);
-    assert(VF(uint32_t, (uintptr_t)vfr, VFR_INTERVAL) == (fps == 60 ? 1 : 2));
+    assert(VF(uint32_t, (uintptr_t)vfr, VFR_INTERVAL) == (fps > 30 ? 1 : 2));
     assert(fabs(*(float *)(uintptr_t)CONTROLLER_STEP - 30.0 / fps) < 0.01);
     printf("Version %d at %d fps: menus/events/movie caps and 60-second clock/controller steps OK\n", g_game_version, fps);
     free(event); free(manager); free(screens); free(holder); free((void *)(uintptr_t)g_guest_lo);

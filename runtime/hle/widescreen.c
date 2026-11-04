@@ -151,13 +151,16 @@ void widescreen_talk_seen(void) {
 
 // The minimap group up at the top right while the on-screen controls are up (ui/touch_controls.mm touch_hud_top: their
 // buttons sat over it) and the player is in the world with the minimap on screen: a pane of the game's 1280x720 layouts in
-// its lower right (x > 290, y < -140: the minimap, the time, temperature and noise meters, the Sheikah Sensor; 2026-11-02,
-// LARECOMP_LOG_PANES) goes up this many layout units (y up); 0 elsewhere. vulkan/exec.c moves those panes, their texts
-// and scissors.
+// its lower right (x > 290, y -140 to -315: the minimap, the time, temperature and noise meters, the Sheikah Sensor;
+// 2026-11-02, LARECOMP_LOG_PANES) goes up this many layout units (y up); 0 elsewhere. vulkan/exec.c moves those panes,
+// their texts and scissors. Not lower: the scope's and the camera's frames have pieces along the screen's bottom edge
+// (y about -345), which went up with the minimap - a bar across the scope's view (#230, #226), the camera frame's corner
+// cut in half (#220). Right after a menu (the pause, the inventory) too: widescreen_world_play waits 30 frames, and the
+// minimap showed down in its usual place for a second, then jumped up (#229, #220); its own disc tells it's back.
 float widescreen_hud_top(float x, float y) {
     extern bool touch_hud_top(void);
     extern uint64_t renderer_present_count(void);
-    if (x < 290.0f || y > -140.0f || !touch_hud_top() || !widescreen_world_play()) return 0;
+    if (x < 290.0f || y > -140.0f || y < -315.0f || !touch_hud_top() || !in_world() || framepace_in_menu()) return 0;
     if (!minimap_frame || renderer_present_count() - minimap_frame > 3) return 0;
     return 490.0f;
 }
@@ -172,11 +175,29 @@ bool widescreen_minimap_at(float w, float h, float *x, float *y, float *r) {
     return true;
 }
 
+// A pane as wide as the screen (vulkan/exec.c full_width_pane: a loading screen's band and its black, the Game Over's
+// black) was drawn this frame or in the last few: a screen of its own is up, nothing moves out. As a load ends the world
+// is drawn again under the loading screen (in_world): its title and tip went out to the left edge, cut, and "Next tip"
+// off the right one, for its last second (#195).
+static uint64_t band_frame;
+void widescreen_band_seen(void) {
+    extern uint64_t renderer_present_count(void);
+    band_frame = renderer_present_count();
+}
+
 float widescreen_hud_shift(float x, float y) {
     extern uint64_t renderer_present_count(void);
     if (!widescreen_ui_centred() || widescreen_in_menu() || !in_world()) return 0;
-    if (talk_frame && renderer_present_count() - talk_frame <= 3 && y < -140.0f && y > -330.0f && x > -310.0f && x < 310.0f)
-        return 0;  // (a talk's box: its ends at +-284, the name; its answers - boxes at 450, texts from 352 - out to the edge)
+    if (band_frame && renderer_present_count() - band_frame <= 3) return 0;
+    // A talk's box on screen: nothing moves out. Its ends (+-284) and the name, and its answers (boxes at 450, texts from
+    // 352) split from it (#200); and the windows a talk opens - the stable's horse list and its card, the mane and saddle
+    // lists - are pieces whose centres sit at different x, moved by different amounts: the card's background left its
+    // frame, the list's names were cut at their start (#231). The game hides the HUD (hearts, minimap) during a talk.
+    if (talk_frame && renderer_present_count() - talk_frame <= 3) return 0;
+    // The button prompts' row along the bottom (y about -320; on a horse "Reset Camera ZL ... Yah! A", from x -250 to
+    // 365) is centred by the game: its texts (moved by their origin) and their dark shadows (by their centre) fell either
+    // side of the blend below and parted - "Yah!" off its shadow (2026-11-03). The minimap's group sits higher or past it.
+    if (y < -290.0f && x > -440.0f && x < 440.0f) return 0;  // (a text's origin: a little above its middle)
     float ax = x < 0 ? -x : x, t = (ax - 180.0f) / (260.0f - 180.0f);
     if (t <= 0) return 0;
     if (t > 1) t = 1;

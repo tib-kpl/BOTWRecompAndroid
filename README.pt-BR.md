@@ -24,6 +24,8 @@
 > O motor de recompilação e o suporte existente ao jogo vêm dos projetos de origem creditados abaixo. As traduções
 > dos menus descritas aqui são da interface do aplicativo; o idioma dos textos do jogo tem sua própria configuração.
 
+[![Listed on PlayPorted](https://playported.com/badge.svg)](https://playported.com/ports/754-the-legend-of-zelda-breath-of-the-wild/)
+
 Um porte de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões **1.0.0, 1.6.0, 1.8.2 e 1.9.0**) para
 Android. **Não é emulação do Switch**: o código do jogo pode ser recompilado em C para o celular ou, no modo nativo
 experimental, executado diretamente na CPU ARM64. A API gráfica do jogo (NVN) é traduzida para Vulkan.
@@ -34,7 +36,7 @@ O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)
 > [!WARNING]
 > **Beta.** Testado principalmente em um celular (POCO F7 Ultra, Adreno 830, driver Mesa Turnip). O desempenho e a
 > compatibilidade variam entre aparelhos; espere bugs, sobretudo em GPUs ainda não testadas fisicamente. Veja as
-> [notas da 0.2.3-beta](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.2.3-beta) e as
+> [notas da 0.3.0-beta](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.3.0-beta) e as
 > [notas de desenvolvimento](docs/BOTW-PORT.md).
 
 ## Plataforma suportada
@@ -58,13 +60,13 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
 - **Vídeo e controles:** opção de 60 fps nas versões do jogo compatíveis e cutscenes a 60 fps experimentais,
   proporção livre da tela, resoluções interna e de saída, upscaling FSR 1 ou Snapdragon GSR 1, FXAA/SMAA, controles de
   toque e físicos e giroscópio. O app oferece escolha de driver Vulkan e opções de compatibilidade.
-- **Correções da 0.2.3:** pontos e linhas escuras na grama, pontas na fumaça após golpes, texto incompleto de GAME
-  OVER, água branca com Sync lag ligado antes do carregamento, problemas de interface na proporção livre e alguns
-  crashes. A correção de memória compartilhada nas GPUs Mali ainda não foi confirmada em um aparelho físico.
+- **0.3.0:** crashes e travamentos depois de 30+ minutos nas GPUs Mali, a dissolução da viagem rápida, folhas
+  surgindo no chão, as janelas do estábulo e as telas de carregamento na proporção livre, taxa de 40 / 45 fps, 30 fps
+  uniformes em telas de 60 Hz, botões de toque para as flechas e o álbum, e duas opções em Compatibilidade do driver:
+  as variáveis do próprio driver e a memória do jogo por arquivo compartilhado para Mali e Xclipse (experimental).
 - **Problemas conhecidos:** a grama baixa só aparece de perto; reflexos da água podem acompanhar a câmera; o fundo
-  do menu de pausa pode ficar preto no driver padrão da Qualcomm; Link pode piscar no primeiro golpe no modo nativo.
-  Depois da ativação de uma Torre Sheikah, o terreno pode esticar em "cortinas"; recarregue um save feito após a
-  ativação.
+  do menu de pausa pode ficar preto no driver padrão da Qualcomm; Link pode piscar no primeiro golpe no modo nativo;
+  a chuva cai mais devagar que no console.
 
 > [!IMPORTANT]
 > Como o LAS Recomp, este projeto é feito quase todo com IA (Claude, da Anthropic, pelo Claude Code), dirigido,
@@ -104,11 +106,15 @@ Desde a **0.2.12-beta**, enquanto você joga no mundo, os controles de toque mos
   quiser.
 - **Gestos:**
   - **Arco e arremessar:** segure e arraste o mesmo dedo para mirar (com o controle por movimento ligado, mova o celular); a sensibilidade fica em Controles.
+    Enquanto segura, um ✕ cancela o tiro ou o arremesso; com o arco puxado, um botão de flechas troca as flechas.
+  - **Parry:** deslize o dedo sobre o escudo erguido.
+  - **Magnésis e câmera:** com a Magnésis selecionada, uma cruz direcional move o objeto; com a runa da câmera, um
+    botão − abre o álbum.
   - **Câmera:** arraste em qualquer ponto da metade direita.
   - **Troca de arma e de escudo:** segure e escolha com um segundo dedo.
   - **Surf com escudo:** toque duas vezes no escudo e segure.
 - **Minimapa no alto:** com os controles de toque na tela, o minimapa, a hora, a temperatura e o sensor vão para o
-  canto superior direito. Com um controle, ficam no lugar de sempre. Toque no minimapa para abrir o mapa; o botão da
+  canto superior direito. Com um controle, ficam no lugar de sempre. Toque duas vezes no minimapa para abrir o mapa; o botão da
   Sheikah Slate abre a luneta.
 - **Seu próprio layout:** em **Controles**, edite o layout de ação ou o clássico. Arraste os botões, e selecione um
   para aumentá-lo ou diminuí-lo com **−** e **+**.
@@ -129,7 +135,7 @@ Desde a **0.2.12-beta**, enquanto você joga no mundo, os controles de toque mos
    **Configurações > Arquivos > Driver Vulkan**. Se o app informar que o driver Vulkan é antigo ao abrir, toque e
    segure o ícone do app e escolha **Escolher driver** antes de iniciar o jogo.
 
-Atualizar da 0.2.x para a 0.2.3-beta não exige recompilar o código do jogo. Os shaders são compilados novamente uma
+Atualizar da 0.2.x para a 0.3.0-beta não exige recompilar o código do jogo. Os shaders são compilados novamente uma
 vez, então os primeiros minutos podem ter travadinhas. Para relatar um problema, abra uma
 [issue](https://github.com/mamcjr/BOTWRecompAndroid/issues) com celular, GPU, driver, versão do jogo e um log de
 **Configurações > Arquivos > Salvar um arquivo de log**.
@@ -187,6 +193,9 @@ correções específicas. Relatos de bugs, testes em outros aparelhos e contribu
     branco ([#103](https://github.com/mamcjr/BOTWRecompAndroid/pull/103)).
   - [Ureta93](https://github.com/Ureta93): arquivos de configuração salvos com quebras de linha do Windows
     ([#187](https://github.com/mamcjr/BOTWRecompAndroid/pull/187)).
+  - [Propinbo](https://github.com/Propinbo): o Link volta a se desfazer em luz na viagem rápida, em vez de ficar azul
+    chapado e sumir ([#210](https://github.com/mamcjr/BOTWRecompAndroid/pull/210)); quadros de 30 fps exibidos por igual
+    em telas de 60 Hz, sem o tranco de 50 / 16,7 ms ([#183](https://github.com/mamcjr/BOTWRecompAndroid/pull/183)).
 - Feito com o [Claude Code](https://claude.com/claude-code) (Anthropic).
 
 *The Legend of Zelda* e *Breath of the Wild* são marcas da Nintendo. Este projeto não é afiliado nem endossado pela

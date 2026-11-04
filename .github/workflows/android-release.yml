@@ -45,7 +45,7 @@ jobs:
           python3 tools/test_romfs_build.py
           clang -std=gnu11 -D__ANDROID__ tools/test_framepace.c -lm -o "$RUNNER_TEMP/test_framepace"
           for version in 100 160 182 190; do
-            for fps in 30 60; do "$RUNNER_TEMP/test_framepace" "$version" "$fps"; done
+            for fps in 30 40 45 60; do "$RUNNER_TEMP/test_framepace" "$version" "$fps"; done
           done
           clang -std=gnu11 -D__ANDROID__ -pthread tools/test_command_shadow.c -o "$RUNNER_TEMP/test_command_shadow"
           for mode in fast locked ab; do "$RUNNER_TEMP/test_command_shadow" "$mode"; done

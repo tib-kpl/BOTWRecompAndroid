@@ -585,6 +585,8 @@ static bool android_copy_document(const std::string &uri, const std::string &dst
 // (BOTWRecompAndroidActivity pickLogFolder / openLog), where a file manager can open it - Android/data/ is out of its reach
 extern "C" void android_log_file(bool on);
 extern "C" bool vk_lrz_at_start(void);
+extern "C" const char *vk_driver_env_at_start(void);
+extern "C" bool vk_heap_file_possible(void);
 extern "C" const char *vk_gpu_name(void);
 extern "C" const char *vk_driver_rejected(void);  // (runtime/nvn/vulkan/android_driver.c)
 extern "C" const char *vk_driver_desc(void);      // (its own name and version: runtime/nvn/vulkan/device.c)
@@ -1583,6 +1585,14 @@ static void prelaunch_tab(float sc) {
         changed |= tri("heap", &g_settings.gpu_heap, VK_TURNIP_HEAP);
         ImGui::TextDisabled("%s", tr("On maps the game's memory directly for GPU access. Off uses CPU copies. Direct mapping can be slower on some GPUs. Applies when the game starts."));
         ImGui::Spacing();
+        changed |= ImGui::Checkbox(tr("Game memory through a shared file (experimental)"), &g_settings.heap_file);
+        ImGui::TextDisabled("%s", tr("For GPUs where the option above can't work (Mali, Xclipse): the game's memory is shared "
+                                  "with the GPU through a file the driver exports, instead of being copied each frame - "
+                                  "possibly much faster, but untested on those GPUs: if the game draws wrong, runs slower "
+                                  "or closes, turn it off. Needs 8 GB of RAM or more. Applies when the game starts."));
+        if (!vk_heap_file_possible())
+            ImGui::TextDisabled("%s", tr("This driver can't export its memory: the option does nothing here."));
+        ImGui::Spacing();
         ImGui::Text("%s", tr("Draw-target reads in place (Turnip)"));
         changed |= tri("inplace", &g_settings.inplace_reads, VK_TURNIP_TARGET_READS);
         ImGui::TextDisabled("%s", tr("On lets decals and effects read the target they draw into. Off uses intermediate copies for compatibility. Applies when the game starts."));
@@ -1590,8 +1600,16 @@ static void prelaunch_tab(float sc) {
         ImGui::Text("%s", tr("Turnip low-resolution Z (LRZ)"));
         changed |= tri("lrz", &g_settings.turnip_lrz, VK_TURNIP_LRZ);
         ImGui::TextDisabled("%s", tr("Turnip's early depth test. Off can fix missing or broken drawing on some GPUs. Applies after restarting BOTWRecompAndroid."));
+        ImGui::Spacing();
+        ImGui::Text("%s", tr("Driver variables"));  // (#227: g_settings.driver_env, vulkan/device.c)
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        changed |= ImGui::InputTextWithHint("##driverenv", "FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1", g_settings.driver_env,
+                                            sizeof g_settings.driver_env);
+        ImGui::TextDisabled("%s", tr("Advanced: switches the Vulkan driver reads when it starts, as NAME=value, separated by "
+                                  "spaces. Leave it empty unless a guide for your phone tells you which ones. Applies when "
+                                  "BOTWRecompAndroid restarts."));
         bool lrz_now = vk_turnip_path_setting(vk_gpu_name(), g_settings.turnip_lrz, VK_TURNIP_LRZ);
-        if (lrz_now != vk_lrz_at_start()) {  // (Turnip reads it once, when the app starts)
+        if (lrz_now != vk_lrz_at_start() || strcmp(g_settings.driver_env, vk_driver_env_at_start())) {  // (read once, at the start)
             ImGui::Text("%s", tr("Restart BOTWRecompAndroid to apply it."));
             ImGui::SameLine();
             ImGui::PushID("lrz");  // (the driver's own Restart now may be showing too)
