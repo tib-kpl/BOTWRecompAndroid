@@ -24,8 +24,8 @@ android {
         applicationId = "com.botwrecomp.android"
         minSdk = 30
         targetSdk = 36
-        versionCode = providers.gradleProperty("ciVersionCode").orNull?.toInt() ?: 34
-        versionName = providers.gradleProperty("ciVersionName").getOrElse("0.3.0-beta")
+        versionCode = 35
+        versionName = "0.3.1-beta"
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -88,6 +88,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
+
+// Keep upstream's version literals above unchanged so release bumps merge cleanly.
+// CI overrides are applied after the upstream Android configuration.
+providers.gradleProperty("ciVersionCode").orNull?.let { android.defaultConfig.versionCode = it.toInt() }
+providers.gradleProperty("ciVersionName").orNull?.let { android.defaultConfig.versionName = it }
 
 // What the native build and the APK need: the SMAA shader as a C string (smaa_hlsl.inc),
 // the prebuilt libraries, and the shipped resources (the start screen's font, the icon).

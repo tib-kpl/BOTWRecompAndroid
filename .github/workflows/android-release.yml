@@ -112,7 +112,7 @@ jobs:
         run: |
           cd android/botwrecompandroid
           if [ "$RELEASE_BUILD" = true ]; then
-            base_version=$(sed -n 's/^[[:space:]]*versionName = .*getOrElse("\([^"]*\)").*/\1/p' app/build.gradle.kts)
+            base_version=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"[[:space:]]*$/\1/p' app/build.gradle.kts)
             test -n "$base_version"
             bash gradlew --no-daemon :app:assembleRelease \
               -PrequireReleaseSigning=true \

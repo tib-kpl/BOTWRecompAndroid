@@ -10,6 +10,14 @@ assets. CI uses version codes starting at 1001, increasing with the workflow run
 installed over older CI APKs. The version name includes the build number and commit hash. These automated builds
 are prereleases; they do not replace a manually published stable release.
 
+## Upstream version updates
+
+Keep `defaultConfig.versionCode` and `defaultConfig.versionName` in `app/build.gradle.kts` identical to upstream's
+literal assignments. CI applies `ciVersionCode` and `ciVersionName` separately after the `android` block; the workflow
+reads the literal `versionName` for its base version. Putting CI overrides on the upstream version lines makes every
+upstream release bump conflict. Merge upstream normally so Git retains the shared history; other fork changes that
+overlap upstream edits can still need manual resolution.
+
 ## Signing
 
 The main-branch build requires these repository Actions secrets:
