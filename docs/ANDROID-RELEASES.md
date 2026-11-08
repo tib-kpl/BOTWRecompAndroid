@@ -18,6 +18,19 @@ reads the literal `versionName` for its base version. Putting CI overrides on th
 upstream release bump conflict. Merge upstream normally so Git retains the shared history; other fork changes that
 overlap upstream edits can still need manual resolution.
 
+## Keeping the fork in sync
+
+Fetch and merge upstream regularly (`git fetch upstream`, then `git merge upstream/main`) and push the merge to
+`origin`. Keep the merge history: replacing upstream commits with squashed or cherry-picked copies makes later
+synchronization harder. Always review overlapping runtime changes together; do not resolve them by blindly choosing
+one side.
+
+Menu translations specific to this fork belong in `runtime/ui/fork/i18n_*.inc`. The corresponding
+`runtime/ui/i18n_*.inc` files stay identical to upstream. Each fork catalog is included first in `i18n.mm`, so its
+translations override upstream entries with the same English key. This keeps upstream's appended strings away from
+fork additions and lets both evolve independently. Run `python3 tools/check_translations.py` and the CI menu locale
+test after updating either catalog; the validator checks each file and the combined catalogs.
+
 ## Signing
 
 The main-branch build requires these repository Actions secrets:

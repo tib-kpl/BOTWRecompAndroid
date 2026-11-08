@@ -7,6 +7,9 @@ uint64_t g_guest_lo;
 int g_game_version;
 volatile int g_movie_playing;
 Settings g_settings;
+bool g_benchmark;
+static unsigned benchmark_calls;
+void benchmark_vfr(void) { benchmark_calls++; }
 static uint64_t now;
 static int between_fps;
 int vk_between_fps(void) { return between_fps; }
@@ -68,6 +71,11 @@ int main(int argc, char **argv) {
     assert(fabs(VF(float, (uintptr_t)vfr, VFR_RATIO) - 30.0 / fps) < 0.01);
     assert(VF(uint32_t, (uintptr_t)vfr, VFR_INTERVAL) == (fps > 30 ? 1 : 2));
     assert(fabs(*(float *)(uintptr_t)CONTROLLER_STEP - 30.0 / fps) < 0.01);
+    assert(benchmark_calls == 0);
+    g_benchmark = true;
+    now += 1000000000ull / fps;
+    rt_vfr_update((uintptr_t)vfr);
+    assert(benchmark_calls == 1);
     printf("Version %d at %d fps: menus/events/movie caps and 60-second clock/controller steps OK\n", g_game_version, fps);
     free(event); free(manager); free(screens); free(holder); free((void *)(uintptr_t)g_guest_lo);
 }

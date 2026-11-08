@@ -40,7 +40,7 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 > [!WARNING]
 > **Beta.** Tested primarily on one phone (POCO F7 Ultra, Adreno 830, Mesa Turnip driver). Performance and compatibility
 > vary by device; expect bugs, especially on GPUs that have not been tested on physical hardware. See the
-> [0.3.1-beta release notes](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.3.1-beta) and the
+> [0.3.2-beta release notes](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.3.2-beta) and the
 > [development notes](docs/BOTW-PORT.md) (in Portuguese).
 
 ## Supported platform
@@ -67,6 +67,9 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
   ground, the stable's windows and the loading screens in unlocked aspect, a 40 / 45 fps frame rate, even 30 fps on
   60 Hz screens, touch buttons for the arrows and the album, and two Driver compatibility options: the driver's own
   variables, and game memory through a shared file for Mali and Xclipse (experimental).
+- **0.3.2:** fewer crashes with the Slate's camera, the red shadows on the Adreno 840 fixed, the unlocked-aspect HUD
+  without jumps after a pause, the scope with bars and the inventory without flicker, an option to keep the minimap
+  at the bottom with touch controls, and the aim steady when the phone turns round.
 - **Known issues:** short grass appears only up close; water reflections can move with the camera; the pause menu
   background can be black on Qualcomm's stock driver; Link may flicker on the first hit in Native Mode; rain falls
   slower than on the console.
@@ -137,7 +140,7 @@ icons read from your game files. The game's menus keep the classic buttons.
    Files > Vulkan driver**. If the app reports that the Vulkan driver is too old at startup, long-press the app icon
    and choose **Choose driver** before launching the game.
 
-Updating from 0.2.x to 0.3.1-beta does not require rebuilding game code. Shaders compile again once, so the first
+Updating from 0.2.x to 0.3.2-beta does not require rebuilding game code. Shaders compile again once, so the first
 minutes may stutter. To report a problem, open an [issue](https://github.com/mamcjr/BOTWRecompAndroid/issues) with
 your phone, GPU, driver, game version and a log from **Settings > Files > Save a log file**.
 
@@ -155,11 +158,19 @@ android/run_boot.sh 120                               # start the game, log to a
 ## Support the project
 
 BOTWRecompAndroid is a free, independent project. If you enjoy it and would like to support its development, you can
-sponsor me on GitHub. Your support helps me dedicate time to fixing bugs, improving performance and compatibility, and
+sponsor me on GitHub, Ko-fi or Buy Me a Coffee. Your support helps me dedicate time to fixing bugs, improving performance and compatibility, and
 working on future releases. Sponsorship is entirely optional: it does not unlock features or guarantee specific fixes.
 Bug reports, device tests, and contributions are also greatly appreciated.
 
+This month's goal is to pay for Claude Code Max ($100/month), the AI coding tool I use to work on my projects. The
+badge below shows how much has come in this month, across all platforms and shared by BOTWRecompAndroid, TOTKDroid
+and LASRecompAndroid; I update it by hand.
+
+[![Claude Code Max goal](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmamcjr%2FBOTWRecompAndroid%2Fmain%2F.github%2Fdonation-goal.json&query=%24.raised&prefix=%24&color=2EA043&logo=claude&logoColor=white&label=Claude%20Code%20Max%20goal&suffix=%20%2F%20%24100%20this%20month)](https://github.com/mamcjr/BOTWRecompAndroid/blob/main/.github/donation-goal.json)
+
 [![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-on%20GitHub-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/mamcjr)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-mamcjr-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/mamcjr)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-mamcjr-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/mamcjr)
 
 ## Credits
 
@@ -204,7 +215,13 @@ Bug reports, device tests, and contributions are also greatly appreciated.
     ([#187](https://github.com/mamcjr/BOTWRecompAndroid/pull/187)).
   - [Propinbo](https://github.com/Propinbo): Link breaking up into light again on a fast travel, instead of turning flat
     blue and vanishing ([#210](https://github.com/mamcjr/BOTWRecompAndroid/pull/210)); 30 fps frames shown evenly on
-    60 Hz screens, no more 50 / 16.7 ms judder ([#183](https://github.com/mamcjr/BOTWRecompAndroid/pull/183)).
+    60 Hz screens, no more 50 / 16.7 ms judder ([#183](https://github.com/mamcjr/BOTWRecompAndroid/pull/183)); no
+    validation errors from points and empty copies ([#255](https://github.com/mamcjr/BOTWRecompAndroid/pull/255)); a
+    built-in benchmark ([#278](https://github.com/mamcjr/BOTWRecompAndroid/pull/278)).
+  - [ilovz73ai-sketch](https://github.com/ilovz73ai-sketch): phone motion on a foldable's inner screen
+    ([#284](https://github.com/mamcjr/BOTWRecompAndroid/pull/284)).
+  - [3122380113](https://github.com/3122380113): the debug frame's three-finger tap with the touch controls hidden
+    ([#252](https://github.com/mamcjr/BOTWRecompAndroid/pull/252)).
 - Made with [Claude Code](https://claude.com/claude-code) (Anthropic).
 
 *The Legend of Zelda* and *Breath of the Wild* are trademarks of Nintendo. This project is not affiliated with or

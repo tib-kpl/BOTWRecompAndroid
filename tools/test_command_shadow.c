@@ -10,6 +10,7 @@
 #define SHADOW_K 8
 typedef struct { uint64_t words[8]; } CmdRec;
 #define FATAL(...) do { fprintf(stderr, __VA_ARGS__); abort(); } while (0)
+int g_cmd_shadow_pages;
 static _Atomic unsigned locks;
 static int tracked_lock(pthread_mutex_t *m) {
     atomic_fetch_add_explicit(&locks, 1, memory_order_relaxed);
@@ -75,6 +76,7 @@ int main(int argc, char **argv) {
     for (unsigned t = 0; t < THREADS; t++) assert(!pthread_join(threads[t], NULL));
     for (unsigned p = 0; p < PAGES; p++)
         for (unsigned t = 1; t < THREADS; t++) assert(seen[t][p] && seen[t][p] == seen[0][p]);
+    assert(g_cmd_shadow_pages == PAGES + 2);  // page zero, collision page, and worker pages
     pthread_barrier_destroy(&start);
     printf("Command shadow %s: collisions, offsets, immutable mappings and 480000 concurrent lookups OK\n", argv[1]);
 }

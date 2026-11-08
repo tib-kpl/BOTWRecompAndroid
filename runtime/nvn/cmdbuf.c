@@ -43,6 +43,7 @@ static CmdRec *raw_rec(uint64_t at, uint32_t op, uint32_t size) {
 }
 
 // ---- shadow pages: guest page -> host block of SHADOW_PAGE * SHADOW_K bytes (allocated at first use, kept)
+int g_cmd_shadow_pages, g_cmd_host_chunks;  // Memory mappings log.
 #include "command_shadow.h"
 
 // The chunk records go to: cb->gmem (guest address; 0: host memory at cb->mem), cb->size and cb->used in game bytes.
@@ -126,6 +127,7 @@ static void add_host_memory(NvnCmdBuf *cb, uint32_t need) {
     uint8_t *mem = malloc(size * SHADOW_K);
     if (!mem) FATAL("nvn: out of command memory (host, %llu bytes)\n", (unsigned long long)(size * SHADOW_K));
     total += size * SHADOW_K;
+    g_cmd_host_chunks++;
     if (ENV("LARECOMP_LOG_CMDMEM"))
         LOG("[nvn] command buffer %llx: %llu bytes of host command memory (%llu KB in all)\n",
             (unsigned long long)cb->guest, (unsigned long long)(size * SHADOW_K), (unsigned long long)(total / 1024));

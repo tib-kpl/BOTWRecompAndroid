@@ -126,7 +126,22 @@ bool widescreen_in_menu(void) {
     static uint64_t last;
     uint64_t now = renderer_present_count();
     if (framepace_in_menu()) last = now + 1;
-    return last && now < last + 30;
+    if (ENV("LARECOMP_LOG_MENU")) {  // (a test: per frame, the game's menu flag and whether the world was drawn)
+        static uint64_t logged;
+        extern uint64_t vk_scene_frame(void);
+        if (now != logged) {
+            logged = now;
+            LOG("[widescreen] frame %llu: menu %d, world drawn at %llu\n", (unsigned long long)now, framepace_in_menu(),
+                (unsigned long long)vk_scene_frame());
+        }
+    }
+    if (!last || now >= last + 30) return false;
+    // The world drawn again since: the menu has closed, not turned a page (its pages don't draw the 3D scene). Waiting
+    // the whole 30 frames, the HUD sat in the 16:9 middle for a second after each pause, then jumped out to the edges
+    // (#261, #259). LARECOMP_MENU_WAIT_FULL=1: the old wait.
+    extern uint64_t vk_scene_frame(void);
+    if (!ENV("LARECOMP_MENU_WAIT_FULL") && vk_scene_frame() >= last) return false;
+    return true;
 }
 
 // Playing in the world: not the title or a loading screen, no menu of the game's up (pause, map) - the touch controls'
@@ -160,9 +175,18 @@ void widescreen_talk_seen(void) {
 float widescreen_hud_top(float x, float y) {
     extern bool touch_hud_top(void);
     extern uint64_t renderer_present_count(void);
-    if (x < 290.0f || y > -140.0f || y < -315.0f || !touch_hud_top() || !in_world() || framepace_in_menu()) return 0;
-    if (!minimap_frame || renderer_present_count() - minimap_frame > 3) return 0;
-    return 490.0f;
+    if (x < 290.0f || y > -140.0f || y < -315.0f || !touch_hud_top()) return 0;
+    int why = !in_world() ? 1 : framepace_in_menu() ? 2 : !minimap_frame || renderer_present_count() - minimap_frame > 3 ? 3 : 0;
+    if (ENV("LARECOMP_LOG_HUDTOP")) {  // (a test: each change of the group's place, and why)
+        static int last = -1;
+        if (why != last) {
+            static const char *const name[] = {"up", "down: not in the world", "down: a menu", "down: no minimap disc"};
+            LOG("[widescreen] frame %llu: minimap group %s (pane %.0f, %.0f; disc last at frame %llu)\n",
+                (unsigned long long)renderer_present_count(), name[why], x, y, (unsigned long long)minimap_frame);
+            last = why;
+        }
+    }
+    return why ? 0 : 490.0f;
 }
 
 // Where the minimap is on a w x h screen, moved up as above (its centre at layout 515, -245; about 100 units across):
@@ -230,10 +254,21 @@ void widescreen_scene_ubo(const float *u, uint64_t size) { (void)u, (void)size; 
 // widened layout camera, its artwork past it). Loading screens too are the whole image now: their layout, drawn through
 // a 16:9 camera of their own, is narrowed to the middle part as it's drawn (vulkan/exec.c cbuf_info) - squeezed back
 // here instead, the image shrank to load and stretched back to the world.
+// The scope's view (vulkan/exec.c: its frame's top and bottom bars, at 0, +-304) was drawn this frame or in the last
+// few: shown in the middle 16:9 part with bars, as the console. Its frame is a 16:9 picture - in the wide image the
+// world showed past its sides, through the stretched darkening (#262).
+static uint64_t scope_frame;
+void widescreen_scope_seen(void) {
+    extern uint64_t renderer_present_count(void);
+    if (!ENV("LARECOMP_NO_SCOPE_BARS")) scope_frame = renderer_present_count();
+}
+
 void widescreen_present_crop(uint64_t frame, double shape, float crop[4], double *vx, double *vy, double *vw, double *vh) {
     (void)frame, (void)vy, (void)vh;
     crop[0] = crop[1] = 0, crop[2] = crop[3] = 1;
-    if (shape <= 1.001 || !widescreen_allowed() || in_world() || !framepace_on_title()) return;
+    extern uint64_t renderer_present_count(void);
+    bool scope = scope_frame && renderer_present_count() - scope_frame <= 3;
+    if (shape <= 1.001 || !widescreen_allowed() || (!scope && (in_world() || !framepace_on_title()))) return;
     crop[2] = (float)(1.0 / shape), crop[0] = (1.0f - crop[2]) * 0.5f;
     double w = *vw / shape;
     *vx += (*vw - w) * 0.5, *vw = w;

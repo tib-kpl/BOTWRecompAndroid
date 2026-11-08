@@ -19,6 +19,7 @@
 #include "../../kernel.h"
 #include "shaders.h"
 #include "vk.h"
+#include "buffer_copy.h"
 #include "timing_trace.h"
 #include "../renderer.h"
 #include "../../settings.h"
@@ -66,6 +67,8 @@ uint64_t prof_up_cum;  // (the same, never reset)
 #define PROF_T0() uint64_t prof_t0_ = prof ? SDL_GetTicksNS() : 0
 #define PROF_ADD(v) do { if (prof) v += SDL_GetTicksNS() - prof_t0_; } while (0)
 static _Atomic int stat_compiles;
+static _Atomic int live_programs, live_gpipes, live_cpipes;  // (made so far: the memory mappings log, vk_live_counts)
+static _Atomic uint64_t stat_skipped_building;  // (never zeroed; hle/benchmark.c) draws skipped: their pipeline is still compiling
 static uint64_t op_counts[CMD_COUNT];
 bool g_debug_frame;
 static char stats_text[2048];
@@ -333,6 +336,9 @@ void vk_pace_frame(void) {
     uint64_t p = now - last, wt = w - last_wait;
     bool first = !last;
     last = now, last_wait = w;
+    extern bool g_benchmark;
+    extern void benchmark_frame(double period, double busy, double game, double render, double gpu);
+    if (g_benchmark && !first && p > 100000000ull) benchmark_frame(p / 1e6, -1, -1, -1, -1);  // (its window keeps these too)
     if (first || p > 100000000ull) return;  // (loading, a hitch: not a pace)
     double busy = (p > wt ? p - wt : 0) / 1e6;
 #ifdef __ANDROID__
@@ -392,6 +398,9 @@ void vk_pace_frame(void) {
     avg = avg ? avg + (step_busy - avg) * 0.05 : step_busy;
 #else
     avg = avg ? avg + (busy - avg) * 0.05 : busy;
+#endif
+#ifdef __ANDROID__
+    if (g_benchmark) benchmark_frame(p / 1e6, busy, game_busy, render_busy, g_pace_gpu_ms);
 #endif
     static int log = -1;  // LARECOMP_LOG_PACE=1: each frame's period, vsync wait and busy time
     if (log < 0) log = getenv("LARECOMP_LOG_PACE") != NULL;
@@ -1353,6 +1362,13 @@ void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
     last_t = now; l_exec = cum_exec; l_wait = cum_wait; l_draws = cum_draws; l_subs = cum_submits;
 }
 
+// (hle/benchmark.c) draws skipped and pipelines compiled so far: renderer_stats zeroes its own every few seconds, on
+// the thread that asks for these
+static uint64_t skipped_before, compiles_before;
+uint64_t vk_skipped_total(void) { return skipped_before + stat_skipped; }
+uint64_t vk_skipped_building_total(void) { return stat_skipped_building; }
+uint64_t vk_compiles_total(void) { return compiles_before + (uint64_t)atomic_load(&stat_compiles); }
+
 const char *renderer_stats(void) {
     static int dumps;
     if (dumps++ < 3) {
@@ -1360,11 +1376,14 @@ const char *renderer_stats(void) {
         for (int i = 0; i < CMD_COUNT; i++) if (op_counts[i]) LOG(" %d:%llu", i, (unsigned long long)op_counts[i]);
         LOG("\n");
     }
+    int compiles = atomic_exchange(&stat_compiles, 0);
+    compiles_before += (uint64_t)compiles;
+    skipped_before += stat_skipped;
     snprintf(stats_text, sizeof stats_text,
              "%llu draws, %llu skipped, %llu passes, %llu dispatches (%llu chained), %llu flushes, wait %.0fms, compile %d (waited %.0fms), fbcopy %llu (read %llu, breaks %llu), upload %.1fMB, binds %llu pipe %llu sets",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_dchained, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
-             atomic_exchange(&stat_compiles, 0), (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks, (double)stat_upload_bytes / 1048576.0,
+             compiles, (double)stat_build_wait_ns / 1e6, (unsigned long long)stat_feedback_copies, (unsigned long long)stat_feedback_reads, (unsigned long long)stat_inplace_breaks, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)stat_pipe_binds, (unsigned long long)stat_set_binds);
     stat_feedback_copies = stat_feedback_reads = stat_inplace_breaks = stat_upload_bytes = stat_build_wait_ns = stat_pipe_binds = stat_set_binds = 0;
     if (getenv("LARECOMP_LOG_CBUF_BYTES")) {
@@ -2607,6 +2626,7 @@ static void compile_program(void *arg) {
 #endif
     p->layout = make_layout(p, 2, VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT);
     atomic_fetch_add(&stat_compiles, 1);
+    atomic_fetch_add(&live_programs, 1);
     atomic_store(&p->state, p->vs && p->fs ? 1 : 2);
 }
 
@@ -3161,6 +3181,7 @@ static void build_pipeline(void *arg) {
     }
 #endif
     atomic_fetch_add(&stat_compiles, 1);
+    if (r == VK_SUCCESS) atomic_fetch_add(&live_gpipes, 1);
     if (r != VK_SUCCESS) {  // (each failing key once: its draws are dropped)
         static int n;
         if (n++ < 20) LOG("[vk] graphics pipeline failed (%d): vs %llx fs %llx\n", (int)r,
@@ -3772,19 +3793,34 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 // rectangle drawn: cb3[33] (size, then origin), in the textured panes' vertex shaders and the window panes' alike (a
 // window's frame pieces each; cb3[11] is the whole window's size - by it, every piece of the menu's 4590-wide windows
 // counted, the hearts and the rupee too, and moved out g times farther: they jumped when the menu's page turned).
-// Off the middle too when it still covers the wide screen there (half its width past the offset by 960 units: a
-// menu's dark bands, 4590 wide, slide with its pages - clipped as narrower panes, they left lighter strips each side).
+// Off the middle too when it still covers the wide screen there (half its width past the offset by the wide screen's
+// half, 640 g units: a menu's dark bands, 4590 wide, slide with its pages - clipped as narrower panes, they left lighter
+// strips each side). A fixed 960 (g up to 1.5) clipped them too early on a 20:9 screen: its sides flashed lighter as
+// the inventory's pages turned (#195).
+static float wide_half(void) {
+    extern float widescreen_factor(void);
+    return 640.0f * widescreen_factor() + 1.0f;
+}
 static bool full_width_pane(const float *f) {
     float ax = fabsf(f[19]);
-    return f[132] >= 1279.5f && fabsf(f[134] + f[132] * 0.5f) < 0.5f && (ax < 1.0f || f[132] * 0.5f - ax >= 960.0f);
+    return f[132] >= 1279.5f && fabsf(f[134] + f[132] * 0.5f) < 0.5f && (ax < 1.0f || f[132] * 0.5f - ax >= wide_half());
 }
 
 // ... or a piece of a window that is (cb3[11]: the window's size): not clipped to the 16:9 part in the menus - the
 // menu's dimming is such a window, drawn in pieces (clipped, the cutout at its sides came back). Not moved by it.
+// A narrow piece wholly past the layout's side is no part of the screen's cover, though: the inventory's black box
+// (x 716, y -170, every other frame), a piece of one of its 4590-wide windows, flickered at the screen's right edge (#195).
 static bool full_width_window(const float *f) {
     float ax = fabsf(f[19]);
+    if (!full_width_pane(f) && ax - f[132] * 0.5f > 640.0f && f[132] < 400.0f && !ENV("LARECOMP_WINDOW_PIECES_WIDE"))
+        return false;
+    // Its own rectangle across the whole wide screen: the inventory's dark layer (x 0, 4542 wide from -2295) - by the
+    // window's size alone, which that pane's constants held only in some frames (4590, then 0), it was clipped to the
+    // 16:9 part every few frames and the screen's sides flashed lighter (#195)
+    if (f[132] >= 1279.5f && f[132] < 100000.0f && f[19] + f[134] <= -wide_half() && f[19] + f[134] + f[132] >= wide_half())
+        return true;
     return full_width_pane(f) || (f[44] >= 1279.5f && f[44] < 100000.0f && f[45] > 0 && f[46] == 0 && f[47] == 0 &&
-                                  (ax < 1.0f || f[44] * 0.5f - ax >= 960.0f));
+                                  (ax < 1.0f || f[44] * 0.5f - ax >= wide_half()));
 }
 
 // LARECOMP_LOG_PANEFIX=1 (diagnosis): each layout draw cbuf_info changes for the wide screen, and why
@@ -4002,6 +4038,11 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             if (g_debug_frame && size >= 0x230 && f[15] == 0)
                 LOG("[pane] fs %016llx x %.1f y %.1f m %.3f %.3f proj %.3f %.3f wide %d\n", (unsigned long long)g_cur_fs_hash, f[19],
                     f[23], f[16], f[21], f[0], f[5], g_wide_backdrop);
+            if (size >= 0x230 && f[15] == 0 && g_cur_fs_hash == 0x3911f651724ed296ull && fabsf(f[19]) < 1.0f &&
+                fabsf(fabsf(f[23]) - 304.0f) < 1.0f) {
+                extern void widescreen_scope_seen(void);  // (the scope's frame bars: the view keeps 16:9 with bars)
+                widescreen_scope_seen();
+            }
             if (size >= 0x230 && f[15] == 0 && f[0] > 0 && fabsf(f[5] / f[0] - 16.0f / 9.0f * g) < 0.01f && g_wide_backdrop &&
                 fabsf(f[19]) < 1.0f && (g_cur_fs_hash == 0xd4fa32dabc35066cull || g_cur_fs_hash == 0xc94630386244616eull)) {
                 // (the blurred world: nn::ui2d's textured pane shader, centred; and the pause menu's layer over it that
@@ -4332,7 +4373,25 @@ bool vk_heap_place(uint64_t size) {
     const VkMemoryPropertyFlags need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     for (;;) {
         ebi.handleTypes = ht;
-        if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) return NOT_PLACED();
+        VkResult cr = vkCreateBuffer(g_vk.dev, &bi, NULL, &buf);
+        if (cr != VK_SUCCESS) {
+            // Said, not silent: on the Mali-G720 / G78 / G68 the setting was on and the heap went back to CPU copies
+            // with no line (#264 #277 #256 #268) - the buffer refused, the only quiet way out. The driver's limits
+            // with it; an opaque file refused tries a dma-buf.
+            VkPhysicalDeviceMaintenance4Properties m4 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
+            VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES, .pNext = &m4};
+            VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m3};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+            LOG("[vk] heap placement: the %llu MB buffer refused (%d%s; the driver's largest buffer %llu MB, allocation "
+                "%llu MB)\n", (unsigned long long)(size >> 20), cr,
+                !memfd ? "" : ht == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? ", a dma-buf" : ", an exported file",
+                (unsigned long long)(m4.maxBufferSize >> 20), (unsigned long long)(m3.maxMemoryAllocationSize >> 20));
+            if (memfd && g_vk.mem_dmabuf && ht != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
+                ht = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+                continue;
+            }
+            return NOT_PLACED();
+        }
         vkGetBufferMemoryRequirements(g_vk.dev, buf, &mr);
         type = -1;  // host-visible and coherent (the CPU writes, the GPU reads and writes); cached when there is one
         for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
@@ -4432,6 +4491,22 @@ static VkDescriptorBufferInfo gmem_info(void) {
 static VkBuffer gfast_buf;
 static VmaAllocation gfast_mem;
 static uint32_t gmap_tab[(GMAP_MAX + 1) * 4];  // this dispatch's table (stage_set copies it into binding 20)
+// (a region of zero bytes: not allowed, and one reached vkCmdCopyBuffer about once in six validation runs on Mali-G925,
+// from where isn't known: dropped and named here)
+#define copy_buffer(cb, src, dst, n, regions) copy_buffer_(cb, src, dst, n, regions, __LINE__)
+static void copy_buffer_(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, uint32_t n, const VkBufferCopy *regions, int line) {
+    for (uint32_t i = 0; i < n; i++)
+        if (!regions[i].size) {
+            VkBufferCopy kept[n];
+            uint32_t k = vk_copies_nonempty(regions, n, kept);
+            static int told;
+            if (told++ < 8) LOG("[vk] %u of %u buffer copy regions empty (exec.c:%d)\n", n - k, n, line);
+            if (k) vkCmdCopyBuffer(cb, src, dst, k, kept);
+            return;
+        }
+    vkCmdCopyBuffer(cb, src, dst, n, regions);
+}
+
 static VkBufferCopy gfast_cp[GMAP_MAX];       // its copies heap -> gfast_buf (reversed after a storing dispatch)
 static int gfast_n;
 
@@ -4524,7 +4599,7 @@ static void gfast_prepare(VkCommandBuffer cb) {
             LOG("\n");
         }
     }
-    vkCmdCopyBuffer(cb, gmem_buf, gfast_buf, (uint32_t)m, cp);
+    copy_buffer(cb, gmem_buf, gfast_buf, (uint32_t)m, cp);
     vk_full_barrier(cb);
     gmap_tab[GMAP_MAX * 4] = (uint32_t)m;
     memcpy(gfast_cp, cp, (size_t)m * sizeof cp[0]);
@@ -4565,7 +4640,7 @@ static void gfast_finish(VkCommandBuffer cb) {
     VkBufferCopy back[GMAP_MAX];
     for (int i = 0; i < gfast_n; i++) back[i] = (VkBufferCopy){gfast_cp[i].dstOffset, gfast_cp[i].srcOffset, gfast_cp[i].size};
     vk_full_barrier(cb);
-    vkCmdCopyBuffer(cb, gfast_buf, gmem_buf, (uint32_t)gfast_n, back);
+    copy_buffer(cb, gfast_buf, gmem_buf, (uint32_t)gfast_n, back);
     vk_full_barrier(cb);
     gfast_n = 0;
 }
@@ -4778,7 +4853,7 @@ static void gres_sync(GaRes *e) {
         VkCommandBuffer up = vk_upload_cmd();
         if (up != barrier_cb) { vk_full_barrier(up); barrier_cb = up; }  // once per upload command buffer
         VkBufferCopy cp = {sp.off, e->off + s0, n};
-        vkCmdCopyBuffer(up, sp.buf, ga_buf, 1, &cp);
+        copy_buffer(up, sp.buf, ga_buf, 1, &cp);
         stat_gres_sync += n;
     }
 }
@@ -4888,7 +4963,7 @@ static GaRes *gres_get(uint64_t lo, uint64_t hi, bool create) {
             GaRes *e = &ga_res[over[k]];
             gres_sync(e);
             VkBufferCopy cp = {e->off, n->off + (e->lo - ulo), e->hi - e->lo};
-            vkCmdCopyBuffer(cb, ga_buf, ga_buf, 1, &cp);
+            copy_buffer(cb, ga_buf, ga_buf, 1, &cp);
             n->stored |= e->stored;
             e->live = false, e->dead_seq = vk_pending_seq();  // (its space and index back once that's done: gres_reclaim)
         }
@@ -5524,7 +5599,7 @@ void vc_flush(void) {
             if (nc == 64) { nc = 1; cp[0] = (VkBufferCopy){e->lo, 0, e->hi - e->lo}; break; }  // (scattered: the whole range)
             cp[nc++] = (VkBufferCopy){o, o - e->lo, VC_PAGE};
         }
-        if (nc && gmem_buf) vkCmdCopyBuffer(cb, gmem_buf, e->buf, (uint32_t)nc, cp);
+        if (nc && gmem_buf) copy_buffer(cb, gmem_buf, e->buf, (uint32_t)nc, cp);
         else if (nc) {  // (copy mode: no heap buffer - the written pages go through the upload ring)
             uint64_t tot = 0, o = 0;
             for (int k = 0; k < nc; k++) tot += cp[k].size;
@@ -5534,7 +5609,7 @@ void vc_flush(void) {
                 cp[k].srcOffset = sp.off + o;
                 o += cp[k].size;
             }
-            vkCmdCopyBuffer(cb, sp.buf, e->buf, (uint32_t)nc, cp);
+            copy_buffer(cb, sp.buf, e->buf, (uint32_t)nc, cp);
         }
         for (int k = 0; k < nc; k++) prof_vc_copied += cp[k].size;
         e->gen = g;
@@ -5880,6 +5955,7 @@ static void build_compute(void *arg) {
                                       .layout = cp->p.layout};
     VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &cp->pipe);
     atomic_fetch_add(&stat_compiles, 1);
+    if (r == VK_SUCCESS) atomic_fetch_add(&live_cpipes, 1);
     atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
     if (r != VK_SUCCESS || getenv("LARECOMP_LOG_CS_PIPELINES"))
         LOG("[compute] pipeline %llx: result %d, local %ux%ux%u, %zu SPIR-V words, %d bindings\n",
@@ -5960,6 +6036,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
                     (unsigned long long)st.sbuf[5][i].size);
     }
     CsProg *cp = compute_program(st.program);
+    if (cp && !atomic_load(&cp->p.state)) stat_skipped_building++;
     if (!cp || atomic_load(&cp->p.state) != 1) { stat_skipped++; return; }
     {   // LARECOMP_SKIP_CS=<code address hex>[,...] (debug): skip those compute shaders' dispatches, to see what they do;
         // "store": every one that stores to global memory
@@ -6203,6 +6280,7 @@ static void draw_(CmdRec *r, bool indexed) {
         keep = kkeep;
     }
     if (pr && keep) wait_built(&pr->state);
+    if (pr && !atomic_load(&pr->state)) stat_skipped_building++;
     if (!pr || atomic_load(&pr->state) != 1) { stat_skipped++; skip_note("shader"); return; }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
@@ -6688,6 +6766,7 @@ static void draw_(CmdRec *r, bool indexed) {
     if (keep) wait_built(&pp->state);
     if (atomic_load(&pp->state) != 1) {
         if (g_debug_frame) LOG("[draw]   skipped: pipeline %s\n", atomic_load(&pp->state) ? "failed" : "still building");
+        if (!atomic_load(&pp->state)) stat_skipped_building++;
         stat_skipped++;
         skip_note("pipeline");
         return;
@@ -8290,4 +8369,12 @@ void backend_execute(uint64_t handle) {
 #ifdef __ANDROID__
     game_pending = false;
 #endif
+}
+
+// What the Vulkan side holds, for the memory mappings log (platform/android.c): on a Mali the process's large mallocs
+// and the driver's own maps grew all session long (#249 #264)
+int vk_live_counts(char *out, int cap) {
+    extern int vk_texture_count(void);
+    return snprintf(out, (size_t)cap, "programs %d, pipelines %d + compute %d, textures %d", atomic_load(&live_programs),
+                    atomic_load(&live_gpipes), atomic_load(&live_cpipes), vk_texture_count());
 }

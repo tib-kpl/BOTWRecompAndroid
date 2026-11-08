@@ -31,6 +31,9 @@ static uint64_t src_hash(const char *src, int stage) {
 }
 #endif
 
+static _Atomic uint64_t spirv_misses;  // (hle/benchmark.c: shaders not in the disk cache so far)
+uint64_t vk_spirv_misses(void) { return spirv_misses; }
+
 static uint32_t *cache_load(uint64_t h, size_t *nwords) {
     char path[64];
     snprintf(path, sizeof path, "cache/spirv/%016llx.spv", (unsigned long long)h);
@@ -148,6 +151,7 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
     if (precise) h ^= 0x5052454349534501ull; // Separate checked precision-before-optimization policy, revision 1.
     bool nocache = getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
     uint32_t *out = nocache ? NULL : cache_load(h, nwords);
+    if (!out) spirv_misses++;
     if (out) return out;
     static __thread shaderc_compiler_t comp;
     if (!comp) comp = shaderc_compiler_initialize();

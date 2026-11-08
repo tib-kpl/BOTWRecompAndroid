@@ -3,6 +3,8 @@
 #pragma once
 #include <stdatomic.h>
 
+extern int g_cmd_shadow_pages;
+
 enum { SHADOW_SLOTS = 1 << 16 };
 static struct { _Atomic uint64_t page; uint8_t *mem; } g_shadow[SHADOW_SLOTS];
 static pthread_mutex_t g_shadow_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -54,6 +56,7 @@ static uint64_t shadow_at(uint64_t guest) {
     if (!found) {
         uint8_t *mem = malloc(SHADOW_PAGE * SHADOW_K + sizeof(CmdRec));
         if (!mem) FATAL("nvn: no memory for a command shadow page\n");
+        g_cmd_shadow_pages++;
         g_shadow[i].mem = mem;
         atomic_store_explicit(&g_shadow[i].page, page, memory_order_release);
     }

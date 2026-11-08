@@ -10,6 +10,9 @@ int main() {
     assert(tr(nullptr) == nullptr);
     assert(!strcmp(tr(""), ""));
     assert(!strcmp(tr("Settings"), "Paramètres"));
+    assert(!strcmp(tr("Minimap at the top"), "Mini-carte en haut"));
+    assert(!strcmp(tr("Automatic uses a separate compatibility profile for each option and GPU. On and Off override that profile."),
+                   "Le mode Automatique utilise un profil de compatibilité distinct pour chaque option et chaque GPU. Les choix Activé et Désactivé remplacent ce profil."));
     assert(!strcmp(tr("An unknown English key"), "An unknown English key"));
     assert(ui_upper("français, cœur, été") == "FRANÇAIS, CŒUR, ÉTÉ");
     for (const char *locale : {"fr-FR", "fr-CA", "FR_fr"}) {

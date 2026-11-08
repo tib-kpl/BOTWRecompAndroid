@@ -27,10 +27,18 @@ def catalog(path):
     return dict(pairs)
 
 
+def merged_catalog(path):
+    entries = catalog(path)
+    overlay = path.parent / 'fork' / path.name
+    if overlay.is_file():
+        entries.update(catalog(overlay))
+    return entries
+
+
 def main():
-    reference = catalog(ROOT / 'runtime/ui/i18n_pt.inc')
+    reference = merged_catalog(ROOT / 'runtime/ui/i18n_pt.inc')
     for path in sorted((ROOT / 'runtime/ui').glob('i18n_*.inc')):
-        entries = catalog(path)
+        entries = merged_catalog(path)
         missing = reference.keys() - entries.keys()
         # Keep the fork's original French/Portuguese catalogs complete. New upstream languages can use tr()'s
         # English fallback for fork-only additions such as SD storage selection.

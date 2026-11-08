@@ -30,36 +30,47 @@ extern "C" {
 #ifdef __ANDROID__
 typedef const char *const Pair[2];
 static const char *const kPt[][2] = {
+#include "fork/i18n_pt.inc"
 #include "i18n_pt.inc"
 };
 static const char *const kEs[][2] = {
+#include "fork/i18n_es.inc"
 #include "i18n_es.inc"
 };
 static const char *const kFr[][2] = {
+#include "fork/i18n_fr.inc"
 #include "i18n_fr.inc"
 };
 static const char *const kDe[][2] = {
+#include "fork/i18n_de.inc"
 #include "i18n_de.inc"
 };
 static const char *const kIt[][2] = {
+#include "fork/i18n_it.inc"
 #include "i18n_it.inc"
 };
 static const char *const kNl[][2] = {
+#include "fork/i18n_nl.inc"
 #include "i18n_nl.inc"
 };
 static const char *const kRu[][2] = {
+#include "fork/i18n_ru.inc"
 #include "i18n_ru.inc"
 };
 static const char *const kJa[][2] = {
+#include "fork/i18n_ja.inc"
 #include "i18n_ja.inc"
 };
 static const char *const kKo[][2] = {
+#include "fork/i18n_ko.inc"
 #include "i18n_ko.inc"
 };
 static const char *const kZhHans[][2] = {
+#include "fork/i18n_zh_hans.inc"
 #include "i18n_zh_hans.inc"
 };
 static const char *const kZhHant[][2] = {
+#include "fork/i18n_zh_hant.inc"
 #include "i18n_zh_hant.inc"
 };
 

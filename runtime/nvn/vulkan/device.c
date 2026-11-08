@@ -475,6 +475,7 @@ static void create_device(void) {
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT divisor_have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     VkPhysicalDeviceFaultFeaturesEXT fault_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+    VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executable_have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
     VkPhysicalDeviceFeatures2 optional = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
@@ -483,6 +484,7 @@ static void create_device(void) {
     QUERY_OPTIONAL(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, border_have);
     QUERY_OPTIONAL(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME, divisor_have);
     QUERY_OPTIONAL(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, fault_have);
+    QUERY_OPTIONAL(VK_KHR_MAINTENANCE_5_EXTENSION_NAME, maintenance5_have);
     QUERY_OPTIONAL(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, executable_have);
 #undef QUERY_OPTIONAL
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &optional);
@@ -522,6 +524,13 @@ static void create_device(void) {
     }
 #endif
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
+#ifdef __ANDROID__
+    // BOTW draws points (one draw a frame) from a vertex shader that writes no PointSize: their size is undefined without
+    // maintenance5, and 1 with it. Mali-G925 draws 1 pixel either way (measured). LARECOMP_NO_MAINTENANCE5=1: not asked for.
+    bool maintenance5 = maintenance5_have.maintenance5 && (g_vk.api >= VK_API_VERSION_1_3 || cg[OPT_DR]) &&
+                        !env_on("LARECOMP_NO_MAINTENANCE5");
+    if (maintenance5) ext[n_ext++] = VK_KHR_MAINTENANCE_5_EXTENSION_NAME;
+#endif
     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
 #ifdef __ANDROID__
     // Samsung's Xclipse driver accepts the import, then fails the first submission (VK_ERROR_UNKNOWN on a Galaxy S26,
@@ -833,6 +842,8 @@ static void create_device(void) {
             n_ext -= 2;  // (the two map extensions were the last added)
         }
     }
+    VkPhysicalDeviceMaintenance5FeaturesKHR m5 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, .maintenance5 = VK_TRUE};
+    if (maintenance5) { m5.pNext = f.pNext; f.pNext = &m5; LOG("[vk-cap] maintenance5 on\n"); }
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pex = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR, .pipelineExecutableInfo = VK_TRUE};
     if (g_vk.exec_stats) { pex.pNext = f.pNext; f.pNext = &pex; }
@@ -1093,6 +1104,12 @@ int vk_between_fps(void) {
         fps = f;
     }
     return fps;
+}
+
+// (hle/benchmark.c) the screen's refresh rate now
+double vk_display_hz(void) {
+    const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
+    return m ? m->refresh_rate : 0;
 }
 
 // ... and while it's set the window says so (40 or 45 fps content): a system that can switch to a rate where it's even
@@ -1922,7 +1939,7 @@ void ui_window_init(void) {
         // the last start's; unknown: on.
         int lrz = g_settings.turnip_lrz;
         char model[64] = "";
-        if (lrz < 0) {
+        {
             FILE *f = fopen("/sys/class/kgsl/kgsl-3d0/gpu_model", "r");
             if (f) {
                 if (!fgets(model, sizeof model, f)) model[0] = 0;
@@ -1930,7 +1947,21 @@ void ui_window_init(void) {
                 model[strcspn(model, "\r\n")] = 0;
             }
             if (!model[0]) snprintf(model, sizeof model, "%s", g_settings.gpu_model);
-            lrz = !model[0] || vk_turnip_path_auto(model, VK_TURNIP_LRZ);
+        }
+        if (lrz < 0) lrz = !model[0] || vk_turnip_path_auto(model, VK_TURNIP_LRZ);
+        {   // #32: on the Adreno 840 and up (Mesa's a8xx, the Turnip Gen8 drivers from V30), shadowed ground turns red -
+            // ir3 moving a shader's uniform buffer into its constants reads a draw's constants stale. With that off: no
+            // tint and the same ~40 fps (a Z Fold 8). An IR3_SHADER_DEBUG from the driver variables wins.
+            const char *a = strstr(model, "Adreno");
+            int n = 0;
+            if (a) {
+                while (*a && (*a < '0' || *a > '9')) a++;
+                n = atoi(a);
+            }
+            if (n >= 840 && n < 900 && !getenv("IR3_SHADER_DEBUG")) {
+                setenv("IR3_SHADER_DEBUG", "nouboopt", 1);
+                LOG("[vk] %s: IR3_SHADER_DEBUG=nouboopt (shadows drawn red, #32)\n", model);
+            }
         }
         g_lrz_at_start = lrz != 0;
         if (!lrz && !getenv("TU_DEBUG")) setenv("TU_DEBUG", "nolrz", 1);

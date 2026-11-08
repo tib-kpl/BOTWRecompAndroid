@@ -10,7 +10,7 @@ There are two translation catalogs, because most menus are drawn by the native r
 
 | UI | Translation files |
 | --- | --- |
-| Launcher, settings, controls, game import, mods | `runtime/ui/i18n_fr.inc`, `runtime/ui/i18n_pt.inc` |
+| Launcher, settings, controls, game import, mods | Upstream: `runtime/ui/i18n_*.inc`; fork additions/overrides: `runtime/ui/fork/i18n_*.inc` |
 | Android shortcuts, driver dialogs, watch map settings | `android/botwrecompandroid/app/src/main/res/values-*/strings.xml` |
 
 Native catalogs contain `{ "English source text", "Translation" }` pairs in UTF-8. `tr()` uses the English source as
@@ -18,10 +18,15 @@ a lookup key; missing entries fall back to that source. Keep English keys, white
 (`%s`, `%.0f`, `%%`, etc.), and ImGui hidden identifiers (`##...`) unchanged. Only translate the displayed text.
 Menu widget identifiers remain independent of their translations.
 
+Put fork translations in `runtime/ui/fork/` and keep the upstream catalogs unchanged to reduce merge conflicts.
+Fork catalogs are included first and take precedence for duplicate English keys across the two files. Duplicate
+keys within a single file are errors. The validator checks both files and their combined coverage.
+
 ## Add a language
 
 1. Copy `runtime/ui/i18n_fr.inc` to `i18n_<language>.inc` and translate the values.
-2. Include the new catalog and register its base language code in `kTables` in `runtime/ui/i18n.mm`.
+2. Include the new catalog and register its base language code in `kTables` in `runtime/ui/i18n.mm`. If it has a fork
+   catalog, include that file before the upstream catalog in the same array.
 3. Copy `res/values/strings.xml` into `res/values-<language>/strings.xml` and translate every resource. Use Android
    resource escaping and keep numbered placeholders such as `%1$s`. Add the language to `res/xml/locales_config.xml`
    so Android offers it in per-app language settings. Keep this explicit config; do not also enable Gradle's

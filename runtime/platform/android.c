@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdarg.h>
+#include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -381,6 +382,15 @@ int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, u
             }
             fprintf(stderr, "[android] memory mappings: %d (the game's memory %d, the GPU driver's %d, other %d; most: %s)\n", n,
                     in_window, gpu, n - in_window - gpu, most);
+            {   // whose the mallocs are (#249: [anon:scudo:secondary] grew ~2000 every 5 minutes on a Mali)
+                extern int g_cmd_shadow_pages, g_cmd_host_chunks, vk_live_counts(char *out, int cap);
+                struct mallinfo mi = mallinfo();
+                char vk[256] = "";
+                vk_live_counts(vk, sizeof vk);
+                fprintf(stderr, "[android] malloc %zu MB in use (%zu MB mapped by large blocks); command shadow pages %d, host "
+                        "command chunks %d; %s\n", (size_t)mi.uordblks >> 20, (size_t)mi.hblkhd >> 20, g_cmd_shadow_pages,
+                        g_cmd_host_chunks, vk);
+            }
         }
     }
     uint64_t p0 = (addr - wt_lo) >> 12, p1 = (addr + size - wt_lo + 0xFFF) >> 12;
@@ -692,11 +702,11 @@ void plat_terminate(void) { _exit(0); }
 // What the activity reports once a second (BOTWRecompAndroidActivity.reportDeviceStats: public Android APIs; apps can't read
 // the battery or most thermal sensors in /sys).
 static pthread_mutex_t g_ds_lock = PTHREAD_MUTEX_INITIALIZER;
-static PlatDeviceStats g_ds = {.batt_temp_c = -1, .batt_pct = -1, .thermal = -1, .headroom = -1};
+static PlatDeviceStats g_ds = {.batt_temp_c = -1, .batt_pct = -1, .thermal = -1, .headroom = -1, .plugged = -1};
 
 JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeDeviceStats(JNIEnv *env, jclass cls, jfloat batt_temp_c,
                                                                             jfloat batt_pct, jfloat watts, jint thermal,
-                                                                            jfloat headroom) {
+                                                                            jfloat headroom, jint plugged) {
     (void)env, (void)cls;
     pthread_mutex_lock(&g_ds_lock);
     g_ds.batt_temp_c = batt_temp_c;
@@ -704,6 +714,7 @@ JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nati
     g_ds.watts = watts;
     g_ds.thermal = thermal;
     g_ds.headroom = headroom;
+    g_ds.plugged = plugged;
     pthread_mutex_unlock(&g_ds_lock);
     // LARECOMP_LOG_POWER=1 (a test, on battery only: on the charger the current is the charger's): the power draw each
     // second with the CPU clusters' clocks, this process's CPU share and the A/B side (LARECOMP_AB)
