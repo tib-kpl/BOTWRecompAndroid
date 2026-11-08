@@ -595,6 +595,23 @@ static bool null_read(ucontext_t *uc, uint64_t fa, uint64_t pc) {
     return true;
 }
 
+// Native mode: the game's code calling a null function pointer (often one null_read just gave as zero) - the CPU jumps
+// to an address under 64 KB and faults there. Back to the caller with 0, as Recompiled mode does (dispatch.c
+// null_call): a Mali-G720 on 1.0.0 crashed so at "Open your eyes" (#305, after a read at 0x20). Only when the return
+// address is the game's code. LARECOMP_NO_NULL_CALLS=1: off.
+static bool null_call_native(ucontext_t *uc, uint64_t pc) {
+    static int off = -1;
+    if (off < 0) off = getenv("LARECOMP_NO_NULL_CALLS") != NULL;
+    uint64_t lr = uc->uc_mcontext.regs[30];
+    if (off || pc >= 0x10000 || lr < GUEST_LO || lr >= GUEST_HI || (lr & 3)) return false;
+    uc->uc_mcontext.regs[0] = 0;
+    uc->uc_mcontext.pc = lr;
+    static int n;
+    if (n++ < 10) fprintf(stderr, "[android] the game's code called address %#llx: returned 0 (lr %llx)\n",
+                          (unsigned long long)pc, (unsigned long long)lr);
+    return true;
+}
+
 // (installed through ART's signal chain: ART still handles its own faults first)
 static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     ucontext_t *uc = ctx;
@@ -612,6 +629,7 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     if (rt_fault_watch(fa, pc)) return;  // (debugging watches first: a watched page may be write-tracked too)
     {   // (the null page read: zero, above)
         extern int g_fault_wnr;
+        if (sig == SIGSEGV && pc < 0x10000 && null_call_native(uc, pc)) return;  // (a jump to a null function pointer)
         if (sig == SIGSEGV && g_fault_wnr != 1 && null_read(uc, fa, pc)) return;
     }
     if (sig == SIGSEGV && wt_fault(fa)) return;  // (write tracking - whatever the code: mprotect decides, #70)
@@ -864,6 +882,39 @@ static void uclamp_min_thread(void) {
     static atomic_int logged;
     if (!atomic_exchange(&logged, 1))
         LOG("[android] uclamp.min %d for the game's threads: %s\n", want, r ? strerror(errno) : "ok");
+}
+
+// The render thread (vulkan/async.c, ours: no part of the game's job system that LARECOMP_PIN broke) on the fastest
+// cores. Left to the scheduler on a Galaxy Tab A9+ (Snapdragon 695: 2 x A78, 6 x A55) it sat on a little core,
+// 90 ms a frame translating the world, while the game's thread had a big one (2026-11-08). Default: on low RAM
+// (vulkan/exec.c vk_low_ram - the weak phones); LARECOMP_RENDER_BIG=1 / 0.
+void plat_render_thread_pin(void) {
+    const char *e = getenv("LARECOMP_RENDER_BIG");
+    extern bool vk_low_ram(void);
+    if (e ? !atoi(e) : !vk_low_ram()) return;
+    long best = 0, mhz[64] = {0};
+    int n = 0;
+    for (int c = 0; c < 64; c++) {
+        char path[96];
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", c);
+        FILE *f = fopen(path, "re");
+        if (!f) continue;
+        if (fscanf(f, "%ld", &mhz[c]) != 1) mhz[c] = 0;
+        fclose(f);
+        if (mhz[c] > best) best = mhz[c];
+        n = c + 1;
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    int k = 0;
+    for (int c = 0; c < n; c++)
+        if (mhz[c] == best) {
+            CPU_SET(c, &set);
+            k++;
+        }
+    if (!best || k == 0 || k == n) return;
+    int r = sched_setaffinity(0, sizeof set, &set);
+    LOG("[android] render thread on the %d fastest cores (%ld MHz): %s\n", k, best / 1000, r ? strerror(errno) : "ok");
 }
 
 void plat_thread_unpin(void) {

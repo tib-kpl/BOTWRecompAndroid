@@ -68,6 +68,7 @@ uint64_t prof_up_cum;  // (the same, never reset)
 #define PROF_ADD(v) do { if (prof) v += SDL_GetTicksNS() - prof_t0_; } while (0)
 static _Atomic int stat_compiles;
 static _Atomic int live_programs, live_gpipes, live_cpipes;  // (made so far: the memory mappings log, vk_live_counts)
+static void pipe_evict(void);  // (graphics pipelines: below)
 static _Atomic uint64_t stat_skipped_building;  // (never zeroed; hle/benchmark.c) draws skipped: their pipeline is still compiling
 static uint64_t op_counts[CMD_COUNT];
 bool g_debug_frame;
@@ -913,6 +914,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     cum_submits++;
     ring_retire();
     vk_collect_dead();
+    pipe_evict();
 }
 
 void renderer_submit(void) { vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE); }
@@ -990,8 +992,26 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
 // ================================================================== transient memory ring
 // 64 MB host-visible chunks (device-local when the GPU exposes resizable BAR); a chunk is reused once every
 // submission that allocated from it has completed, and given back after 10 s unused (down to RING_KEEP of them).
-#define CHUNK_SIZE (64ull << 20)
-#define RING_KEEP 4
+// Below 6 GB of RAM (a 4 GB tablet: ~1 GB free with the game running), 16 MB chunks and 2 kept - the 64 MB ones, 4
+// kept, were a quarter of the GPU memory the Android killed the game over, as the world loaded (Galaxy Tab A9+,
+// 2026-11-08). LARECOMP_LOW_RAM=1 / 0: as below 6 GB / not.
+bool vk_low_ram(void) {
+    static int low = -1;
+    if (low < 0) {
+        const char *e = getenv("LARECOMP_LOW_RAM");
+        long total_kb = 0;
+        FILE *f = fopen("/proc/meminfo", "r");
+        if (f) {
+            if (fscanf(f, "MemTotal: %ld kB", &total_kb) != 1) total_kb = 0;
+            fclose(f);
+        }
+        low = e ? atoi(e) != 0 : total_kb && total_kb < 6L * 1024 * 1024;
+        if (low) LOG("[vk] low on RAM (%ld MB): smaller buffers\n", total_kb >> 10);
+    }
+    return low;
+}
+#define CHUNK_SIZE (vk_low_ram() ? 16ull << 20 : 64ull << 20)
+#define RING_KEEP (vk_low_ram() ? 2 : 4)
 typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq, frame; } Chunk;  // frame: last picked
 static Chunk *chunks;
 static int nchunks, active = -1;
@@ -3041,9 +3061,67 @@ typedef struct {
     PipeFx fx;
 } PipeKey;
 
-typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
+typedef struct {
+    PipeKey k;
+    uint64_t hash;
+    VkPipeline pipe;
+    _Atomic int state;   // 0 building, 1 ready, 2 failed
+    uint64_t used, seq;  // when it was last bound (ns), and that submission (pipe_evict)
+    bool evicted;        // its VkPipeline destroyed by pipe_evict: built again at its next use
+} Pipe;
 #define PIPE_TAB 8192
 static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+static Pipe *last_pipeline;  // (draw_'s: the previous draw's, reused when nothing changed)
+
+// Pipelines kept: on a Mali (and on low RAM) at most this many, the ones unused longest destroyed. Its driver keeps
+// ~0.4 MB of the process's memory and a GPU mapping for each, and BOTW makes thousands over a long session: 5500
+// pipelines, 2.3 GB of malloc and 61k memory mappings when a Mali-G720 crashed after ~30 minutes (#310, #316; the
+// "fps drops after a while" reports). One unused for 30 s goes; built again (from the pipeline cache) at its next
+// use, its draws skipped meanwhile as for a new one. LARECOMP_PIPE_KEEP=<n> (0: never).
+static int pipe_keep(void) {
+    static int keep = -1;
+    if (keep < 0) {
+        extern bool vk_low_ram(void);
+        const char *e = getenv("LARECOMP_PIPE_KEEP");
+        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5 || vk_low_ram()) ? 1500 : 0;
+        if (keep > 0) LOG("[vk] pipelines kept: at most %d (the least recently used ones destroyed)\n", keep);
+    }
+    return keep;
+}
+
+static void pipe_evict(void) {
+    static uint64_t next;
+    uint64_t now = SDL_GetTicksNS();
+    int keep = pipe_keep();
+    if (keep <= 0 || now < next) return;
+    next = now + 10000000000ull;  // (every 10 s)
+    int live = 0;
+    for (int i = 0; i < PIPE_TAB; i++) {
+        Pipe *p = pipe_tab[i].pipe;
+        if (p && !p->evicted && atomic_load(&p->state) == 1) live++;
+    }
+    if (live <= keep) return;
+    uint64_t done = vk_completed_seq();
+    int target = keep * 4 / 5, gone = 0;
+    // oldest first: two passes, the unused for 2 minutes, then for 30 s
+    static const uint64_t ages[2] = {120000000000ull, 30000000000ull};
+    for (int pass = 0; pass < 2 && live > target; pass++) {
+        uint64_t age = ages[pass];
+        for (int i = 0; i < PIPE_TAB && live > target; i++) {
+            Pipe *p = pipe_tab[i].pipe;
+            if (!p || p->evicted || p == last_pipeline || atomic_load(&p->state) != 1) continue;
+            if (p->used + age > now || p->seq > done) continue;
+            vkDestroyPipeline(g_vk.dev, p->pipe, NULL);
+            p->pipe = VK_NULL_HANDLE;
+            atomic_store(&p->state, 0);
+            p->evicted = true;
+            atomic_fetch_sub(&live_gpipes, 1);  // (built again: counted again)
+            live--, gone++;
+        }
+    }
+    static int nlog;
+    if (gone && nlog++ < 20) LOG("[vk] pipelines: %d unused ones destroyed, %d kept\n", gone, live);
+}
 
 // 8 bytes a step (PipeKey is ~700 bytes, hashed per draw); in-memory tables only - hmix values are compared with
 // stored constants (fragment-shader hashes) and must not change.
@@ -5352,13 +5430,13 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
             for (int i = 0; i < m && o < 440; i++)
                 o += snprintf(b + o, sizeof b - o, " %llx+%llx", (unsigned long long)r[i].lo, (unsigned long long)(r[i].hi - r[i].lo));
             LOG("[gcopy] frame %llu stages %x %s %d ranges %.1f KB:%s%s\n", (unsigned long long)renderer_present_count(),
-                stage_mask, store ? "STORE" : "load", m, total / 1024.0, b, total > CHUNK_SIZE ? " (TOO MUCH: skipped)" : "");
+                stage_mask, store ? "STORE" : "load", m, total / 1024.0, b, total > (64ull << 20) ? " (TOO MUCH: skipped)" : "");
         }
     }
     if (m && gres_prepare(r, m, store)) return;  // (the arena: what shaders store stays on the GPU)
     memset(gmap_tab, 0, sizeof gmap_tab);
     gc_size = 0;
-    if (!m || total > CHUNK_SIZE) return;  // (too much: those loads read zero, as without this)
+    if (!m || total > (64ull << 20)) return;  // (too much: those loads read zero, as without this)
     gc_span = vk_transient(total, 256);
     gc_size = total;
     uint64_t off = 0, seq = vk_pending_seq();
@@ -5390,7 +5468,27 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
 #define VC_PAGE 4096ull
 #define VC_TAB 8192                   // entries (open addressing)
 #define VC_MAX_RANGE (64ull << 20)    // larger bound ranges: read in place
-#define VC_BUDGET (768ull << 20)      // device-local bytes kept; the least recently used go first
+// Device-local bytes kept; the least recently used go first. 768 MB, or a twelfth of the RAM below that (~280 MB on a
+// 4 GB phone: a Galaxy Tab A9+, 3.4 GB, ran out of memory loading the world with 928 MB of GPU memory, 2026-11-08).
+// LARECOMP_VC_BUDGET_MB=<n>: that many.
+static uint64_t vc_budget(void) {
+    static uint64_t b;
+    if (!b) {
+        const char *e = getenv("LARECOMP_VC_BUDGET_MB");
+        long total_kb = 0;
+        FILE *f = fopen("/proc/meminfo", "r");
+        if (f) {
+            if (fscanf(f, "MemTotal: %ld kB", &total_kb) != 1) total_kb = 0;
+            fclose(f);
+        }
+        b = 768ull << 20;
+        if (total_kb && (uint64_t)total_kb * 1024 / 12 < b) b = (uint64_t)total_kb * 1024 / 12;
+        if (e && atol(e) > 0) b = (uint64_t)atol(e) << 20;
+        LOG("[vk] buffer cache: up to %llu MB on the GPU\n", (unsigned long long)(b >> 20));
+    }
+    return b;
+}
+#define VC_BUDGET vc_budget()
 typedef struct { uint64_t lo, hi, used_seq; uint32_t gen, epoch; VkBuffer buf; VmaAllocation mem; bool gpu; } VcEnt;
 static VcEnt vc_tab[VC_TAB];
 static uint32_t vc_pend[VC_TAB];  // entries the pending submission draws from (vc_flush brings them up to date)
@@ -5684,6 +5782,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     uint32_t tic = h & 0xFFFFF, tsc = (uint32_t)(h >> 20) & 0xFFF;
     sc[0] = sc[1] = 1;
     wh[0] = wh[1] = 0;
+    VkFormat tfmt = VK_FORMAT_UNDEFINED;  // (the image's: vk_format_filters_linear below)
     if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
         NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
         if (e->tex) {
@@ -5731,6 +5830,10 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
                 }
         }
     }
+    if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
+        NvnTexEntry *te = &((NvnTexEntry *)st.tpool->entries)[tic];
+        if (te->tex && te->tex->backend) tfmt = ((TexBackend *)te->tex->backend)->format;
+    }
     if (h && st.spool && tsc < (uint32_t)st.spool->count) {
         NvnSamplerDesc *sd = &((NvnSamplerDesc *)st.spool->entries)[tsc];
         smp = st_->shadow ? vk_sampler(sd) : vk_sampler_plain(sd);
@@ -5751,6 +5854,13 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
             }
             smp = ns;
         }
+    }
+    if (smp && tfmt != VK_FORMAT_UNDEFINED && h && st.spool && tsc < (uint32_t)st.spool->count) {
+        // (a format the GPU doesn't filter linearly: the sampler's nearest twin - textures.c vk_format_filters_linear)
+        extern bool vk_format_filters_linear(VkFormat f);
+        extern VkSampler vk_sampler_nearest(NvnSamplerDesc *d, bool compare);
+        if (!vk_format_filters_linear(tfmt))
+            smp = vk_sampler_nearest(&((NvnSamplerDesc *)st.spool->entries)[tsc], st_->shadow);
     }
     if (!view) view = vk_dummy_view(st_->type);
     if (!smp) smp = vk_default_sampler(true);
@@ -6672,7 +6782,7 @@ static void draw_(CmdRec *r, bool indexed) {
                 for (int i = 0; i < 4; i++) fx.sop[f][i] = (uint8_t)sface[f][i];
     }
     // ---- pipeline
-    static Pipe *last_pipeline;
+    // (last_pipeline: file scope - pipe_evict leaves it alone)
     static int reuse = -1, verify;
     if (reuse < 0) {
         const char *e = getenv("LARECOMP_VK_PIPE_REUSE");
@@ -6754,6 +6864,9 @@ static void draw_(CmdRec *r, bool indexed) {
             pipe_tab[pslot].key = ph;
             pipe_tab[pslot].pipe = pp;
             run_job(build_pipeline, pp);
+        } else if (pp->evicted) {  // (destroyed by pipe_evict: built again)
+            pp->evicted = false;
+            run_job(build_pipeline, pp);
         }
         // Verification rebuilds the original key to detect missing invalidations during later device tests.
         if (hit && memcmp(&k, &last_pipeline->k, sizeof k)) {
@@ -6773,6 +6886,7 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     ss_enabled();
     if (ss_need(SS_PIPE, ss.pipe == pp->pipe)) { ss.pipe = pp->pipe; stat_pipe_binds++; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe); }
+    pp->used = SDL_GetTicksNS(), pp->seq = vk_pending_seq();  // (pipe_evict)
     uint64_t prof_td_ = prof ? SDL_GetTicksNS() : 0;
     if (prof) prof_key += prof_td_ - prof_tk_;
 
@@ -8375,6 +8489,11 @@ void backend_execute(uint64_t handle) {
 // and the driver's own maps grew all session long (#249 #264)
 int vk_live_counts(char *out, int cap) {
     extern int vk_texture_count(void);
-    return snprintf(out, (size_t)cap, "programs %d, pipelines %d + compute %d, textures %d", atomic_load(&live_programs),
-                    atomic_load(&live_gpipes), atomic_load(&live_cpipes), vk_texture_count());
+    extern uint64_t vk_texture_bytes(uint64_t *targets);
+    uint64_t ring = 0, rt = 0, tex = vk_texture_bytes(&rt);
+    for (int i = 0; i < nchunks; i++) ring += chunks[i].size;
+    return snprintf(out, (size_t)cap, "programs %d, pipelines %d + compute %d, textures %d (%llu MB, render targets %llu MB), "
+                    "ring %llu MB in %d, buffer cache %llu MB", atomic_load(&live_programs), atomic_load(&live_gpipes),
+                    atomic_load(&live_cpipes), vk_texture_count(), (unsigned long long)(tex >> 20), (unsigned long long)(rt >> 20),
+                    (unsigned long long)(ring >> 20), nchunks, (unsigned long long)(vc_bytes >> 20));
 }
