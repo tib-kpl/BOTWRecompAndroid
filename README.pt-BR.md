@@ -165,19 +165,20 @@ android/run_boot.sh 120                               # abre o jogo, log em andr
 ## Apoie o projeto
 
 O BOTWRecompAndroid é um projeto gratuito e independente. Se você gosta dele e quer apoiar seu desenvolvimento, pode
-me apoiar pelo GitHub, pelo Ko-fi, ou pelo Buy Me a Coffee. Esse apoio me ajuda a dedicar tempo à correção de bugs, à melhoria do desempenho e da
+me apoiar pelo GitHub, pelo Ko-fi, pelo Buy Me a Coffee ou via **Pix**. Esse apoio me ajuda a dedicar tempo à correção de bugs, à melhoria do desempenho e da
 compatibilidade e às próximas versões. O patrocínio é totalmente opcional: não libera recursos exclusivos nem garante
 correções específicas. Relatos de bugs, testes em outros aparelhos e contribuições também ajudam muito.
 
-A meta do mês é pagar o Claude Code Max (US$ 100/mês), a ferramenta de IA para programação que uso nos meus projetos.
-O selo abaixo mostra quanto entrou neste mês, somando todas as plataformas e os três projetos (BOTWRecompAndroid,
-TOTKDroid e LASRecompAndroid); eu atualizo à mão.
+A meta atual do projeto é adquirir um **POCO X7 Pro (US$ 455)**, um celular de teste equipado com processador MediaTek Dimensity e GPU Mali para facilitar testes locais e otimizar o desempenho dos ports (BOTWRecompAndroid, TOTKDroid, LASRecompAndroid e Swap2-Native). O selo abaixo mostra o total arrecadado somando todas as plataformas; eu atualizo à mão.
 
-[![Meta Claude Code Max](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmamcjr%2FBOTWRecompAndroid%2Fmain%2F.github%2Fdonation-goal.json&query=%24.raised&prefix=%24&color=2EA043&logo=claude&logoColor=white&label=Meta%20Claude%20Code%20Max&suffix=%20%2F%20%24100%20este%20m%C3%AAs)](https://github.com/mamcjr/BOTWRecompAndroid/blob/main/.github/donation-goal.json)
+[![Meta POCO X7 Pro](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmamcjr%2FBOTWRecompAndroid%2Fmain%2F.github%2Fdonation-goal.json&query=%24.raised&prefix=%24&color=2EA043&logo=xiaomi&logoColor=white&label=Meta%20POCO%20X7%20Pro&suffix=%20%2F%20%24455)](https://github.com/mamcjr/BOTWRecompAndroid/blob/main/.github/donation-goal.json)
 
 [![Patrocine no GitHub](https://img.shields.io/badge/Patrocine-no%20GitHub-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/mamcjr)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-mamcjr-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/mamcjr)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-mamcjr-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/mamcjr)
+[![Pix](https://img.shields.io/badge/Pix-Chave%20Aleat%C3%B3ria-32BCAD?logo=pix&logoColor=white)](#apoie-o-projeto)
+
+> **Chave Pix (chave aleatória):** `6c326b56-6caf-4c3a-bcf7-1fa8ad2abd16`
 
 ## Créditos
 
