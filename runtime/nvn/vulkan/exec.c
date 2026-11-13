@@ -1,5 +1,8 @@
 // Executes recorded NVN command lists with Vulkan (port of renderer.m; same structure, same behaviour).
 #include <SDL3/SDL_cpuinfo.h>
+#ifdef __ANDROID__
+#include <malloc.h>
+#endif
 #include <SDL3/SDL_timer.h>
 #include <ctype.h>
 #include <float.h>
@@ -21,6 +24,7 @@
 #include "vk.h"
 #include "buffer_copy.h"
 #include "timing_trace.h"
+#include "object_cache.h"
 #include "../renderer.h"
 #include "../../settings.h"
 #include "../../paths.h"
@@ -69,6 +73,23 @@ uint64_t prof_up_cum;  // (the same, never reset)
 static _Atomic int stat_compiles;
 static _Atomic int live_programs, live_gpipes, live_cpipes;  // (made so far: the memory mappings log, vk_live_counts)
 static void pipe_evict(void);  // (graphics pipelines: below)
+
+// What the process's malloc grew by during each kind of Vulkan object creation (the memory mappings log): on a Mali
+// malloc kept growing ~37 MB a minute with the pipelines capped and the textures flat, its large blocks one memory
+// mapping each - the app closed at Android's limit after ~35 minutes (#360 #368 #350 #316). Other threads allocate at
+// the same time, so a share is noise; over a session it names the one that grows. vk_mnow / vk_mgrow_add: shaders.c,
+// textures.c too.
+enum { MG_MODULE, MG_GPIPE, MG_CPIPE, MG_IMAGE, MG_N };
+static _Atomic long long g_mgrow[MG_N];
+long long vk_mnow(void) {
+#ifdef __ANDROID__
+    struct mallinfo m = mallinfo();
+    return (long long)m.uordblks;
+#else
+    return 0;
+#endif
+}
+void vk_mgrow_add(int what, long long since) { atomic_fetch_add(&g_mgrow[what], vk_mnow() - since); }
 static _Atomic uint64_t stat_skipped_building;  // (never zeroed; hle/benchmark.c) draws skipped: their pipeline is still compiling
 static uint64_t op_counts[CMD_COUNT];
 bool g_debug_frame;
@@ -294,6 +315,10 @@ static _Atomic bool pace_slow;
 static uint64_t stat_pace_over;
 static _Atomic int pace_on = -1;
 
+// A frame's work in ms (the longest of the game's thread, the render thread and the GPU; smoothed), -1 unknown
+static double g_work_ms;
+double vk_frame_work_ms(void) { return g_work_ms > 0 ? g_work_ms : -1; }
+
 // The last presented frame's GPU busy time in ms, -1 unknown (Video > Internal resolution > Dynamic: output_scale.c)
 double vk_frame_gpu_ms(void) {
 #ifdef __ANDROID__
@@ -402,6 +427,11 @@ void vk_pace_frame(void) {
 #endif
 #ifdef __ANDROID__
     if (g_benchmark) benchmark_frame(p / 1e6, busy, game_busy, render_busy, g_pace_gpu_ms);
+    {   // (the frame's work - the game's thread, the render thread, the GPU, the longest - smoothed: framepace.c lets
+        // a slow interval go once the work fits a faster one)
+        double work = busy > g_pace_gpu_ms ? busy : g_pace_gpu_ms;
+        g_work_ms = g_work_ms > 0 ? g_work_ms + (work - g_work_ms) * 0.1 : work;
+    }
 #endif
     static int log = -1;  // LARECOMP_LOG_PACE=1: each frame's period, vsync wait and busy time
     if (log < 0) log = getenv("LARECOMP_LOG_PACE") != NULL;
@@ -2546,7 +2576,7 @@ typedef struct {
     uint32_t fs_out_mask;  // fi->out_mask: the render targets the fragment shader writes (read by every draw; in
                            // ShaderInfo it sits 1.4 KB in, past the 64 textures - a cache miss each draw, ~7% of the
                            // render thread on the POCO F7 Ultra: draw_writes)
-    uint8_t fs_gather;  // (up_fix) the fragment stage's first gathered texture: 0 not looked yet, 1 none, 2 + its slot
+    uint8_t fs_gather;  // (up_fix) the fragment stage's first gathered texture: 1 none, 2 + its slot
     _Atomic int state;  // 0 building, 1 ready, 2 failed
 } Prog;
 
@@ -2610,6 +2640,9 @@ static void compile_program(void *arg) {
     size_t nv = 0, nf = 0;
     uint32_t *sv = vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &nv);
     uint32_t *sf = sv ? vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &nf) : NULL;
+    // Translation metadata and Vulkan modules remain cached, but their source is no longer needed.
+    free(p->vi->msl); p->vi->msl = NULL;
+    free(p->fi->msl); p->fi->msl = NULL;
     if (!sv || !sf) { free(sv); free(sf); atomic_store(&p->state, 2); return; }
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
@@ -2779,13 +2812,16 @@ static void translate_program(void *arg) {
     }
 #endif
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
+    const char *gather = strstr(p->fi->msl, "textureGather(t");
+    int gather_slot = gather ? atoi(gather + 15) : -1;
+    p->fs_gather = gather_slot >= 0 && gather_slot < p->fi->ntex && gather_slot < 64 ? (uint8_t)(2 + gather_slot) : 1;
     save_glsl(p->vi->msl, p->code[0], "vs");
     save_glsl(p->fi->msl, p->code[1], "fs");
     run_job(compile_program, p);
 }
 
-#define PROG_TAB 4096
-static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
+static VkObjectCache prog_cache;
+static _Atomic size_t program_keys;
 
 static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     if (!(np->stage_mask & 1) || !(np->stage_mask & 2)) return NULL;
@@ -2808,13 +2844,12 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     if (fkey->no_ds_write) { h ^= 0xE1; h *= 0x100000001B3ull; }  // (keys without it hash as before)
 #endif
     if (!h) h = 1;
-    uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
-    while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
-    if (prog_tab[slot].key) return last_prog = prog_tab[slot].prog;
+    VkObjectEntry *entry = vk_object_slot(&prog_cache, h);
+    if (entry->object) return last_prog = entry->object;
+    atomic_store(&program_keys, prog_cache.count);
     Prog *p = calloc(1, sizeof *p);
     last_prog = p;
-    prog_tab[slot].key = h;
-    prog_tab[slot].prog = p;
+    entry->object = p;
     for (int i = 0; i < 2; i++) {
         p->code[i] = np->stages[i].code_addr;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
@@ -3069,8 +3104,8 @@ typedef struct {
     uint64_t used, seq;  // when it was last bound (ns), and that submission (pipe_evict)
     bool evicted;        // its VkPipeline destroyed by pipe_evict: built again at its next use
 } Pipe;
-#define PIPE_TAB 8192
-static struct { uint64_t key; Pipe *pipe; } pipe_tab[PIPE_TAB];
+static VkObjectCache pipe_cache;
+static _Atomic size_t pipeline_keys;
 static Pipe *last_pipeline;  // (draw_'s: the previous draw's, reused when nothing changed)
 
 // Pipelines kept: on a Mali (and on low RAM) at most this many, the ones unused longest destroyed. Its driver keeps
@@ -3083,7 +3118,9 @@ static int pipe_keep(void) {
     if (keep < 0) {
         extern bool vk_low_ram(void);
         const char *e = getenv("LARECOMP_PIPE_KEEP");
-        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5 || vk_low_ram()) ? 1500 : 0;
+        // (every GPU but Adreno's: an Xclipse 530 reached 8165 pipelines and 1.6 GB of malloc in an hour, an Xclipse 540
+        // 4375 in 10 minutes, killed for low memory - #327 #345; Turnip's cost little each)
+        keep = e ? atoi(e) : (g_vk.props.vendorID != 0x5143 || vk_low_ram()) ? 1500 : 0;
         if (keep > 0) LOG("[vk] pipelines kept: at most %d (the least recently used ones destroyed)\n", keep);
     }
     return keep;
@@ -3096,8 +3133,8 @@ static void pipe_evict(void) {
     if (keep <= 0 || now < next) return;
     next = now + 10000000000ull;  // (every 10 s)
     int live = 0;
-    for (int i = 0; i < PIPE_TAB; i++) {
-        Pipe *p = pipe_tab[i].pipe;
+    for (size_t i = 0; i < pipe_cache.capacity; i++) {
+        Pipe *p = pipe_cache.entries[i].object;
         if (p && !p->evicted && atomic_load(&p->state) == 1) live++;
     }
     if (live <= keep) return;
@@ -3107,11 +3144,13 @@ static void pipe_evict(void) {
     static const uint64_t ages[2] = {120000000000ull, 30000000000ull};
     for (int pass = 0; pass < 2 && live > target; pass++) {
         uint64_t age = ages[pass];
-        for (int i = 0; i < PIPE_TAB && live > target; i++) {
-            Pipe *p = pipe_tab[i].pipe;
+        for (size_t i = 0; i < pipe_cache.capacity && live > target; i++) {
+            Pipe *p = pipe_cache.entries[i].object;
             if (!p || p->evicted || p == last_pipeline || atomic_load(&p->state) != 1) continue;
             if (p->used + age > now || p->seq > done) continue;
+            long long mg0 = vk_mnow();
             vkDestroyPipeline(g_vk.dev, p->pipe, NULL);
+            vk_mgrow_add(MG_GPIPE, mg0);  // (given back)
             p->pipe = VK_NULL_HANDLE;
             atomic_store(&p->state, 0);
             p->evicted = true;
@@ -3225,7 +3264,9 @@ static void build_pipeline(void *arg) {
         if (logp) LOG("[pipe] compiling vs %llx fs %llx\n", (unsigned long long)k->prog->code[0], (unsigned long long)k->prog->code[1]);
     }
 #endif
+    long long mg0 = vk_mnow();
     VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pp->pipe);
+    vk_mgrow_add(MG_GPIPE, mg0);
     if (r != VK_SUCCESS) {
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
@@ -4092,9 +4133,14 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 extern void widescreen_minimap_seen(void);  // (the minimap's disc, at 510, -240: it's on screen)
                 widescreen_minimap_seen();
             }
-            if (pane && g_cur_fs_hash == 0x9b989759db6e6606ull && fabsf(lx) < 1.0f && ly < -200.0f && ly > -270.0f) {
-                extern void widescreen_talk_seen(void);  // (a talk's box, at 0, -235)
+            if (pane && g_cur_fs_hash == 0x9b989759db6e6606ull && fabsf(lx) < 1.0f &&
+                ((ly < -200.0f && ly > -270.0f) || fabsf(ly) < 80.0f)) {
+                // (a talk's box, at 0, -235; or the same box in the middle - a sign's text, a message: its rounded ends
+                // moved out to the screen's edges, #304)
+                extern void widescreen_talk_seen(void);
                 widescreen_talk_seen();
+                static bool told;
+                if (!told && fabsf(ly) < 80.0f) told = true, LOG("[widescreen] a message box in the middle (y %.0f)\n", ly);
             }
             float dy = pane || text ? widescreen_hud_top(lx, ly) : 0;
             if (dy != 0) {
@@ -5735,16 +5781,21 @@ static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSi
     return true;
 }
 
-static int g_cs_n;  // (compute program table below)
+static VkObjectCache compute_cache;  // (compute programs below)
 
 // In-place reboot (device.c backend_reset; GPU idle): drop what is keyed by guest addresses - programs by code
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
     post_reset_gen++;
-    memset(prog_tab, 0, sizeof prog_tab);
-    memset(pipe_tab, 0, sizeof pipe_tab);
-    g_cs_n = 0;
+    free(prog_cache.entries);
+    prog_cache = (VkObjectCache){0};
+    free(pipe_cache.entries);
+    pipe_cache = (VkObjectCache){0};
+    atomic_store(&program_keys, 0);
+    atomic_store(&pipeline_keys, 0);
+    free(compute_cache.entries);
+    compute_cache = (VkObjectCache){0};
     gcopy_gen++;
     if (gmem_buf) {
         vkDestroyBuffer(g_vk.dev, gmem_buf, NULL);
@@ -6053,9 +6104,15 @@ static void build_compute(void *arg) {
     CsProg *cp = arg;
     size_t n = 0;
     uint32_t *spv = vk_glsl_to_spirv(cp->si->msl, STAGE_COMPUTE, "cs", &n);
+    free(cp->si->msl); cp->si->msl = NULL;
     if (!spv) { atomic_store(&cp->p.state, 2); return; }
     cp->p.nbinds = vk_reflect(spv, n, cp->p.binds, MAX_BIND);
     VkShaderModule m = vk_module(spv, n);
+    if (!m) {
+        free(spv);
+        atomic_store(&cp->p.state, 2);
+        return;
+    }
     cp->p.layout = make_layout(&cp->p, 1, VK_SHADER_STAGE_COMPUTE_BIT, 0);
     VkSpecializationMapEntry me[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
     VkSpecializationInfo spec = {3, me, 12, cp->local};
@@ -6064,7 +6121,9 @@ static void build_compute(void *arg) {
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main",
                                                 .pSpecializationInfo = &spec},
                                       .layout = cp->p.layout};
+    long long mg0 = vk_mnow();
     VkResult r = vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &cp->pipe);
+    vk_mgrow_add(MG_CPIPE, mg0);
     atomic_fetch_add(&stat_compiles, 1);
     if (r == VK_SUCCESS) atomic_fetch_add(&live_cpipes, 1);
     atomic_store(&cp->p.state, r == VK_SUCCESS ? 1 : 2);
@@ -6081,17 +6140,14 @@ static void build_compute(void *arg) {
     free(spv);
 }
 
-static struct CsEnt { uint64_t addr; CsProg *cp; } g_cs_tab[256];  // compute programs by code address
-
 static CsProg *compute_program(NvnProgram *np) {
     NvnShaderStage *ss = &np->stages[5];
     if (!ss->code_addr) return NULL;
-    struct CsEnt *tab = g_cs_tab;
-    int n = g_cs_n;
-    for (int i = 0; i < n; i++) if (tab[i].addr == ss->code_addr) return tab[i].cp;
+    VkObjectEntry *entry = vk_object_slot(&compute_cache, ss->code_addr);
+    if (entry->object) return entry->object;
     CsProg *cp = calloc(1, sizeof *cp);
     cp->code_addr = ss->code_addr;
-    if (n < 256) { tab[n].addr = ss->code_addr; tab[n].cp = cp; g_cs_n = n + 1; }
+    entry->object = cp;
     pthread_mutex_lock(&translate_lock);  // (the translator's globals too: the translator thread sets them for graphics)
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
@@ -6856,14 +6912,13 @@ static void draw_(CmdRec *r, bool indexed) {
         uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
         if (!ph) ph = 1;
 #endif
-        uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
-        while (pipe_tab[pslot].key && pipe_tab[pslot].key != ph) pslot = (pslot + 1) & (PIPE_TAB - 1);
-        pp = pipe_tab[pslot].pipe;
+        VkObjectEntry *entry = vk_object_slot(&pipe_cache, ph);
+        pp = entry->object;
         if (!pp) {
+            atomic_store(&pipeline_keys, pipe_cache.count);
             pp = calloc(1, sizeof *pp);
             pp->k = k;
-            pipe_tab[pslot].key = ph;
-            pipe_tab[pslot].pipe = pp;
+            entry->object = pp;
             run_job(build_pipeline, pp);
         } else if (pp->evicted) {  // (destroyed by pipe_evict: built again)
             pp->evicted = false;
@@ -6970,11 +7025,6 @@ static void draw_(CmdRec *r, bool indexed) {
         static int off = -1;
         if (off < 0) off = getenv("LARECOMP_NO_UPSAMPLE_FIX") != NULL;
         bool scaled = !off && st.rt.ncolor && st.rt.color[0] && (pass_sx > 1.001f || pass_sy > 1.001f);
-        if (scaled && !pr->fs_gather) {  // (the first gathered texture's slot, from the translated source: 2 + slot)
-            const char *p = pr->fi->msl ? strstr(pr->fi->msl, "textureGather(t") : NULL;
-            int slot = p ? atoi(p + 15) : -1;
-            pr->fs_gather = slot >= 0 && slot < pr->fi->ntex && slot < 64 ? (uint8_t)(2 + slot) : 1;
-        }
         int gs = scaled ? pr->fs_gather - 2 : -1;
         NvnTexture *gt = gs >= 0 && fabsf(tex_sc[1][gs][0] - pass_sx) < 0.01f * pass_sx &&
                          fabsf(tex_sc[1][gs][1] - pass_sy) < 0.01f * pass_sy ? shader_texture_object(1, &pr->fi->tex[gs]) : NULL;
@@ -7420,7 +7470,8 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
     }
     bool array = b->layers > 1 && b->depth == 1;
     uint32_t hb = ((uint32_t)rg[4] + fi->bh - 1) / fi->bh, wb = ((uint32_t)rg[3] + fi->bw - 1) / fi->bw;
-    uint32_t out_bpb = fi->bpb == 3 ? 4 : fi->bpb;
+    bool depth16_expand = t->format == 0x32 && b->format == VK_FORMAT_D32_SFLOAT;
+    uint32_t out_bpb = fi->bpb == 3 || depth16_expand ? 4 : fi->bpb;
     uint32_t nz = (uint32_t)rg[5];
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
@@ -7431,7 +7482,14 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
             const uint8_t *sr = (const uint8_t *)(uintptr_t)(src + (uint64_t)z * img + (uint64_t)y * row);
             uint8_t *dr = (uint8_t *)s.ptr + ((uint64_t)z * hb + y) * out_row;
             if (out_bpb == fi->bpb) memcpy(dr, sr, out_row);
-            else for (uint32_t x = 0; x < wb; x++) { memcpy(dr + x * 4, sr + x * 3, 3); dr[x * 4 + 3] = 255; }
+            else if (depth16_expand) {
+                for (uint32_t x = 0; x < wb; x++) {
+                    uint16_t value;
+                    memcpy(&value, sr + x * 2, sizeof value);
+                    float depth = (float)value / 65535.0f;
+                    memcpy(dr + x * 4, &depth, sizeof depth);
+                }
+            } else for (uint32_t x = 0; x < wb; x++) { memcpy(dr + x * 4, sr + x * 3, 3); dr[x * 4 + 3] = 255; }
         }
     VkBufferImageCopy c = {.bufferOffset = s.off, .bufferRowLength = wb * fi->bw, .bufferImageHeight = hb * fi->bh,
                            .imageSubresource = {b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect,
@@ -7460,6 +7518,7 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     copy_region_dims(t, src, &fi, rg, &level, &row, &img);
     if (!fi || !fi->bpb || fi->bpb == 3 || row % fi->bpb) return;
     TexBackend *b = vk_tex(t, false);
+    bool depth16_pack = t->format == 0x32 && b->format == VK_FORMAT_D32_SFLOAT;
     float tsx, tsy;
     renderer_texture_scale(t, &tsx, &tsy);
     VkCommandBuffer cb = vk_cmd();
@@ -7482,7 +7541,8 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     bool array = b->layers > 1 && b->depth == 1;
     uint32_t nz = (uint32_t)rg[5];
     uint64_t total = img * nz;
-    VkSpan out = vk_readback(total);
+    uint64_t readback_size = depth16_pack ? total * 2 : total;
+    VkSpan out = vk_readback(readback_size);
     VkBufferImageCopy c = {.bufferOffset = out.off, .bufferRowLength = (uint32_t)(row / fi->bpb) * fi->bw,
                            .bufferImageHeight = (uint32_t)(img / row) * fi->bh,
                            .imageSubresource = {b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect,
@@ -7492,8 +7552,20 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
     vkCmdCopyImageToBuffer(cb, srcimg, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     wait_why = "texture -> buffer readback";
     renderer_flush();  // the CPU may read the result right after the fence
-    vk_readback_ready(total);
-    memcpy((void *)(uintptr_t)dst, out.ptr, total);
+    vk_readback_ready(readback_size);
+    if (depth16_pack) {
+        // The guest buffer is D16 even though the host image is D32. Preserve guest row/image strides.
+        for (uint32_t z = 0; z < nz; z++)
+            for (uint32_t y = 0; y < (uint32_t)rg[4]; y++)
+                for (uint32_t x = 0; x < (uint32_t)rg[3]; x++) {
+                    float depth;
+                    memcpy(&depth, (const uint8_t *)out.ptr + (uint64_t)z * img * 2 + (uint64_t)y * row * 2 + x * 4, sizeof depth);
+                    if (!(depth >= 0.0f)) depth = 0.0f;
+                    if (depth > 1.0f) depth = 1.0f;
+                    uint16_t value = (uint16_t)lroundf(depth * 65535.0f);
+                    memcpy((uint8_t *)(uintptr_t)dst + (uint64_t)z * img + (uint64_t)y * row + x * 2, &value, sizeof value);
+                }
+    } else memcpy((void *)(uintptr_t)dst, out.ptr, total);
     {   static int nlog;
         if (getenv("LARECOMP_LOG_READBACK") && nlog++ < 20) {
             uint64_t nz = 0;
@@ -8494,7 +8566,10 @@ int vk_live_counts(char *out, int cap) {
     uint64_t ring = 0, rt = 0, tex = vk_texture_bytes(&rt);
     for (int i = 0; i < nchunks; i++) ring += chunks[i].size;
     return snprintf(out, (size_t)cap, "programs %d, pipelines %d + compute %d, textures %d (%llu MB, render targets %llu MB), "
-                    "ring %llu MB in %d, buffer cache %llu MB", atomic_load(&live_programs), atomic_load(&live_gpipes),
+                    "ring %llu MB in %d, buffer cache %llu MB, known keys %zu programs / %zu pipelines; malloc grown by shader modules %lld MB, pipelines %lld MB + compute %lld MB, images %lld MB", atomic_load(&live_programs), atomic_load(&live_gpipes),
                     atomic_load(&live_cpipes), vk_texture_count(), (unsigned long long)(tex >> 20), (unsigned long long)(rt >> 20),
-                    (unsigned long long)(ring >> 20), nchunks, (unsigned long long)(vc_bytes >> 20));
+                    (unsigned long long)(ring >> 20), nchunks, (unsigned long long)(vc_bytes >> 20),
+                    atomic_load(&program_keys), atomic_load(&pipeline_keys), atomic_load(&g_mgrow[MG_MODULE]) >> 20,
+                    atomic_load(&g_mgrow[MG_GPIPE]) >> 20, atomic_load(&g_mgrow[MG_CPIPE]) >> 20,
+                    atomic_load(&g_mgrow[MG_IMAGE]) >> 20);
 }

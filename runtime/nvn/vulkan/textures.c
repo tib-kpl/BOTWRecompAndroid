@@ -35,6 +35,25 @@ static VkFormat depth24_stencil8(void) {
     return f;
 }
 
+// Maleoon 920 advertises D16 but rejects its image view when the opening scene uses it (#301).
+// Keep D16 on other GPUs when it supports every use of these depth textures; D32 is the
+// depth-only format already used for NVN DEPTH24/DEPTH32 on this backend.
+static VkFormat depth16(void) {
+    static VkFormat f;
+    if (!f) {
+        VkFormatProperties p;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_D16_UNORM, &p);
+        VkFormatFeatureFlags want = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                    VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        bool d16_ok = (p.optimalTilingFeatures & want) == want;
+        f = d16_ok && g_vk.props.vendorID != 0x19e5 ? VK_FORMAT_D16_UNORM : VK_FORMAT_D32_SFLOAT;
+        if (f != VK_FORMAT_D16_UNORM)
+            LOG("[vk] depth16: D32_SFLOAT instead of D16_UNORM (%s)\n",
+                d16_ok ? "Maleoon driver rejects D16 views" : "D16 features unavailable");
+    }
+    return f;
+}
+
 static VkFmt fmt_of(uint32_t f) {
     switch (f) {
     case 0x01: return (VkFmt){VK_FORMAT_R8_UNORM};
@@ -75,7 +94,7 @@ static VkFmt fmt_of(uint32_t f) {
     case 0x2F: return (VkFmt){VK_FORMAT_R32G32B32A32_UINT};
     case 0x30: return (VkFmt){VK_FORMAT_R32G32B32A32_SINT};
     case 0x31: return (VkFmt){VK_FORMAT_S8_UINT};
-    case 0x32: return (VkFmt){VK_FORMAT_D16_UNORM};
+    case 0x32: return (VkFmt){depth16()};
     case 0x33: return (VkFmt){VK_FORMAT_D32_SFLOAT};  // DEPTH24 (as on Metal: no 24-bit depth there)
     case 0x34: return (VkFmt){VK_FORMAT_D32_SFLOAT};
     case 0x35: return (VkFmt){depth24_stencil8()};
@@ -535,7 +554,11 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    extern long long vk_mnow(void);
+    extern void vk_mgrow_add(int what, long long since);
+    long long mg0 = vk_mnow();
     VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
+    vk_mgrow_add(3, mg0);  // (exec.c MG_IMAGE)
     if (r != VK_SUCCESS) {
         LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
@@ -1046,9 +1069,10 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             uint32_t row = l.wb * fi->bpb;
             uint64_t sz = (uint64_t)row * l.hb * l.d;
             bool expand = mf.expand_rgb && fi->bpb == 3;
-            uint32_t out_row = expand ? l.wb * 4 : row;
+            bool depth16_expand = t->format == 0x32 && b->format == VK_FORMAT_D32_SFLOAT;
+            uint32_t out_row = expand || depth16_expand ? l.wb * 4 : row;
             VkSpan s = vk_transient((uint64_t)out_row * l.hb * l.d, 16);
-            uint8_t *lin = expand ? texture_scratch(sz) : s.ptr;
+            uint8_t *lin = expand || depth16_expand ? texture_scratch(sz) : s.ptr;
             const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
             if (linear) {
                 for (uint32_t y = 0; y < l.hb; y++) memcpy(lin + (uint64_t)y * row, src + (uint64_t)y * LIN_STRIDE(row), row);
@@ -1083,6 +1107,14 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
                 uint8_t *o = s.ptr;
                 uint64_t n = (uint64_t)l.wb * l.hb * l.d;
                 for (uint64_t i = 0; i < n; i++) { o[i * 4] = lin[i * 3]; o[i * 4 + 1] = lin[i * 3 + 1]; o[i * 4 + 2] = lin[i * 3 + 2]; o[i * 4 + 3] = 255; }
+            } else if (depth16_expand) {  // NVN's normalized D16 texels -> the fallback D32 image
+                float *out = s.ptr;
+                uint64_t n = (uint64_t)l.wb * l.hb * l.d;
+                for (uint64_t i = 0; i < n; i++) {
+                    uint16_t value;
+                    memcpy(&value, lin + i * 2, sizeof value);
+                    out[i] = (float)value / 65535.0f;
+                }
             }
             uint32_t w = l.w, hh = l.h, d = l.d;
             // the copy stays inside the image's level: a texture allocated at the internal resolution (16:9, render
@@ -1187,6 +1219,7 @@ static ViewEnt view_tab[VIEW_TAB];
 // Views may still be referenced by submitted or pending work: destroyed once that has completed.
 void vk_views_forget(TexBackend *b) { views_forget(b); }
 uint32_t vk_view_gen;  // bumped whenever a cached view may be destroyed (exec.c's per-frame texture memo)
+void vk_texture_views_drop(TexBackend *b);  // (lsfg/lsfg_present.c: its outputs, before they go)
 static void views_forget(TexBackend *b) {
     vk_view_gen++;
     for (int i = 0; i < VIEW_TAB; i++)
@@ -1775,3 +1808,5 @@ VkSampler vk_default_sampler(bool linear) {
     }
     return s[linear];
 }
+
+void vk_texture_views_drop(TexBackend *b) { views_forget(b); }

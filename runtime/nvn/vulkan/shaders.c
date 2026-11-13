@@ -80,6 +80,7 @@ static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
     size_t n = *nwords, insert = 0, count = 0;
     uint32_t bound = spv[3];
     uint8_t *done = calloc(bound, 1);  // already decorated (glslang does it for what it traces from precise)
+    if (!done) return spv;
     for (size_t i = 5; i < n;) {
         uint32_t wc = spv[i] >> 16, op = spv[i] & 0xFFFF;
         if (!wc) break;
@@ -95,6 +96,7 @@ static uint32_t *no_contraction(uint32_t *spv, size_t *nwords) {
     }
     if (!insert || !count) { free(done); return spv; }
     uint32_t *out = malloc((n + count * 3) * 4);
+    if (!out) { free(done); return spv; }
     memcpy(out, spv, insert * 4);
     size_t o = insert;
     for (size_t i = 5; i < n;) {
@@ -192,12 +194,18 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
     }
     free(qualified);
     shaderc_compile_options_release(o);
+    if (!r) { LOG("[shader] %s: compiler returned no result\n", name); return NULL; }
     if (shaderc_result_get_compilation_status(r) != shaderc_compilation_status_success) {
         static int nlog;
         if (nlog++ < 20) LOG("[shader] %s: GLSL compile failed:\n%s\n%s\n", name, shaderc_result_get_error_message(r), src);
     } else {
         size_t n = shaderc_result_get_length(r);
         out = malloc(n);
+        if (!out) {
+            LOG("[shader] %s: cannot allocate %zu SPIR-V bytes\n", name, n);
+            shaderc_result_release(r);
+            return NULL;
+        }
         memcpy(out, shaderc_result_get_bytes(r), n);
         *nwords = n / 4;
         strip_names(out, nwords);
@@ -211,7 +219,11 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
 VkShaderModule vk_module(const uint32_t *spv, size_t nwords) {
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nwords * 4, .pCode = spv};
     VkShaderModule m;
+    extern long long vk_mnow(void);
+    extern void vk_mgrow_add(int what, long long since);
+    long long mg0 = vk_mnow();
     VkResult result = vkCreateShaderModule(g_vk.dev, &ci, NULL, &m);
+    vk_mgrow_add(0, mg0);  // (exec.c MG_MODULE)
     if (result != VK_SUCCESS) LOG("[shader] vkCreateShaderModule failed: %d (%zu words)\n", result, nwords);
     return result == VK_SUCCESS ? m : VK_NULL_HANDLE;
 }

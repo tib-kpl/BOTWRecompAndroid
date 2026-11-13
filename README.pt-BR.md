@@ -24,10 +24,6 @@
 > O motor de recompilação e o suporte existente ao jogo vêm dos projetos de origem creditados abaixo. As traduções
 > dos menus descritas aqui são da interface do aplicativo; o idioma dos textos do jogo tem sua própria configuração.
 
-> [!NOTE]
-> **Aviso (até 13 de novembro de 2026):** As respostas às issues serão mais lentas nesta semana. A versão 0.3.4 é
-> uma pequena correção do ajuste de RAM; atualizações maiores seguem em espera. [Leia o comunicado](https://github.com/mamcjr/BOTWRecompAndroid/discussions/329).
-
 [![Listed on PlayPorted](https://playported.com/badge.svg)](https://playported.com/ports/754-the-legend-of-zelda-breath-of-the-wild/)
 
 Um porte de *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versões **1.0.0, 1.6.0, 1.8.2 e 1.9.0**) para
@@ -40,7 +36,7 @@ O projeto parte do motor do **[LAS Recomp](https://github.com/peiikai/LASRecomp)
 > [!WARNING]
 > **Beta.** Testado principalmente em um celular (POCO F7 Ultra, Adreno 830, driver Mesa Turnip). O desempenho e a
 > compatibilidade variam entre aparelhos; espere bugs, sobretudo em GPUs ainda não testadas fisicamente. Veja as
-> [notas da 0.3.4-beta](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.3.4-beta) e as
+> [notas da 0.4.0-beta](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.4.0-beta) e as
 > [notas de desenvolvimento](docs/BOTW-PORT.md).
 
 ## Plataforma suportada
@@ -64,6 +60,10 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
 - **Vídeo e controles:** opção de 60 fps nas versões do jogo compatíveis e cutscenes a 60 fps experimentais,
   proporção livre da tela, resoluções interna e de saída, upscaling FSR 1 ou Snapdragon GSR 1, FXAA/SMAA, controles de
   toque e físicos e giroscópio. O app oferece escolha de driver Vulkan e opções de compatibilidade.
+- **Geração de quadros (LSFG), opcional:** a geração de quadros do Lossless Scaling com o seu próprio `Lossless.dll`
+  (Lossless Scaling para Windows, não incluído; coloque-o em `Download/`, `LSFG/` ou `Documents/Emulation/bios/`), de 2x a
+  4x, em Vídeo. O código da geração de quadros é GPL-3.0-or-later, então **um APK com ele é GPL-3.0-or-later como um
+  todo**: veja o [NOTICE.md](NOTICE.md).
 - **0.3.0:** crashes e travamentos depois de 30+ minutos nas GPUs Mali, a dissolução da viagem rápida, folhas
   surgindo no chão, as janelas do estábulo e as telas de carregamento na proporção livre, taxa de 40 / 45 fps, 30 fps
   uniformes em telas de 60 Hz, botões de toque para as flechas e o álbum, e duas opções em Compatibilidade do driver:
@@ -75,6 +75,9 @@ Windows, Linux e macOS podem continuar sendo usados como ambientes de desenvolvi
   celulares com menos de 6 GB de RAM.
 - **0.3.4:** o perfil de economia de RAM agora é ativado automaticamente só em aparelhos com até 4 GB. Os de 6 GB
   voltam às configurações normais de texturas, buffers e cache; a opção manual continua disponível.
+- **0.4.0:** geração de quadros opcional (LSFG, com o seu próprio `Lossless.dll`), um overlay novo (compacto /
+  detalhado, com gráficos), o FPS não fica mais preso abaixo do normal depois de um menu ou de salvar, e o limite de
+  pipelines no Xclipse e em toda GPU que não é Adreno.
 - **Problemas conhecidos:** a grama baixa só aparece de perto; reflexos da água podem acompanhar a câmera; o fundo
   do menu de pausa pode ficar preto no driver padrão da Qualcomm; Link pode piscar no primeiro golpe no modo nativo;
   a chuva cai mais devagar que no console.
@@ -146,7 +149,7 @@ Desde a **0.2.12-beta**, enquanto você joga no mundo, os controles de toque mos
    **Configurações > Arquivos > Driver Vulkan**. Se o app informar que o driver Vulkan é antigo ao abrir, toque e
    segure o ícone do app e escolha **Escolher driver** antes de iniciar o jogo.
 
-Atualizar da 0.2.x para a 0.3.4-beta não exige recompilar o código do jogo. Os shaders são compilados novamente uma
+Atualizar da 0.2.x para a 0.4.0-beta não exige recompilar o código do jogo. Os shaders são compilados novamente uma
 vez, então os primeiros minutos podem ter travadinhas. Para relatar um problema, abra uma
 [issue](https://github.com/mamcjr/BOTWRecompAndroid/issues) com celular, GPU, driver, versão do jogo e um log de
 **Configurações > Arquivos > Salvar um arquivo de log**.

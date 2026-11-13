@@ -33,6 +33,8 @@ void input_reset(void);
 void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../paths.h"
+int vk_fg_status(const char **why);  // (vulkan/lsfg/lsfg_present.c: frame generation)
+const char *vk_fg_dll_path(void);
 }
 
 // ------------------------------------------------------------------ state shared with the main thread
@@ -54,6 +56,8 @@ static std::vector<QEvent> q_events;
 static float g_pixel_density = 1;
 static PadNavigation g_pad_navigation;
 static std::atomic<bool> g_reset_pad_navigation{true};
+float g_screen_dp = 0;  // the screen's density (Android: px a dp) and height in pixels, for ui/perf_overlay.mm
+int g_screen_h_px = 0;
 
 static void push(const QEvent &e) {
     pthread_mutex_lock(&q_lock);
@@ -271,6 +275,12 @@ bool menu_handle_event(const SDL_Event *e) {
 void menu_apply_window_requests(void *win) {
     SDL_Window *w = (SDL_Window *)win;
     g_pixel_density = SDL_GetWindowPixelDensity(w);
+    {  // (the performance overlay sizes itself in Android's dp, as Swap2-Native's: ui/perf_overlay.mm)
+        int pw = 0, ph = 0;
+        SDL_GetWindowSizeInPixels(w, &pw, &ph);
+        g_screen_h_px = ph;
+        g_screen_dp = SDL_GetDisplayContentScale(SDL_GetDisplayForWindow(w));
+    }
     static bool text_input;
     bool want_text = capturing();
 #ifdef __ANDROID__
@@ -302,6 +312,7 @@ void menu_apply_window_requests(void *win) {
 static bool g_inited;
 static ImGuiContext *g_ctx;  // ours: the start screen (back to it after a reboot) has its own context
 static ImFont *g_font, *g_font_big;
+ImFont *g_overlay_font;  // the performance overlay's (Android's Roboto, as Swap2-Native's): ui/perf_overlay.mm
 static ImFont *g_menu_font, *g_menu_font_big;  // the menu window (Baloo 2); everything else keeps g_font
 static int g_tab, g_tab_request = -2;  // (-2: no request; -1 is the Prelaunch tab)
 static int g_focus_tab = -99;  // put the nav cursor on this tab next frame (-100: the selected one; -99: none)
@@ -407,6 +418,14 @@ static void init(void) {
         g_menu_font_big = io.Fonts->AddFontFromFileTTF(baloo, 72, &cfg);
         i18n_merge_fonts(io.Fonts, 72);
     }
+#ifdef __ANDROID__
+    for (const char *p : {"/system/fonts/RobotoStatic-Regular.ttf", "/system/fonts/Roboto-Regular.ttf"}) {
+        if (FILE *f = fopen(p, "rb")) fclose(f);
+        else continue;
+        g_overlay_font = io.Fonts->AddFontFromFileTTF(p, 48, &cfg);
+        break;
+    }
+#endif
     if (!g_font) g_font = io.Fonts->AddFontDefault();
     if (!g_font_big) g_font_big = g_font;
     if (!g_menu_font || !g_menu_font_big) g_menu_font = g_font, g_menu_font_big = g_font_big;
@@ -531,14 +550,36 @@ static void tab_display(void) {
 #endif
 #ifdef __ANDROID__
     opt_toggle("Show FPS", &g_settings.show_fps, false,
-               "Shows the performance overlay: the frame rate and how the phone is doing. Drag it with a finger to move it.");
-    {   // (ui/perf_overlay.mm; LASRecompAndroid's)
-        static const char *styles[] = {"Full", "Compact"};
-        if (!g_settings.show_fps) opt_disable_next();
+               "Shows the performance overlay: the frame rate and how the phone is doing. Drag it with a finger to move it; "
+               "double-tap it to switch compact / detailed.");
+    if (g_settings.show_fps) {  // (ui/perf_overlay.mm; LASRecompAndroid's, with Swap2-Native's overlay's settings)
+        opt_indent(1);
+        static const char *styles[] = {"Detailed", "Compact"};
         opt_choice("Overlay style", &g_settings.overlay_style, styles, 2, 0,
-                   "Full: frame rate and frame times, CPU, GPU, memory, temperatures and power. Compact: one line - FPS, "
-                   "the app's RAM, the SoC's and the battery's temperature. Either one can be dragged anywhere on the "
-                   "screen with a finger.");
+                   "Detailed: the GPU, frame rate and frame time with 48 s charts, CPU clock caps, temperatures, battery, "
+                   "free memory and thermal state. Compact: one line - frame rate, frame time, RAM and temperatures. "
+                   "Double-tap the overlay to switch; drag it to move it.");
+        if (g_settings.overlay_scale < 40 || g_settings.overlay_scale > 150) g_settings.overlay_scale = 75;
+        if (g_settings.overlay_opacity < 20 || g_settings.overlay_opacity > 100) g_settings.overlay_opacity = 100;
+        opt_int("Overlay size", &g_settings.overlay_scale, 40, 150, 5, 75, "%d%%", "How big the overlay's text is.");
+        opt_int("Overlay opacity", &g_settings.overlay_opacity, 20, 100, 5, 100, "%d%%",
+                "How see-through the overlay is: lower lets more of the game show through.");
+        static const struct { int bit; const char *label, *desc; } items[] = {
+            {OVERLAY_FPS, "Frame rate and frame time", "The game's frames a second and the time of one; with frame "
+                                                       "generation, the game's > the shown rate."},
+            {OVERLAY_THROTTLE, "Thermal state", "Android's thermal state, T: 0 (none) to 6 (shutdown): how much the phone is "
+                                                "holding back for heat."},
+            {OVERLAY_GPU, "GPU time", "The GPU's time for one frame."},
+            {OVERLAY_CPU, "CPU clock caps", "Each CPU cluster's current top clock against its highest."},
+            {OVERLAY_BATTERY, "Battery and temperatures", "The SoC's and the battery's temperature, and the battery's level."},
+            {OVERLAY_MEMORY, "Memory", "The game's memory (and its chart) and the phone's free memory."},
+        };
+        for (const auto &it : items) {
+            bool on = (g_settings.overlay_items & it.bit) != 0;
+            if (opt_toggle(it.label, &on, true, it.desc))
+                g_settings.overlay_items = on ? g_settings.overlay_items | it.bit : g_settings.overlay_items & ~it.bit;
+        }
+        opt_indent(-1);
     }
 #else
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
@@ -575,6 +616,39 @@ static void tab_display(void) {
                        "In-game cutscenes and talks run at the chosen frame rate instead of 30. Some of them count frames "
                        "and may run shorter or out of step with their sound (at 60 fps the new game's opening gave Link "
                        "control 2 s early). Videos and menus stay at 30. Applies at once.");
+    }
+    {   // Frame generation (vulkan/lsfg/lsfg_present.c): Lossless Scaling's LSFG with the player's own Lossless.dll
+        const char *why = "";
+        int st = vk_fg_status(&why);
+        const char *dll = vk_fg_dll_path();
+        char d[900];
+        snprintf(d, sizeof d, "%s\n\n%s: %s\n%s: %s", tr("Frames made between the game's own with Lossless Scaling's frame "
+                 "generation (LSFG), for a smoother picture: 2x shows one made frame for each of the game's, 3x two, 4x "
+                 "three - as many as the screen's refresh leaves room for. The picture is one game frame behind, and the "
+                 "GPU works more. Needs your own Lossless.dll from Lossless Scaling for Windows (not included): put it "
+                 "in Download/, LSFG/, Documents/Emulation/bios/ or the app's files."),
+                 tr("Lossless.dll"), dll ? dll : tr("not found"), tr("State"),
+                 st == 1 ? tr("generating") : st == 0 ? tr("off") : st == 2 ? tr("on, waiting for a steady frame rate") : why);
+        opt_toggle("Frame generation (LSFG)", &g_settings.lsfg, false, d);
+        if (g_settings.lsfg) {
+            opt_indent(1);
+            static const char *mults[] = {"2x", "3x", "4x"};
+            int mi = g_settings.lsfg_mult - 2;
+            if (mi < 0 || mi > 2) mi = 0;
+            if (opt_choice("Generated frames", &mi, mults, 3, 0,
+                           "Images shown for each of the game's frames: 2x adds one, 3x two, 4x three. At 30 fps on a 60 Hz "
+                           "screen only one fits; 120 Hz screens take up to three.", false))
+                g_settings.lsfg_mult = mi + 2;
+            static const char *flows[] = {"Game's", "25%", "50%", "75%", "100%"};
+            static const int flow_v[] = {0, 25, 50, 75, 100};
+            int fl = 3;
+            for (int i = 0; i < 5; i++) if (flow_v[i] == g_settings.lsfg_flow) fl = i;
+            if (opt_choice("Motion estimation", &fl, flows, 5, 3,
+                           "The resolution the motion between frames is measured at, as a share of the game's image: lower "
+                           "is lighter for the GPU, higher follows small details better.", false))
+                g_settings.lsfg_flow = flow_v[fl];
+            opt_indent(-1);
+        }
     }
 #endif
 

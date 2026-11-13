@@ -28,10 +28,6 @@
 >
 > See [Android CI releases](docs/ANDROID-RELEASES.md) for build and signing details.
 
-> [!NOTE]
-> **Project update (through November 13, 2026):** Replies to issues will be slower this week. Version 0.3.4 is a small
-> hotfix to the RAM setting; larger updates remain on hold. [Read the announcement](https://github.com/mamcjr/BOTWRecompAndroid/discussions/329).
-
 [![Listed on PlayPorted](https://playported.com/badge.svg)](https://playported.com/ports/754-the-legend-of-zelda-breath-of-the-wild/)
 
 A port of *The Legend of Zelda: Breath of the Wild* (Nintendo Switch, versions **1.0.0, 1.6.0, 1.8.2 and 1.9.0**) for
@@ -44,7 +40,7 @@ It is built on the engine of **[LAS Recomp](https://github.com/peiikai/LASRecomp
 > [!WARNING]
 > **Beta.** Tested primarily on one phone (POCO F7 Ultra, Adreno 830, Mesa Turnip driver). Performance and compatibility
 > vary by device; expect bugs, especially on GPUs that have not been tested on physical hardware. See the
-> [0.3.4-beta release notes](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.3.4-beta) and the
+> [0.4.0-beta release notes](https://github.com/mamcjr/BOTWRecompAndroid/releases/tag/v0.4.0-beta) and the
 > [development notes](docs/BOTW-PORT.md) (in Portuguese).
 
 ## Supported platform
@@ -67,6 +63,10 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
 - **Video and controls:** optional 60 fps on supported game versions and experimental 60 fps in-engine cutscenes,
   unlocked aspect ratio, internal/output resolution, FSR 1 or Snapdragon GSR 1 upscaling, FXAA/SMAA, touch controls,
   physical controllers and gyro. The app offers a Vulkan driver selector and compatibility settings.
+- **Frame generation (LSFG), optional:** Lossless Scaling's frame generation with your own `Lossless.dll` (Lossless
+  Scaling for Windows, not included; put it in `Download/`, `LSFG/` or `Documents/Emulation/bios/`), 2x-4x, in Video. The
+  frame generation code is GPL-3.0-or-later, so **an APK built with it is GPL-3.0-or-later as a whole**: see
+  [NOTICE.md](NOTICE.md).
 - **0.3.0:** crashes and freezes after 30+ minutes on Mali GPUs, the fast travel's dissolve, stray leaves on the
   ground, the stable's windows and the loading screens in unlocked aspect, a 40 / 45 fps frame rate, even 30 fps on
   60 Hz screens, touch buttons for the arrows and the album, and two Driver compatibility options: the driver's own
@@ -78,6 +78,9 @@ Windows, Linux or macOS may still be used as development hosts with the Android 
   with under 6 GB of RAM.
 - **0.3.4:** the low-RAM profile now activates automatically only on devices with up to 4 GB of RAM. Devices with 6 GB
   return to the normal texture, buffer and cache settings; the manual override remains available.
+- **0.4.0:** optional frame generation (LSFG, with your own `Lossless.dll`), a new overlay (compact / detailed, with
+  charts), the frame rate no longer stuck lower after a menu or a save, and the pipeline limit on Xclipse and every
+  other non-Adreno GPU.
 - **Known issues:** short grass appears only up close; water reflections can move with the camera; the pause menu
   background can be black on Qualcomm's stock driver; Link may flicker on the first hit in Native Mode; rain falls
   slower than on the console.
@@ -148,7 +151,7 @@ icons read from your game files. The game's menus keep the classic buttons.
    Files > Vulkan driver**. If the app reports that the Vulkan driver is too old at startup, long-press the app icon
    and choose **Choose driver** before launching the game.
 
-Updating from 0.2.x to 0.3.4-beta does not require rebuilding game code. Shaders compile again once, so the first
+Updating from 0.2.x to 0.4.0-beta does not require rebuilding game code. Shaders compile again once, so the first
 minutes may stutter. To report a problem, open an [issue](https://github.com/mamcjr/BOTWRecompAndroid/issues) with
 your phone, GPU, driver, game version and a log from **Settings > Files > Save a log file**.
 
