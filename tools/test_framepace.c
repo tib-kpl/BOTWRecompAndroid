@@ -13,6 +13,7 @@ void benchmark_vfr(void) { benchmark_calls++; }
 static uint64_t now;
 static int between_fps;
 int vk_between_fps(void) { return between_fps; }
+double vk_frame_work_ms(void) { return -1; }  // (no measured frame work: the interval escape stays off)
 uint64_t plat_now_ns(void) { return now; }
 
 int main(int argc, char **argv) {
