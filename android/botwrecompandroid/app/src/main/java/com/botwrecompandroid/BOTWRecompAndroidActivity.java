@@ -170,6 +170,7 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             copyIfChanged(new File(games, "botwgame.so"), new File(res, "botwgame.so"));
             copyIfChanged(new File(games, "botwgame.so.id"), new File(res, "botwgame.so.id"));
             setenv("LARECOMP_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir);
+            setenv("LARECOMP_APP", appLine());
             setenv("LARECOMP_LAST_EXIT", lastExit());
             setenv("LARECOMP_BOOT_STATE", bootState());
             File gen = new File(getFilesDir(), "gen");
@@ -564,6 +565,38 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
             return self.getPackageManager().getPackageInfo(self.getPackageName(), 0).versionName;
         } catch (Exception e) {
             return "";
+        }
+    }
+
+    // The start screen's banner (runtime/ui/launcher.mm banner_thread, on its own thread, never the UI's): url (https,
+    // or a file:// one for tests) saved to dst, at most maxBytes. false on any failure (offline, 404, too big): dst is
+    // then left as it was.
+    public static boolean download(String url, String dst, int maxBytes) {
+        File part = new File(dst + ".part");
+        try {
+            java.net.URLConnection c = new java.net.URL(url).openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setUseCaches(false);
+            c.setRequestProperty("User-Agent", "BOTWRecompAndroid/" + appVersion());
+            if (c instanceof java.net.HttpURLConnection && ((java.net.HttpURLConnection) c).getResponseCode() != 200) {
+                ((java.net.HttpURLConnection) c).disconnect();
+                return false;
+            }
+            try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(part)) {
+                byte[] buf = new byte[65536];
+                long total = 0;
+                for (int n; (n = in.read(buf)) > 0;) {
+                    if ((total += n) > maxBytes) throw new IOException("over " + maxBytes + " bytes");
+                    out.write(buf, 0, n);
+                }
+            }
+            if (!part.renameTo(new File(dst))) throw new IOException("rename");
+            return true;
+        } catch (Exception e) {
+            Log.i(TAG, "banner: " + url + ": " + e);
+            part.delete();
+            return false;
         }
     }
 
@@ -1319,6 +1352,33 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
     private static boolean dlgDone;
     private static String dlgText;
 
+    // The game's vibration on the phone's (or a handheld's) own motor, where the controller has none (hle/input.c
+    // input_rumble_apply, Controls > Vibration): a one-shot of ms at amplitude 1-255 the native side renews while the
+    // game keeps vibrating, so a stalled game stops it; 0 stops it now.
+    public static void vibrateDevice(int amplitude, int ms) {
+        BOTWRecompAndroidActivity a = self;
+        if (a == null) return;
+        try {
+            android.os.Vibrator v;
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                android.os.VibratorManager vm = (android.os.VibratorManager) a.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                v = vm != null ? vm.getDefaultVibrator() : null;
+            } else {
+                v = (android.os.Vibrator) a.getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (v == null || !v.hasVibrator()) return;
+            if (amplitude <= 0) { v.cancel(); return; }
+            int amp = v.hasAmplitudeControl() ? Math.max(1, Math.min(255, amplitude)) : android.os.VibrationEffect.DEFAULT_AMPLITUDE;
+            // as a game's (media), not the default touch feedback: with the phone's touch vibration off, HyperOS ignored
+            // every one ("ignored_for_settings", usage TOUCH - POCO F7 Ultra, 2026-11-14)
+            android.media.AudioAttributes aa = new android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_GAME).build();
+            v.vibrate(android.os.VibrationEffect.createOneShot(ms, amp), aa);
+        } catch (Throwable t) {
+            Log.w("BOTWRecompAndroid", "vibrateDevice: " + t);
+        }
+    }
+
     public static boolean driverErrorDialog(String text) {
         BOTWRecompAndroidActivity a = self;
         if (a == null) return false;
@@ -1382,6 +1442,19 @@ public class BOTWRecompAndroidActivity extends SDLActivity {
 
     // How the previous run ended (ApplicationExitInfo), for the log: a setup that vanished with nothing in the log was
     // the system closing the app - for memory or something else (issue #18). "" when unknown.
+    // The log's first line: which build wrote it, on what ("0.4.0-beta (versionCode 39), Xiaomi 2510DPC44G, Android 16
+    // (API 36)") - the reports' logs couldn't be told apart by version.
+    private String appLine() {
+        String v = "?";
+        try {
+            android.content.pm.PackageInfo p = getPackageManager().getPackageInfo(getPackageName(), 0);
+            v = p.versionName + " (versionCode " + p.getLongVersionCode() + ")";
+        } catch (Exception ignored) {
+        }
+        return v + ", " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + ", Android "
+                + android.os.Build.VERSION.RELEASE + " (API " + android.os.Build.VERSION.SDK_INT + ")";
+    }
+
     private static final String[] EXIT_REASONS = {"unknown", "exit self", "signaled", "low memory", "crash", "native crash",
             "not responding", "initialization failure", "permission change", "excessive resource usage", "user requested",
             "user stopped", "dependency died", "other", "freezer", "package state change", "package updated"};

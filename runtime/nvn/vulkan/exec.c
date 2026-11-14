@@ -64,6 +64,7 @@ static uint64_t cum_exec, cum_wait, cum_draws, cum_submits;  // (profiling) neve
 #ifdef __ANDROID__
 uint64_t vk_cum_wait_ns(void) { return cum_wait; }  // (the performance overlay: time spent waiting on the GPU)
 #endif
+static uint32_t prof_dirty[4];  // (LARECOMP_VK_PROF) passes restarted: in-place read, feedback copy, unbound slot, other targets
 static uint32_t prof_end_line[4096];  // passes ended, by the exec.c line that ended them (0: submit / present)
 uint64_t prof_views_created;  // textures.c vk_image_view cache misses
 uint64_t prof_up_ns = ~0ull;  // textures.c upload checks (~0: profiling off)
@@ -146,9 +147,90 @@ static VkResult timeline_counter(uint64_t *value) {
     return result;
 }
 
+// The last submission the GPU finished. With the waiter thread (seq_thread_on, below) it is read from what that
+// thread saw; else asked of the driver, at most every LARECOMP_SEQ_CACHE_US (default 0: every time) - the value in
+// between is the last one read: it only grows, and a lower one only makes a caller free or reuse a little later.
+// Turnip on KGSL (Galaxy Tab A9+, Adreno 619, v26.0.0 R8) emulates the timeline with a binary sync per submission,
+// and reading its value waits in the kernel: asked at every submission (vk_collect_dead, the ring, the caches), it
+// was 73% of the render thread's time there (2026-11-13).
+static _Atomic uint64_t done_cached, done_asked;  // (vk_completed_seq's last answer, and when it asked)
+static void done_note(uint64_t v) {
+    uint64_t c = atomic_load_explicit(&done_cached, memory_order_relaxed);
+    while (v > c && !atomic_compare_exchange_weak(&done_cached, &c, v)) {}
+}
+// A thread of its own waits on the GPU, submission after submission, and keeps done_cached: what the GPU finished is
+// then read without asking the driver. On Turnip over KGSL (Galaxy Tab A9+) reading the timeline's value waited in
+// the kernel until the GPU had finished what was submitted - the render thread stopped after every submission until
+// the GPU caught up, so the two never worked at the same time (half of its time; 2026-11-13). Default: on low RAM
+// (the weak phones, exec.c vk_low_ram); LARECOMP_SEQ_THREAD=1 / 0.
+static int seq_thread = -1;
+static bool seq_thread_broken;
+static pthread_mutex_t sw_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sw_cv = PTHREAD_COND_INITIALIZER;
+static _Atomic uint64_t sw_submitted;
+static void *seq_waiter(void *arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&sw_m);
+        uint64_t done;
+        while ((done = atomic_load(&done_cached)) >= atomic_load(&sw_submitted)) pthread_cond_wait(&sw_cv, &sw_m);
+        pthread_mutex_unlock(&sw_m);
+        uint64_t want = done + 1;
+        VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
+                                  .pValues = &want};
+        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 1000000000ull);
+        if (r == VK_SUCCESS) done_note(want);
+        else if (r != VK_TIMEOUT) {  // (device lost: the callers' own waits report it)
+            seq_thread_broken = true;
+            return NULL;
+        }
+    }
+}
+static bool seq_thread_on(void) {
+    if (seq_thread < 0) {
+        extern bool vk_low_ram(void);
+        const char *e = getenv("LARECOMP_SEQ_THREAD");
+        seq_thread = e ? atoi(e) != 0 : vk_low_ram();
+        if (seq_thread) {
+            pthread_t th;
+            if (pthread_create(&th, NULL, seq_waiter, NULL)) seq_thread = 0;
+            else pthread_detach(th);
+            LOG("[vk] GPU progress: %s\n", seq_thread ? "a thread of its own waits on it" : "asked of the driver");
+        }
+    }
+    return seq_thread && !seq_thread_broken;
+}
+static void seq_submitted(uint64_t s) {
+    if (!seq_thread_on()) return;
+    pthread_mutex_lock(&sw_m);
+    atomic_store(&sw_submitted, s);
+    pthread_cond_signal(&sw_cv);
+    pthread_mutex_unlock(&sw_m);
+}
+
 uint64_t vk_completed_seq(void) {
+    if (seq_thread_on()) return atomic_load_explicit(&done_cached, memory_order_acquire);
+    static int64_t every = -1;
+    if (every < 0) {
+        const char *e = getenv("LARECOMP_SEQ_CACHE_US");
+        every = (e ? atoll(e) : 0) * 1000;
+    }
+    uint64_t now = 0;
+    if (every) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+        uint64_t at = atomic_load_explicit(&done_asked, memory_order_relaxed);
+        if (at && now - at < (uint64_t)every) return atomic_load_explicit(&done_cached, memory_order_acquire);
+    }
     uint64_t v = 0;
     timeline_counter(&v);
+    if (every) {
+        done_note(v);
+        atomic_store_explicit(&done_asked, now, memory_order_relaxed);
+        uint64_t c = atomic_load_explicit(&done_cached, memory_order_acquire);
+        if (v < c) v = c;
+    }
     return v;
 }
 
@@ -185,7 +267,8 @@ void vk_wait_seq(uint64_t seq) {
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
                               .pValues = &seq};
     uint64_t t0 = SDL_GetTicksNS();
-    VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
+    VkResult r = seq_thread_on() && atomic_load(&done_cached) >= seq ? VK_SUCCESS  // (finished already: no driver call)
+                 : vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
     stat_wait_ns += SDL_GetTicksNS() - t0;
     cum_wait += SDL_GetTicksNS() - t0;
     wait_account(SDL_GetTicksNS() - t0);
@@ -193,7 +276,7 @@ void vk_wait_seq(uint64_t seq) {
     if (vk_timing_trace_on()) vk_timing_trace_wait(VK_TIMING_TIMELINE, SDL_GetTicksNS() - t0);
 #endif
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
-    else if (r == VK_SUCCESS) cq_resolve_done(seq);  // (the game reads its timing counters after waiting)
+    else if (r == VK_SUCCESS) done_note(seq), cq_resolve_done(seq);  // (the game reads its timing counters after waiting)
 #ifdef __ANDROID__
     if (r == VK_SUCCESS) gcopy_retire(seq);
 #endif
@@ -331,7 +414,7 @@ double vk_frame_gpu_ms(void) {
 void vk_pace_frame(void) {
     {   // (write-backs of passes the GPU has finished since: the game may read them this frame)
         uint64_t v = 0;
-        if (timeline_counter(&v) == VK_SUCCESS) wb_apply(v);
+        if ((v = vk_completed_seq())) wb_apply(v);
     }
     if (pace_on < 0) { const char *e = getenv("LARECOMP_PACE"); pace_on = !e || atoi(e) != 0; }
     static uint64_t last, last_wait;
@@ -344,8 +427,8 @@ void vk_pace_frame(void) {
     // A failed trial describes the old workload. Reconsider Auto immediately when the user changes resolution
     // or returns from a fixed FPS mode; otherwise its old exponential backoff can keep the new workload at 30
     // for up to 80 seconds. Keep ordinary hitches from restarting trials (and causing repeated oscillation).
-    bool changed = last_mode != g_settings.fps_mode || last_resolution != g_settings.res_mode;
-    last_mode = g_settings.fps_mode;
+    bool changed = last_mode != fps_mode_now() || last_resolution != g_settings.res_mode;
+    last_mode = fps_mode_now();
     last_resolution = g_settings.res_mode;
     if (changed) {
         memset(over, 0, sizeof over);
@@ -353,9 +436,9 @@ void vk_pace_frame(void) {
         avg = 0;
         slow_since = probe_at = 0;
         probe_wait = 10000000000ull;
-        pace_slow = pace_on && (g_settings.fps_mode == 1 || g_settings.fps_mode == 3);
+        pace_slow = pace_on && (fps_mode_now() == 1 || fps_mode_now() == 3);
         last = 0;  // discard the transition frame's timing, including menu time and resource reallocation
-        LOG("[pace] settings changed: fresh %s pacing history\n", g_settings.fps_mode ? "fixed" : "auto");
+        LOG("[pace] settings changed: fresh %s pacing history\n", fps_mode_now() ? "fixed" : "auto");
     }
 #endif
     uint64_t now = plat_now_ns(), w = g_blocked_ns;
@@ -401,8 +484,8 @@ void vk_pace_frame(void) {
         // Three quarters of the frame, not all of it: the governor lowers the clocks until the work just fits its
         // target, and a phone whose frames weigh near 33 ms then went over it every few frames - each a vsync late, 50
         // ms: 17-20 fps at any quality where 0.2.6 held 30 (Mali-G925, #89; 0.2.9 brought the 33 ms budget)
-        bool fixed30 = g_settings.fps_mode == 1 && AB("adpf30") != 1;
-        uint64_t budget = g_settings.fps_mode == 3 ? 37500000ull  // (Frame rate 20: 20 fps's, three quarters)
+        bool fixed30 = fps_mode_now() == 1 && AB("adpf30") != 1;
+        uint64_t budget = fps_mode_now() == 3 ? 37500000ull  // (Frame rate 20: 20 fps's, three quarters)
                           : (follow && pace_slow) || fixed30 ? 25000000ull : 16666667ull;
         static double budget30 = -1;  // (LARECOMP_ADPF30_MS=<ms>, a test: the 30 fps budget instead of 25 ms)
         if (budget30 < 0) budget30 = getenv("LARECOMP_ADPF30_MS") ? atof(getenv("LARECOMP_ADPF30_MS")) : 0;
@@ -486,11 +569,11 @@ void vk_pace_frame(void) {
     idx = (idx + 1) % 60;
     if (!pace_on) return;  // (measured and counted all the same: LARECOMP_LOG_PACE, the stats)
 #ifdef __ANDROID__
-    if (g_settings.fps_mode) {  // (Video: Frame rate 20 / 30 / 40-45 / 60) fixed: no measuring, no trials
+    if (fps_mode_now()) {  // (Video: Frame rate 20 / 30 / 40-45 / 60) fixed: no measuring, no trials
         extern int vk_between_fps(void);
-        bool slow = g_settings.fps_mode == 1 || g_settings.fps_mode == 3;
+        bool slow = fps_mode_now() == 1 || fps_mode_now() == 3;
         if (slow != pace_slow)
-            LOG("[pace] frame rate set to %d fps\n", g_settings.fps_mode == 3 ? 20 : slow ? 30 : g_settings.fps_mode == 4 ? vk_between_fps() : 60);
+            LOG("[pace] frame rate set to %d fps\n", fps_mode_now() == 3 ? 20 : slow ? 30 : fps_mode_now() == 4 ? vk_between_fps() : 60);
         pace_slow = slow;
         return;
     }
@@ -557,7 +640,7 @@ static uint64_t pace_end_counter(const uint64_t *start_entry, const uint64_t *en
     static int fast = -1;
     if (fast < 0) fast = getenv("LARECOMP_FAST_COUNTERS") ? atoi(getenv("LARECOMP_FAST_COUNTERS")) : 0;
     // (Frame rate 45 as 60: the game in its 60 fps way)
-    if ((!pace_slow && pace_on > 0 && (fast || g_settings.fps_mode == 2 || g_settings.fps_mode == 4)) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
+    if ((!pace_slow && pace_on > 0 && (fast || fps_mode_now() == 2 || fps_mode_now() == 4)) || fast == 2) {  // (2: with LARECOMP_PACE=0 too, a test)
         uint64_t max = start_entry[1] + ns_to_gpu_ticks(PACE_FAST_NS);
         return value > max ? max : value;
     }
@@ -929,6 +1012,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     }
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
+    seq_submitted(submit_seq);
 #ifdef __ANDROID__
     last_submit_ns = SDL_GetTicksNS();
     if (game_pending) work_seq = submit_seq;  // (cleared when backend_execute is done: flushes inside it come first)
@@ -1454,6 +1538,19 @@ const char *renderer_stats(void) {
         extern int vk_texture_count(void);
         size_t n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, ", gpu mem %.0fMB, %d textures", (double)used / 1048576.0, vk_texture_count());
+        if (vk_low_ram()) {  // (their guest bytes: in RAM or swap next to the images, unless discarded - textures.c)
+            extern uint64_t vk_texture_guest_bytes(uint64_t *discarded);
+            uint64_t disc = 0, g = vk_texture_guest_bytes(&disc);
+            n = strlen(stats_text);
+            snprintf(stats_text + n, sizeof stats_text - n, " (guest %.0fMB, discarded %.0fMB)", g / 1048576.0, disc / 1048576.0);
+            static int calls;
+            if (calls++ % 10 == 5) {  // (what the GPU memory holds, every ~20 s)
+                extern int vk_live_counts(char *out, int cap);
+                char vk[768] = "";
+                vk_live_counts(vk, sizeof vk);
+                LOG("[vk] low RAM: %s\n", vk);
+            }
+        }
     }
     {
         extern void vk_alias_stats(void);
@@ -1475,6 +1572,17 @@ const char *renderer_stats(void) {
         snprintf(stats_text + n, sizeof stats_text - n, " | tex checks %llu samples %llu full %llu (%.1f MB, dynamic %llu)",
                  (unsigned long long)prof_tex_checks, (unsigned long long)prof_tex_samples, (unsigned long long)prof_tex_full,
                  prof_tex_full_bytes / 1048576.0, (unsigned long long)prof_tex_dyn);
+        n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n, " | restarts: in-place %u feedback %u unbound %u targets %u",
+                 prof_dirty[0], prof_dirty[1], prof_dirty[2], prof_dirty[3]);
+        {
+            extern uint64_t g_tex_drain_ns, g_tex_drains;  // (objects.c register_texture, LARECOMP_SLOT_DRAIN=1)
+            n = strlen(stats_text);
+            snprintf(stats_text + n, sizeof stats_text - n, " | slot drains %llu (%.0f ms)",
+                     (unsigned long long)__atomic_exchange_n(&g_tex_drains, 0, __ATOMIC_RELAXED),
+                     __atomic_exchange_n(&g_tex_drain_ns, 0, __ATOMIC_RELAXED) / 1e6);
+        }
+        memset(prof_dirty, 0, sizeof prof_dirty);
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | pass ends:");
         for (int l = 0; l < 4096; l++)
@@ -1991,6 +2099,17 @@ static volatile uint64_t g_scene_frame;
 uint64_t vk_scene_frame(void) { return g_scene_frame; }
 
 static VkRect2D scissor_rect(void);
+// No submissions in the middle of a frame (LARECOMP_VK_CHUNK_US, LARECOMP_VK_SPLIT_US) while a menu is up (inventory, map,
+// pause: hle/framepace.c framepace_in_menu): each one has the vertex cache read the game's memory again (vc_flush), and
+// by then the game was writing its next frame's text - the menus' letters were those of other words, a frame at a time
+// (Galaxy Tab A9+, 2026-11-13: none in 640 frames without them; the map's flickering buttons, #304 too). In the world
+// they keep the GPU busy while the frame is still being translated. LARECOMP_MENU_CHUNKS=1: kept in menus too.
+static bool no_chunks_now(void) {
+    static int keep = -1;
+    if (keep < 0) keep = getenv("LARECOMP_MENU_CHUNKS") && atoi(getenv("LARECOMP_MENU_CHUNKS"));
+    extern bool framepace_in_menu(void);
+    return !keep && framepace_in_menu();
+}
 static void begin_pass(void) {
     if (in_pass && !st.rt_dirty) return;
     pipeline_dirty = true;
@@ -2022,7 +2141,7 @@ static void begin_pass(void) {
         }
         extern int vk_ab(const char *what);
         long ch = chunk > 0 && AB("chunk") == 1 ? 500 : chunk;
-        if (ch > 0 && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)ch * 1000)
+        if (ch > 0 && vk_async_on() && last_submit_ns && SDL_GetTicksNS() - last_submit_ns > (uint64_t)ch * 1000 && !no_chunks_now())
             renderer_submit();
     }
 #endif
@@ -3720,7 +3839,7 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
                     int si = -1;
                     for (int k = 0; k < 8; k++) if (snap_tex[k] == t) si = k;
                     if (si < 0 || !snap_ok[si]) {
-                        if (in_pass && !st.rt_dirty && (pass_written & bit)) st.rt_dirty = true, stat_inplace_breaks++;
+                        if (in_pass && !st.rt_dirty && (pass_written & bit)) st.rt_dirty = true, stat_inplace_breaks++, prof_dirty[0]++;
                         if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
                         snap_ok[si] = true;
                         snap_fb_dirty[si] = false;
@@ -3778,6 +3897,7 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
             if (si < 0) { static int rr; si = rr++ & 7; snap_tex[si] = t; }
             snap_ok[si] = true;
             snap_fb_dirty[si] = false;
+            if (in_pass && !st.rt_dirty) prof_dirty[1]++;
             st.rt_dirty = true;
         }
 }
@@ -4419,8 +4539,18 @@ static uint64_t gmem_tried;  // heap size the import was last attempted for (gme
 bool vk_heap_file_possible(void) { return g_vk.mem_fd; }  // (the start screen's Driver compatibility)
 
 // The heap through an exported file asked for (the setting, or LARECOMP_VK_MEMFD) and possible here (vk_heap_place)
+// Not with RADV unless forced: on the Xclipse 530 / 540 its exported memory, mapped at the heap's address, took a SIGBUS
+// at the game's first access (its first malloc, atomics on that memory: #234, #383, #387); the setting is ignored there
+// and said so, and CPU copies run (as they did with RADV and the setting off, #393).
 bool vk_heap_file_asked(void) {
     const char *e = getenv("LARECOMP_VK_MEMFD");
+    extern bool vk_driver_is_radv(void);
+    if (!e && g_settings.heap_file && g_vk.mem_fd && vk_driver_is_radv()) {
+        static int told;
+        if (!told++) LOG("[vk] game memory through a shared file: on in the settings, but not with RADV (the game crashed at "
+                         "its first access to it) - shader global memory through CPU copies\n");
+        return false;
+    }
     return g_vk.mem_fd && (e ? atoi(e) != 0 : g_settings.heap_file);
 }
 
@@ -5418,11 +5548,34 @@ static bool gsnap_prepare(void) {
     return true;
 }
 
-static void gcopy_prepare(unsigned stage_mask, bool store) {
-    memset(gmap_tab, 0, sizeof gmap_tab);
-    gfast_n = 0;
-    gc_size = 0;
+// The bound storage buffers of the stages in stage_mask as heap ranges (with gcopy_prepare's margin), sorted and merged
+static int gcopy_ranges(unsigned stage_mask, bool store, GcRange *r);
+
+// A storing draw's ranges made resident before its render pass opens (copy mode, the arena: Mali, whose shared-file heap
+// fails, or LARECOMP_VK_NO_PLACED=1). gres_get merges a new range with the resident ones it overlaps by copying slot to
+// slot, which needs no render pass open: inside draw_ it ended the pass, and the draw was then recorded outside any
+// render pass (draw_ opens the pass before it prepares the arena). Now the pass is ended, if at all, before begin_pass;
+// from then on the range is resident and needs nothing. In TOTKRecompAndroid (27be190), whose gres_get refused the merge
+// instead, ~95 draws a frame took the plain copies and the light flashed every other frame on Mali.
+// LARECOMP_GRES_PREMERGE=0: off.
+static void gres_premerge(unsigned stage_mask) {
+    static int on = -1;
+    if (on < 0) on = !getenv("LARECOMP_GRES_PREMERGE") || atoi(getenv("LARECOMP_GRES_PREMERGE"));
+    if (!on || !gres_init()) return;
     GcRange r[6 * 16];
+    int m = gcopy_ranges(stage_mask, true, r);
+    for (int i = 0; i < m; i++) {
+        if (gres_get(r[i].lo, r[i].hi, false)) continue;  // (covered already)
+        bool overlaps = false;
+        for (int k = 0; k < ga_nres && !overlaps; k++)
+            overlaps = ga_res[k].live && ga_res[k].lo < r[i].hi && r[i].lo < ga_res[k].hi;
+        if (!overlaps) continue;  // (a new slot needs no copies: gres_get makes it inside the pass too)
+        if (in_pass) vk_end_pass();
+        gres_get(r[i].lo, r[i].hi, true);
+    }
+}
+
+static int gcopy_ranges(unsigned stage_mask, bool store, GcRange *r) {
     int n = 0;
     // a margin before each bound range (LARECOMP_GMARGIN bytes, 4 KB): the lighting's shaders read a header 0x100-0x200
     // bytes before the light list's bound address (the light count: ~950k reads a frame outside the tables - zero
@@ -5447,6 +5600,15 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
         else r[m++] = r[i];
     }
     if (m > GMAP_MAX) m = GMAP_MAX;
+    return m;
+}
+
+static void gcopy_prepare(unsigned stage_mask, bool store) {
+    memset(gmap_tab, 0, sizeof gmap_tab);
+    gfast_n = 0;
+    gc_size = 0;
+    GcRange r[6 * 16];
+    int m = gcopy_ranges(stage_mask, store, r);
     // The learned ranges (reached through pointers - gres_learn): newest first while table slots remain, never
     // expanding a storing range's write-back or collapsing unrelated heap regions into one multi-megabyte span.
     for (int i = gl_n - 1; i >= 0 && m < GMAP_MAX - 2; i--) {
@@ -6748,7 +6910,7 @@ static void draw_(CmdRec *r, bool indexed) {
         if (fb) snapshots_mark_fb_dirty(st.rt.depth);
         else snapshots_invalidate(st.rt.depth);
     }
-    if (in_pass && (draw_w & pass_dup_null)) st.rt_dirty = true;  // (writes a slot begin_pass left unbound)
+    if (in_pass && (draw_w & pass_dup_null)) st.rt_dirty = true, prof_dirty[2]++;  // (writes a slot begin_pass left unbound)
     snap_reason = "draw-colorwrite";
     for (int i = 0; i < st.rt.ncolor; i++) {
         if ((draw_w >> i) & 1) {
@@ -6759,6 +6921,10 @@ static void draw_(CmdRec *r, bool indexed) {
             else snapshots_invalidate(st.rt.color[i]);
         }
     }
+#ifdef __ANDROID__
+    if (gcopy_mode && (pr->vi->uses_gmem_store || pr->fi->uses_gmem_store) && (pr->vi->uses_gmem_map || pr->fi->uses_gmem_map))
+        gres_premerge((pr->vi->uses_gmem_map ? 1u : 0u) | (pr->fi->uses_gmem_map ? 2u : 0u));  // (before the pass opens)
+#endif
     begin_pass();
     VkCommandBuffer cb = vk_cmd();
 
@@ -8208,7 +8374,7 @@ static void split_long_pass(void) {
     static unsigned n;  // (the clock every 32 draws: a clock read per draw showed up in the profile)
     long threshold = AB("split1") == 1 ? 1000 : split;
     if (split > 0 && in_pass && !(++n & 31) && AB("split") != 1 && vk_async_on() && last_submit_ns &&
-        SDL_GetTicksNS() - last_submit_ns > (uint64_t)threshold * 1000)
+        SDL_GetTicksNS() - last_submit_ns > (uint64_t)threshold * 1000 && !no_chunks_now())
         renderer_submit();
 #endif
 }
@@ -8298,6 +8464,7 @@ static void exec_list(uint64_t handle, int depth) {
             static int always = -1;
             if (always < 0) always = getenv("LARECOMP_VK_PASS_RESTART") != NULL;
             if (always || memcmp(&prev, &st.rt, sizeof prev)) {
+                if (in_pass && !st.rt_dirty) prof_dirty[3]++;
                 st.rt_dirty = true;
                 snapshots_flush_fb_dirty("rt-change");
             }

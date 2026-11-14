@@ -34,6 +34,7 @@ void controls_bindings_draw(float scale);  // controls_ui.mm
 #include "../input_bind.h"
 #include "../paths.h"
 int vk_fg_status(const char **why);  // (vulkan/lsfg/lsfg_present.c: frame generation)
+bool framepace_thermal_capped(void);  // hle/framepace.c: the thermal cap holds 60 / 45 fps at 30 now
 const char *vk_fg_dll_path(void);
 }
 
@@ -611,6 +612,15 @@ static void tab_display(void) {
                                "30. 20 fps: always 20, for slower devices. 30 fps: always 30 - where a frame takes longer, "
                                "the game runs slightly slower instead of dropping to 20."))
             g_settings.fps_mode = fr_mode[fi];
+        if (sixty && (g_settings.fps_mode == 2 || g_settings.fps_mode == 4)) {  // (hle/framepace.c fps_mode_now)
+            opt_toggle("30 fps when the phone overheats", &g_settings.thermal_cap, true,
+                       framepace_thermal_capped()
+                           ? "On now: Android says the phone is too hot, so the game runs at 30 fps until it has cooled for 30 "
+                             "seconds, then at the chosen rate again."
+                           : "While Android says the phone is too hot (its thermal status, or the heat it expects in the next "
+                             "seconds), 30 fps instead of a frame rate that jumps as the clocks drop; the chosen one again "
+                             "once it has cooled for 30 seconds.");
+        }
         if (sixty)
             opt_toggle("Cutscenes at 60 fps (experimental)", &g_settings.event_fps_unlock, false,
                        "In-game cutscenes and talks run at the chosen frame rate instead of 30. Some of them count frames "
@@ -846,6 +856,20 @@ static void tab_about(void) {
     if (toggle("Phone motion like the Switch's screen", &g_settings.motion_flat)) settings_save();  // (hle/motion.c, #211 #247)
     hint("Off: the phone moves the aim as a controller would. On: as the Switch's own screen in handheld mode - try it if "
          "tilting the phone turns the aim, and turning it tilts.");
+#ifdef __ANDROID__
+    {   // the game's vibration (hle/input.c input_rumble_apply): here, not in the bindings below - those give way to the
+        // touch layout while no controller is connected, and the phone's motor is for exactly then
+        static const char *const vib_names[] = {"Off", "25%", "50%", "75%", "100%"};
+        int vi = (g_settings.vibration + 12) / 25;
+        if (vi < 0) vi = 0;
+        if (vi > 4) vi = 4;
+        if (choice("Vibration", &vi, vib_names, 5)) { g_settings.vibration = vi * 25; settings_save(); }
+        hint("The game's rumble on a controller's motors, when it has them. Off: none.");
+        if (toggle("Phone's motor when the controller has none", &g_settings.vibration_phone)) settings_save();
+        hint("Some controllers don't show their motors to Android, and handhelds' built-in controls vibrate through the "
+             "device's motor: this plays the rumble there instead (touch play too).");
+    }
+#endif
     ImGui::Spacing();
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
