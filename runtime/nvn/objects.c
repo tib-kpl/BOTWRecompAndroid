@@ -321,15 +321,30 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     // lag on from the start, some ponds stayed white for the whole session, and turned on later in play they were right
     // (2026-10-28, POCO F7 Ultra; issue #43 on an Adreno 740) - the water's colour taken once, while loading, from a GPU
     // result the lag made a frame old. So each load (the save, a fast travel) runs its first seconds without it.
+    // Away from the world for 45 frames in a row before that: closing the pause menu, the game is unpaused while
+    // its screen is still up (framepace_on_title for a few frames), and each menu cost the next 300 frames their lag -
+    // ~12 s at ~26 fps instead of 30 after every menu (#374 #439 #433, POCO F7 Ultra 2026-11-15). A load lasts seconds.
     if (lag > 0 && env_lag < 0) {
         enum { LAG_SETTLE = 300 };
+        static int lag_away = -1;  // (LARECOMP_LAG_AWAY=<frames>, 0: as before - an A/B)
+        if (lag_away < 0) lag_away = getenv("LARECOMP_LAG_AWAY") ? atoi(getenv("LARECOMP_LAG_AWAY")) : 45;
         extern uint64_t vk_scene_frame(void), renderer_present_count(void);
-        static uint64_t world_since;
+        static uint64_t world_since, away_since;
         uint64_t now = renderer_present_count(), seen = vk_scene_frame();
         bool world = !framepace_on_title() && seen && (now - seen < 20 || framepace_in_menu());
-        if (!world) world_since = 0;
-        else if (!world_since) world_since = now;
-        if (!world_since || now - world_since < LAG_SETTLE) lag = 0;
+        if (!world) {
+            if (!away_since) away_since = now;
+            if (world_since && now - away_since >= (uint64_t)lag_away) {
+                LOG("[synclag] off until the world has been back for %d frames (away since frame %llu: title %d, scene "
+                    "%llu frames ago, menu %d)\n", (int)LAG_SETTLE, (unsigned long long)away_since, framepace_on_title(),
+                    (unsigned long long)(seen ? now - seen : 0), framepace_in_menu());
+                world_since = 0;
+            }
+        } else {
+            away_since = 0;
+            if (!world_since) world_since = now;
+        }
+        if (!world_since || !world || now - world_since < LAG_SETTLE) lag = 0;
     }
     extern int vk_ab(const char *what);
     int ab = vk_ab("synclag");
@@ -1509,9 +1524,68 @@ NVN(nvnQueueAcquireTexture) {
     w->next = (w->next + 1) % (w->active ? w->active : 1);
     RET(0);
 }
+#ifdef __ANDROID__
+// The app in the background (Home, the recent apps, another app on top: vulkan/device.c gets SDL's background and
+// foreground events): the game stops at its next present until it is back. Before, it kept running unseen, without
+// its pace (nothing presented): 55-60 fps on a POCO F7 Ultra, 232% of a core against 178% in play, the world going on.
+// A save being written goes on first (services/fs.c fs_save_pending: until its Commit), so Android killing the app in
+// the background doesn't cut it in half. The presenting thread gives core 0 back while it waits (kernel.c), as for
+// the renderer. LARECOMP_BG_PAUSE=0: off.
+bool fs_save_pending(void);
+static pthread_mutex_t bg_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t bg_cv = PTHREAD_COND_INITIALIZER;
+static bool bg_paused;  // (bg_m)
+void nvn_background(bool on) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = !getenv("LARECOMP_BG_PAUSE") || atoi(getenv("LARECOMP_BG_PAUSE"));
+    if (!enabled) return;
+    pthread_mutex_lock(&bg_m);
+    bg_paused = on;
+    pthread_cond_broadcast(&bg_cv);
+    pthread_mutex_unlock(&bg_m);
+}
+static void bg_wait(void) {
+    if (!__atomic_load_n(&bg_paused, __ATOMIC_RELAXED)) return;
+    uint64_t t0 = plat_now_ns();
+    bool waited = false;
+    pthread_mutex_lock(&bg_m);
+    // (a save written meanwhile - the save's own thread, which may need the game's frames to finish it: let them go
+    // on until its Commit, checked every 100 ms)
+    while (bg_paused && !fs_save_pending()) {
+        if (!waited) {
+            waited = true;
+            pthread_mutex_unlock(&bg_m);
+            LOG("[pace] in the background: the game stopped at its present\n");
+            kernel_blocking_begin();
+            pthread_mutex_lock(&bg_m);
+            continue;
+        }
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += 100000000;
+        if (until.tv_nsec >= 1000000000) until.tv_sec++, until.tv_nsec -= 1000000000;
+        pthread_cond_timedwait(&bg_cv, &bg_m, &until);
+    }
+    bool still = bg_paused;
+    pthread_mutex_unlock(&bg_m);
+    if (still) {  // (a save being written)
+        static int logged;
+        if (logged++ < 5) LOG("[pace] in the background, a save being written: the game goes on until it is committed\n");
+    }
+    if (waited) {
+        kernel_blocking_end();
+        LOG("[pace] %s after %.1f s\n", still ? "the game goes on for a save" : "back in the foreground: the game goes on",
+            (plat_now_ns() - t0) / 1e9);
+    }
+}
+#endif
+
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
+#ifdef __ANDROID__
+    bg_wait();
+#endif
     {   // (which guest thread presents: LARECOMP_PROF_SVC_TID, kernel.c)
         static uint64_t last_id = ~0ull;
         KThread *kt = kernel_current_thread();

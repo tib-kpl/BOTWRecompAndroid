@@ -19,7 +19,7 @@
 
 static struct {
     int state;  // 0 not tried, 1 ready (modules loaded), -1 unavailable
-    char reason[256], dll[512];
+    char reason[640], dll[512];
     lsfg_modules mods;
     lsfg_chain *chain;
     VkExtent2D ext;
@@ -32,6 +32,7 @@ static struct {
     uint64_t count;
     uint32_t warm_streak;
     int generating;  // the last frame's: 1 generated, 0 not
+    int no_room;     // the last frame's: none, as the screen's refresh left no room for them (vk_fg_status 3)
 } F;
 
 static double mono_s(void) {
@@ -51,10 +52,15 @@ static void unavailable(const char *why) {
     LOG("[lsfg] frame generation unavailable: %s\n", why);
 }
 
-// Where the user's Lossless.dll may be: LARECOMP_LSFG_DLL, the app's own files, then the places Swap2-Native looks
+// Where the user's Lossless.dll may be: LARECOMP_LSFG_DLL, the app's own files, then the places Swap2-Native looks.
+// The first one the app can open; else the first one it sees but can't (Android shows a file in Download/ to an app
+// without All files access and then refuses to open it: the menu said "no Lossless.dll" beside the file's own path,
+// #437 #385 #428), so the state says why.
+static int g_dll_relook, g_dll_reload;  // (an import: look again, and load again if it had failed)
 const char *vk_fg_dll_path(void) {
     static char found[512];
     static int looked;
+    if (__atomic_exchange_n(&g_dll_relook, 0, __ATOMIC_ACQ_REL)) looked = 0, found[0] = 0;
     if (looked) return found[0] ? found : NULL;
     looked = 1;
     const char *e = getenv("LARECOMP_LSFG_DLL");
@@ -68,16 +74,29 @@ const char *vk_fg_dll_path(void) {
         "/storage/emulated/0/Lossless.dll",
     };
     struct stat sb;
-    for (size_t i = 0; i < sizeof places / sizeof *places; i++)
-        if (stat(places[i], &sb) == 0 && sb.st_size > 0) { snprintf(found, sizeof found, "%s", places[i]); return found; }
+    const char *seen = NULL;
+    for (size_t i = 0; i < sizeof places / sizeof *places; i++) {
+        if (stat(places[i], &sb) != 0 || sb.st_size <= 0) continue;
+        FILE *f = fopen(places[i], "rb");
+        if (f) { fclose(f); snprintf(found, sizeof found, "%s", places[i]); return found; }
+        if (!seen) seen = places[i];
+    }
+    if (seen) { snprintf(found, sizeof found, "%s", seen); return found; }
     return NULL;
 }
 
-// The device must have what the shaders use (Float16, storage images of any format, unformatted writes), null
-// descriptors, and storage images of the chain's formats, linearly filterable
+// After Video > Frame generation > Import Lossless.dll put a copy in the app's files (ui/launcher.mm)
+void vk_fg_dll_imported(void) {
+    __atomic_store_n(&g_dll_relook, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_dll_reload, 1, __ATOMIC_RELEASE);
+}
+
+// The device must have what the shaders use (Float16, storage images of any format, unformatted writes) and storage
+// images of the chain's formats, linearly filterable
 static int device_ok(void) {
     if (!g_vk.lsfg_features) { unavailable("the GPU lacks shaderFloat16 or storage images of any format (Vulkan 1.2 features)"); return 0; }
-    if (!g_vk.null_descriptors) { unavailable("the GPU lacks null descriptors (VK_EXT_robustness2)"); return 0; }
+    // (no null descriptors - VK_EXT_robustness2, missing on Mali r44 (#402): the chain binds a blank image instead)
+    if (!g_vk.null_descriptors) LOG("[lsfg] no null descriptors on this GPU: a blank image in the unbound slots\n");
     VkFormat fmts[3] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT};
     for (int i = 0; i < 3; i++) {
         VkFormatProperties fp;
@@ -92,6 +111,7 @@ static int device_ok(void) {
 }
 
 static int load(void) {
+    if (__atomic_exchange_n(&g_dll_reload, 0, __ATOMIC_ACQ_REL) && F.state < 0) F.state = 0, F.reason[0] = 0;
     if (F.state) return F.state > 0;
     if (!device_ok()) return 0;
     const char *path = vk_fg_dll_path();
@@ -168,8 +188,9 @@ static int rebuild(VkExtent2D e, int flow) {
 // The present's state, for the menu: 1 generating, 0 off, 2 on and not generating now, -1 unavailable (reason in *why)
 int vk_fg_status(const char **why) {
     bool on = env_int("LARECOMP_LSFG", g_settings.lsfg) != 0;
-    if (why) *why = F.state < 0 ? F.reason : !on ? "off" : F.generating ? "generating" : "on, waiting for a steady frame rate";
-    return F.state < 0 ? -1 : !on ? 0 : F.generating ? 1 : 2;
+    if (why) *why = F.state < 0 ? F.reason : !on ? "off" : F.generating ? "generating" : F.no_room ? "no room"
+                                                                                         : "on, waiting for a steady frame rate";
+    return F.state < 0 ? -1 : !on ? 0 : F.generating ? 1 : F.no_room ? 3 : 2;
 }
 
 // For the game frame in `game` (its present, before the window image is taken): the frames to show before it (gen[],
@@ -217,7 +238,8 @@ int vk_fg_frame(TexBackend *game, TexBackend **gen, uint64_t *hold_ns, uint64_t 
         double n = interval * 1e9 / (double)vsync_ns;
         size_t fit = n < 1.9 ? 0 : (size_t)(n + 0.1) - 1;
         if (ng > fit) ng = fit, F.pacer.issued = ng;
-    }
+        F.no_room = !ng;  // (a 45 fps game on a 60 Hz screen: the menu says so - device.c asks for a faster refresh)
+    } else F.no_room = 0;
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);  // (the game's writes to its image; the presents still reading the outputs)
     VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{0, 0, 0}, {(int32_t)e.width, (int32_t)e.height, 1}},
