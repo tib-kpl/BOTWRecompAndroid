@@ -159,6 +159,54 @@ static uint64_t stub_tls(uint32_t *s, uint64_t at, uint64_t site, int n, int off
     return 80;
 }
 
+// ---- the Switch's tick rate. The game counts the system counter at 19.2 MHz (the sdk reads it inline, svc
+// GetSystemTick answers it: rt_ticks). Snapdragon's counter runs at that rate, MediaTek's at 13 MHz (POCO X8 Pro Max's
+// Dimensity, 2026-11-13 log): read as they are, every span the game measured came out 0.68 of its length. Where the
+// counter's rate differs, each read is scaled to 19.2 MHz (counter x g_tick_mul >> 32) and cntfrq_el0 answers 19.2 MHz,
+// as MKWDroid's guest_ticks does on its own clock. LARECOMP_TICK_HZ=<Hz> (a test): take the counter for that rate and
+// scale with it, 19200000 included (the scaling path, with no change of rate).
+#define SWITCH_HZ 19200000ull
+#define MRS_CNTFRQ 0xD53BE000u
+static uint64_t g_tick_mul;  // (0: read as they are)
+static void tick_init(void) {
+    uint64_t f;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+    const char *e = getenv("LARECOMP_TICK_HZ");
+    bool forced = e && strtoull(e, NULL, 0) > 0;
+    if (forced) f = strtoull(e, NULL, 0);
+    g_tick_mul = forced || (f && f != SWITCH_HZ) ? (uint64_t)(((__uint128_t)SWITCH_HZ << 32) / (f ? f : SWITCH_HZ)) : 0;
+    LOG("[native] the game's code runs on the CPU (counter %llu Hz%s%s)\n", (unsigned long long)f,
+        f == SWITCH_HZ ? ", as the Switch's" : ": not the Switch's 19.2 MHz - its reads are scaled to it",
+        forced ? ", LARECOMP_TICK_HZ" : "");
+}
+// mrs xN, cntpct_el0 / cntvct_el0 -> the counter scaled: xN = (cntvct x mul) >> 32 (three temporaries, none of them xN)
+static uint64_t stub_cnt(uint32_t *s, uint64_t at, uint64_t site, int n) {
+    int t[3], k = 0;
+    for (int r = 14; r <= 17 && k < 3; r++)
+        if (r != n) t[k++] = r;
+    int a = t[0], b = t[1], c = t[2];
+    s[0] = enc_stp_pre(a, b, SP, -32);
+    s[1] = enc_str(c, SP, 16);
+    s[2] = MRS_CNTVCT | a;                                       // mrs xa, cntvct_el0
+    s[3] = enc_ldr_lit(b, at + 12, at + 40);                     // ldr xb, =mul
+    s[4] = 0x9BC07C00u | (b << 16) | (a << 5) | c;               // umulh xc, xa, xb
+    s[5] = 0x9B007C00u | (b << 16) | (a << 5) | a;               // mul xa, xa, xb
+    s[6] = 0x93C00000u | (a << 16) | (32 << 10) | (c << 5) | n;  // extr xN, xc, xa, #32
+    s[7] = enc_ldr(c, SP, 16);
+    s[8] = enc_ldp_post(a, b, SP, 32);
+    s[9] = enc_b(at + 36, site + 4);
+    memcpy(&s[10], &g_tick_mul, 8);
+    return 48;
+}
+// mrs xN, cntfrq_el0 -> xN = 19200000 (the rate the scaled reads count at)
+static uint64_t stub_frq(uint32_t *s, uint64_t at, uint64_t site, int n) {
+    s[0] = 0xD2800000u | ((uint32_t)(SWITCH_HZ & 0xFFFF) << 5) | n;          // movz xN, #0xf800
+    s[1] = 0xF2A00000u | ((uint32_t)(SWITCH_HZ >> 16) << 5) | n;             // movk xN, #0x124, lsl #16
+    s[2] = enc_b(at + 8, site + 4);
+    s[3] = 0xD503201Fu;
+    return 16;
+}
+
 // ---- the game's fixes (tools/patches.py, the same ones at the same addresses: there they are C in place of one
 // instruction of the generated code). Here a stub calls native_patch_gate with the fix's number; its handler works on
 // the Cpu and says how to go on: 0 run the original instruction (from the stub) and go on after it, 1 the fix's
@@ -518,12 +566,35 @@ static uint64_t stub_fix(uint32_t *s, uint64_t at, uint64_t site, uint32_t id, u
     return 128;
 }
 
+// A test-and-set lock taken without acquire ordering: ldxr rt,[rn]; cbnz rt,<the ldxr>; stxr ws,rk,[rn];
+// cbnz ws,<the ldxr> (w or x, rk not the zero register), with no dmb ish / dmb ishld right after. Armv8 lets the loads
+// after such a lock be satisfied before it is held; the Switch's Cortex-A57 never showed it, a phone's big cores may:
+// two threads then take the same item of a queue the lock guards (BOTW 1.6.0 has 412 of these, 1.9.0 none - a job run
+// on two threads, garbage pointers 10-60 s in; found by peanuts-native, dm/tools/patch_nso.py acquire_lock_sites,
+// MIT, seedds / Swap2-Native contributors / EddizEge). The ldxr becomes an ldaxr (bit 15), the ordering Nintendo's own
+// SDK locks use. The recompiled code needs nothing: its exclusive loads are acquire atomics (runtime/cpu.h).
+static bool lock_without_acquire(const uint32_t *t, uint64_t i, uint64_t n) {
+    uint32_t w = t[i];
+    if ((w & 0xBFFFFC00u) != 0x885F7C00u || i + 4 > n) return false;  // ldxr (32 / 64-bit)
+    uint32_t c1 = t[i + 1], st = t[i + 2], c2 = t[i + 3];
+    uint32_t rt = w & 31, rn = w >> 5 & 31, rs = st >> 16 & 31, rk = st & 31;
+    // cbnz r, back <back> instructions (32 / 64-bit)
+#define CBNZ_BACK(x, r, back) (((x) & 0x7F00001Fu) == (0x35000000u | (r)) && ((x) >> 5 & 0x7FFFFu) == 0x80000u - (back))
+    bool fenced = i + 4 < n && (t[i + 4] == 0xD5033BBFu || t[i + 4] == 0xD50339BFu);  // dmb ish / dmb ishld
+    bool lock = CBNZ_BACK(c1, rt, 1) && CBNZ_BACK(c2, rs, 3) && (st & 0xBFE0FC00u) == 0x88007C00u &&  // stxr
+                (st >> 5 & 31) == rn && rk != 31 && rs != rn && rs != rk && !fenced;
+#undef CBNZ_BACK
+    return lock;
+}
+
 static void prepare_module(Module *m) {
     uint32_t *text = (uint32_t *)(uintptr_t)(m->base + m->text_off);
     uint64_t nw = m->text_size / 4, nsites = 0;
     for (uint64_t i = 0; i < nw; i++) {
         uint32_t w = text[i];
         if ((w & 0xFFE0001Fu) == 0xD4000001u || (w & ~31u) == MRS_TPIDR || (w & ~31u) == MRS_TPIDRRO || (w & ~31u) == MSR_TPIDR)
+            nsites++;
+        else if (g_tick_mul && ((w & ~31u) == MRS_CNTPCT || (w & ~31u) == MRS_CNTVCT || (w & ~31u) == MRS_CNTFRQ))
             nsites++;
     }
     bool is_main = m->base == MAIN_BASE;
@@ -532,15 +603,21 @@ static void prepare_module(Module *m) {
     if (!asize) asize = 0x4000;
     plat_commit(area, asize);
     uint64_t at = area;
-    unsigned nsvc = 0, ntls = 0, ncnt = 0;
+    unsigned nsvc = 0, ntls = 0, ncnt = 0, nfrq = 0, nlock = 0;
+    static int acq = -1;  // (LARECOMP_NATIVE_LOCKS=0: the locks left as they are)
+    if (acq < 0) acq = getenv("LARECOMP_NATIVE_LOCKS") ? atoi(getenv("LARECOMP_NATIVE_LOCKS")) != 0 : 1;
     for (uint64_t i = 0; i < nw; i++) {
         uint32_t w = text[i];
         uint64_t site = (uint64_t)(uintptr_t)&text[i];
         uint64_t len = 0;
+        if (acq && lock_without_acquire(text, i, nw)) { text[i] = w | 0x8000u; nlock++; continue; }  // ldxr -> ldaxr
         if ((w & 0xFFE0001Fu) == 0xD4000001u) len = stub_svc((uint32_t *)(uintptr_t)at, at, site, (w >> 5) & 0xFFFF), nsvc++;
         else if ((w & ~31u) == MRS_TPIDRRO) len = stub_tls((uint32_t *)(uintptr_t)at, at, site, w & 31, 288, false), ntls++;
         else if ((w & ~31u) == MRS_TPIDR) len = stub_tls((uint32_t *)(uintptr_t)at, at, site, w & 31, 280, false), ntls++;
         else if ((w & ~31u) == MSR_TPIDR) len = stub_tls((uint32_t *)(uintptr_t)at, at, site, w & 31, 280, true), ntls++;
+        else if (g_tick_mul && ((w & ~31u) == MRS_CNTPCT || (w & ~31u) == MRS_CNTVCT))
+            len = stub_cnt((uint32_t *)(uintptr_t)at, at, site, w & 31), ncnt++;
+        else if (g_tick_mul && (w & ~31u) == MRS_CNTFRQ) len = stub_frq((uint32_t *)(uintptr_t)at, at, site, w & 31), nfrq++;
         else if ((w & ~31u) == MRS_CNTPCT) { text[i] = MRS_CNTVCT | (w & 31); ncnt++; continue; }
         if (!len) continue;
         text[i] = enc_b(site, at);
@@ -580,8 +657,9 @@ static void prepare_module(Module *m) {
     __builtin___clear_cache((char *)(uintptr_t)area, (char *)(uintptr_t)(area + asize));
     if (mprotect((void *)(uintptr_t)t0, tsz, PROT_READ | PROT_EXEC) || mprotect((void *)(uintptr_t)area, asize, PROT_READ | PROT_EXEC))
         FATAL("[native] %s: the code can't be made executable (errno %d)\n", m->name, errno);
-    LOG("[native] %s: %u svc, %u TLS, %u counter reads rewritten, %u fixes; stubs at %llx (%llu KB)\n", m->name, nsvc,
-        ntls, ncnt, nfixed, (unsigned long long)area, (unsigned long long)(asize >> 10));
+    LOG("[native] %s: %u svc, %u TLS, %u counter reads rewritten%s, %u rate reads, %u fixes, %u locks given acquire "
+        "ordering%s; stubs at %llx (%llu KB)\n", m->name, nsvc, ntls, ncnt, g_tick_mul ? " (scaled to 19.2 MHz)" : "", nfrq,
+        nfixed, nlock, acq ? "" : " (LARECOMP_NATIVE_LOCKS=0)", (unsigned long long)area, (unsigned long long)(asize >> 10));
 }
 
 // The HLE slots as code: slot i = movz x17, #i; b trampoline (-> native_hle_gate)
@@ -605,17 +683,18 @@ static void prepare_hle(void) {
 
 void native_prepare(void) {
     if (!native_on()) return;
-    uint64_t f;
-    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
-    LOG("[native] the game's code runs on the CPU (counter %llu Hz%s)\n", (unsigned long long)f,
-        f == 19200000 ? ", as the Switch's" : ": NOT the Switch's 19.2 MHz - the game's timing will be off");
+    tick_init();
     memset(g_native_tab, 0, sizeof g_native_tab);
     for (int i = 0; i < g_nmodules; i++) prepare_module(&g_modules[i]);
     prepare_hle();
 }
 
 // The Switch's tick: the counter the rewritten reads see (rt_ticks, kernel.c)
-uint64_t native_ticks(void) { uint64_t v; __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v)); return v; }
+uint64_t native_ticks(void) {
+    uint64_t v;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+    return g_tick_mul ? (uint64_t)(((__uint128_t)v * g_tick_mul) >> 32) : v;
+}
 #else
 #include "rt.h"
 bool native_wanted(void) { return false; }

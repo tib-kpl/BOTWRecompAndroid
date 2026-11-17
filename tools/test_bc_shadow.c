@@ -11,6 +11,11 @@
 
 // ---- the rest of the runtime, as far as the shadows reach it
 VkG g_vk;
+#ifdef __ANDROID__
+bool g_benchmark;
+_Atomic uint64_t g_bench_perf[BP_COUNT];
+uint64_t plat_now_ns(void) { return 1; }
+#endif
 void rt_fatal_trace(void) { abort(); }
 static uint8_t staging[1 << 20];
 VkSpan vk_transient(uint64_t size, uint64_t align) { (void)size, (void)align; return (VkSpan){VK_NULL_HANDLE, 0, staging}; }
@@ -19,6 +24,7 @@ void vk_readback_ready(uint64_t size) { (void)size; }
 VkCommandBuffer vk_cmd(void) { return VK_NULL_HANDLE; }
 VkCommandBuffer vk_upload_cmd(void) { return VK_NULL_HANDLE; }
 void vk_full_barrier(VkCommandBuffer cb) { (void)cb; }
+void vk_end_pass(void) {}
 void renderer_flush(void) {}
 uint64_t vk_pending_seq(void) { return 1; }
 uint64_t vk_frame_counter(void) { return 1; }

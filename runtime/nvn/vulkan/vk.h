@@ -24,6 +24,7 @@
 #include "../maxwell/shader.h"
 
 void vk_device_fault_report(void);
+#include "watchdog.h"
 #ifdef __ANDROID__
 void vk_android_load(void);  // android_driver.c: the Vulkan driver (adrenotools / system) into volk
 const char *vk_driver_rejected(void);  // (the chosen driver package the system's stood in for; "" none)
@@ -114,9 +115,9 @@ typedef struct TexBackend {
     VkImageAspectFlags aspect;
     bool gpu_owned, uploaded, dynamic;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
-    uint32_t wgen;  // page write tracking generation at the last upload check (textures.c)
+    uint32_t wgen, full_wgen;  // page write tracking generations (sampled/periodic and last full-hash check)
     uint8_t skip;   // guest levels left out at the top (half-size textures on low RAM: textures.c create_image)
-    bool discarded; // (low RAM) its guest bytes given back to the OS after the upload: zero pages there (textures.c)
+    uint64_t discarded;  // (low RAM) guest bytes currently discarded via MADV_DONTNEED (0 if none; textures.c)
     uint64_t disc_hash;  // (discarded) the full hash of its memory right after: still that one = unchanged
     bool scalable, presented;
     uint8_t rs_group;  // RS_*: which output scale its allocation follows (textures.c)
@@ -140,6 +141,7 @@ typedef struct TexBackend {
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
 void vk_tex_upload_for_mips(NvnTexture *t);  // (drawn into at a level past 0: the CPU's contents first, if never uploaded)
+bool vk_tex_upload_for_load(NvnTexture *t);  // (write-back target before gpu_owned LOAD_OP_LOAD: CPU contents synced)
 VkFormat vk_format(uint32_t nvn_format);
 bool vk_format_alpha_one(uint32_t nvn_format);
 bool renderer_texture_scalable(NvnTexture *t);
@@ -160,8 +162,13 @@ VkImageView vk_dummy_view(int textype);
 VkImageView vk_bc_shadow_view(NvnTexture *t, const NvnTextureView *v, VkFormat *fmt, uint32_t *w, uint32_t *h);
 void vk_bc_shadows_resolve(NvnTexture *const *targets, const NvnTextureView *views, const uint8_t *has_view, int ntargets);
 #endif
+VkFormat vk_sampled_format(NvnTexture *t, const NvnTextureView *v, bool has_view);
+bool vk_format_filters_linear(VkFormat f);
+bool vk_format_is_int(VkFormat f);
+bool vk_any_format_no_linear(void);
 VkSampler vk_sampler(NvnSamplerDesc *d);
 VkSampler vk_sampler_plain(NvnSamplerDesc *d);  // (the same without depth comparison: for non-shadow lookups)
+VkSampler vk_sampler_nearest(NvnSamplerDesc *d, bool compare);
 VkSampler vk_default_sampler(bool linear);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);
 // Destruction once every submission that may use the object has completed.

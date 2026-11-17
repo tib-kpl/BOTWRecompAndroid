@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #endif
 
+#include "../../benchmark_perf.h"
 #include "../../paths.h"
 #include "../../settings.h"
 #include "../../ui/menu.h"
@@ -427,13 +428,12 @@ static void pick_device(void) {
 
 static bool g_fault_ext;
 // After VK_ERROR_DEVICE_LOST: what the driver says faulted (VK_EXT_device_fault), into the log.
-void vk_device_fault_report(void) {
-    static int once;
-    if (once++ || !g_fault_ext) return;
+static void fault_dump(void) {
     PFN_vkGetDeviceFaultInfoEXT get = (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetDeviceFaultInfoEXT");
     if (!get) return;
     VkDeviceFaultCountsEXT c = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
-    if (get(g_vk.dev, &c, NULL) != VK_SUCCESS) { LOG("[vk] device fault: no info\n"); return; }
+    VkResult fr = get(g_vk.dev, &c, NULL);
+    if (fr != VK_SUCCESS) { LOG("[vk] device fault: no info (%d)\n", fr); return; }
     VkDeviceFaultAddressInfoEXT addr[16];
     VkDeviceFaultVendorInfoEXT vend[16];
     if (c.addressInfoCount > 16) c.addressInfoCount = 16;
@@ -450,6 +450,19 @@ void vk_device_fault_report(void) {
         LOG("[vk]   vendor: %s (code %#llx data %#llx)\n", vend[i].description, (unsigned long long)vend[i].vendorFaultCode,
             (unsigned long long)vend[i].vendorFaultData);
 }
+void vk_device_fault_report(void) {
+    static int once;
+    if (once++ || !g_fault_ext) return;
+    fault_dump();
+}
+#ifdef __ANDROID__
+// The same on demand, for the freeze watchdog (watchdog.c) after a long stall: a driver that has lost the device without
+// telling the caller (no VK_ERROR_DEVICE_LOST yet) may still have a fault to report. Its helper thread calls this.
+void vk_device_fault_probe(void) {
+    if (!g_fault_ext) { LOG("[watchdog] VK_EXT_device_fault is not enabled\n"); return; }
+    fault_dump();
+}
+#endif
 
 #ifdef __ANDROID__
 // The display's vsync for the frame pacer (nvn/objects.c). The pacer's 30 fps grid had no tie to the display: its
@@ -1112,8 +1125,14 @@ static void create_swapchain(void) {
 }
 
 static void recreate_swapchain(void) {
+#ifdef __ANDROID__
+    WdMark wd_mark = vk_wd_enter(WD_R_SWAPCHAIN, 0);  // (freeze watchdog: vkDeviceWaitIdle waits for all the GPU's work)
+#endif
     vkDeviceWaitIdle(g_vk.dev);
     create_swapchain();
+#ifdef __ANDROID__
+    vk_wd_leave(wd_mark);
+#endif
 }
 
 #ifdef __ANDROID__
@@ -1163,6 +1182,20 @@ static void android_frame_rate(struct ANativeWindow *aw) {
     static struct ANativeWindow *asked_aw;
     static float asked = -1;
     float want = fps_mode_now() == 4 && vk_between_fps() != 30 ? (float)vk_between_fps() : 0.0f;
+    bool fg = false;
+    {   // Frame generation on: room on the screen for the frames it makes - the chosen frame rate times its multiplier
+        // (60 fps x 2: 120 Hz). Android leaves a game at 60 Hz unless asked, and then a 40-50 fps game left no refresh
+        // between its frames, nothing was generated (ROG Phone 8, 165 Hz screen; lsfg_present.c's refresh cap). The
+        // system picks the nearest mode the screen has.
+        extern int vk_fg_status(const char **why);
+        int st = vk_fg_status(NULL);  // (1 generating, 2 waiting, 3 no room; 0 off, -1 unavailable)
+        if (st > 0) {
+            int m = fps_mode_now();
+            int base = m == 1 ? 30 : m == 3 ? 20 : m == 4 ? vk_between_fps() : 60;
+            int mult = g_settings.lsfg_mult < 2 ? 2 : g_settings.lsfg_mult > 4 ? 4 : g_settings.lsfg_mult;
+            want = (float)(base * mult), fg = true;
+        }
+    }
     if (aw == asked_aw && want == asked) return;
     // (libnativewindow's, looked up, not linked. Android 12+: with the change strategy ALWAYS - the plain call changes
     // the refresh only when it's seamless, and 120 -> 90 Hz isn't on the POCO F7 Ultra: it stayed at 120)
@@ -1175,7 +1208,8 @@ static void android_frame_rate(struct ANativeWindow *aw) {
         set_rate = lib ? (int (*)(struct ANativeWindow *, float, int8_t))dlsym(lib, "ANativeWindow_setFrameRate") : NULL;
         set_rate2 = lib ? (int (*)(struct ANativeWindow *, float, int8_t, int8_t))dlsym(lib, "ANativeWindow_setFrameRateWithChangeStrategy") : NULL;
     }
-    int8_t compat = want > 0 ? ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE : ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT;
+    int8_t compat = want > 0 && !fg ? ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE  // (generated: at least that rate)
+                                    : ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT;
     int r = set_rate2 ? set_rate2(aw, want, compat, 1 /* ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS */)
           : set_rate ? set_rate(aw, want, compat) : -1;
     if (want != asked) LOG("[vk] the window asks for %.0f fps content (%d)\n", want, r);
@@ -1187,6 +1221,7 @@ static bool android_surface_ready(void) {  // false: no window to draw into now
     if (!aw) { surface_lost = true; return false; }
     android_frame_rate(aw);
     if (aw == surface_aw && !surface_lost) return true;
+    WdMark wd_mark = vk_wd_enter(WD_R_SWAPCHAIN, 1);  // (freeze watchdog)
     vkDeviceWaitIdle(g_vk.dev);
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vk_rp_forget_view(g_vk.sc_views[i]), vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     g_vk.sc_count = 0;
@@ -1197,6 +1232,7 @@ static bool android_surface_ready(void) {  // false: no window to draw into now
     surface_lost = false;
     LOG("[vk] window surface made again (the app came back from the background)\n");
     create_swapchain();
+    vk_wd_leave(wd_mark);
     return g_vk.swapchain != VK_NULL_HANDLE;
 }
 #endif
@@ -1260,7 +1296,13 @@ bool vk_frame_begin(const float clear[4]) {
     // until the app went to the background (the surface's loss ends the wait) - TOTK froze until another window came
     // in front and back (2026-10-25). Then the swapchain is made again, as that trip does; still none: no frame now.
     const uint64_t acquire_ns = 1000000000ull;
+#ifdef __ANDROID__
+    WdMark wd_mark = vk_wd_enter(WD_R_ACQUIRE, 0);  // (freeze watchdog)
+#endif
     VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+#ifdef __ANDROID__
+    vk_wd_leave(wd_mark);
+#endif
     if (r == VK_TIMEOUT || r == VK_NOT_READY) {
         static int nstuck;
         if (nstuck++ < 20) LOG("[vk] no window image within 1 s (%d): the swapchain made again\n", r);
@@ -1269,7 +1311,13 @@ bool vk_frame_begin(const float clear[4]) {
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain();
         if (!g_vk.swapchain) return false;
+#ifdef __ANDROID__
+        wd_mark = vk_wd_enter(WD_R_ACQUIRE, 1);
+#endif
         r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, acquire_ns, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+#ifdef __ANDROID__
+        vk_wd_leave(wd_mark);
+#endif
         if (r == VK_TIMEOUT || r == VK_NOT_READY) { LOG("[vk] still no window image: frame skipped\n"); return false; }
     }
 #ifdef __ANDROID__
@@ -1367,6 +1415,7 @@ static void vsync_update(uint64_t queued) {
     VkPastPresentationTimingGOOGLE past[8];
     uint32_t n = 8;
     if (vkGetPastPresentationTimingGOOGLE(g_vk.dev, g_vk.swapchain, &n, past) < 0) n = 0;  // (INCOMPLETE: the newest 8)
+    if (g_benchmark) for (uint32_t i = 0; i < n; i++) bench_present_actual(past[i].presentID, past[i].actualPresentTime);
     uint64_t a = 0;
     for (uint32_t i = 0; i < n; i++) if (past[i].actualPresentTime > a) a = past[i].actualPresentTime;
     if (a <= vs_anchor) return;
@@ -1439,8 +1488,13 @@ void vk_frame_end(const char *shot_path) {
     }
     uint64_t queued = plat_now_ns();
 #endif
+#ifdef __ANDROID__
+    WdMark wd_mark = vk_wd_enter(WD_R_QUEUE_PRESENT, present_id);  // (freeze watchdog)
+#endif
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
 #ifdef __ANDROID__
+    vk_wd_leave(wd_mark);
+    if (g_benchmark && display_timing && r >= 0) bench_present_queue(when.presentID, present_asked);
     if (display_timing && r >= 0) vsync_update(queued);
     if (trace_start) vk_timing_trace_wait(VK_TIMING_PRESENT, SDL_GetTicksNS() - trace_start);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();  // (SUBOPTIMAL: every frame of an unrotated swapchain)
@@ -1502,6 +1556,11 @@ uint64_t renderer_present_count(void) {
 uint64_t renderer_present_count(void) { return total_frames; }
 #endif
 uint64_t vk_frame_counter(void) { return g_frame_counter; }
+#ifdef __ANDROID__
+// For the freeze watchdog (watchdog.c): the render thread's and the game's counts of presents, plain reads
+uint64_t vk_wd_frames_done(void) { return __atomic_load_n(&total_frames, __ATOMIC_RELAXED); }
+uint64_t vk_wd_frames_asked(void) { return __atomic_load_n(&g_game_frames, __ATOMIC_RELAXED); }
+#endif
 static float g_shot_crop[4] = {0, 0, 1, 1};
 static double last_fps_time;
 static NvnTexture *g_last_presented;
@@ -1533,7 +1592,9 @@ static void present_game_half(void) {
 void vk_present_now(NvnTexture *t, uint64_t asked);
 void backend_present(NvnTexture *t) {
     if (!vk_async_on()) {
-        vk_present_now(t, plat_now_ns());
+        uint64_t asked = plat_now_ns();
+        if (g_benchmark) bench_handoff(asked);
+        vk_present_now(t, asked);
         return;
     }
     g_game_frames++;
@@ -1991,11 +2052,25 @@ const char *vk_driver_env_at_start(void) { return g_driver_env_at_start; }
 const char *vk_gpu_name(void) { return g_vk.props.deviceName; }
 #endif
 
+#ifdef __ANDROID__
+// The app to the background and back (SDL sends these from its event pump on this thread, as the activity pauses and
+// resumes, before it blocks: a watch sees them even then): the game stops at its next present meanwhile
+// (nvn/objects.c nvn_background)
+void nvn_background(bool on);
+static bool SDLCALL background_watch(void *user, SDL_Event *e) {
+    (void)user;
+    if (e->type == SDL_EVENT_DID_ENTER_BACKGROUND) nvn_background(true);
+    else if (e->type == SDL_EVENT_WILL_ENTER_FOREGROUND) nvn_background(false);
+    return true;
+}
+#endif
+
 void ui_window_init(void) {
     if (window) return;
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
 #ifdef __ANDROID__
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");  // (the back button opens the menu: ui/touch_controls.mm)
+    SDL_AddEventWatch(background_watch, NULL);
 #endif
     settings_load();
 #ifdef __ANDROID__
@@ -2116,6 +2191,9 @@ void ui_window_init(void) {
     create_swapchain();
     vk_exec_init();
     vk_shaders_init();
+#ifdef __ANDROID__
+    vk_watchdog_start();  // (watchdog.c: says where the game stops, if it does - issue #401)
+#endif
     atexit(quick_exit_handler);
 }
 

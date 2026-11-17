@@ -4,9 +4,11 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "../benchmark_perf.h"
 #include "../mods.h"
 #include "../hle.h"
 #include "../ipc.h"
@@ -536,8 +538,10 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         plat_write_prepare(b->addr, size);  // (pread into pages write tracking made read-only: EFAULT)
+        uint64_t bench_read_t = bench_clock();
         ssize_t n = st->plain ? pread(st->fd, (uint8_t *)(uintptr_t)b->addr, size, (off_t)off)
                               : romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
+        bench_io_done(BP_FILE_NS, BP_FILE_BYTES, bench_read_t, n > 0 ? (uint64_t)n : 0);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         if (st->plain || R->dlc) break;
         {
@@ -604,7 +608,7 @@ static Service *open_romfs_storage(void) {
 // (LARECOMP_AOC_IMAGE=<path> for tests). The game mounts it as aoc: (nn::fs::MountAddOnContent ->
 // OpenDataStorageByDataId) once aoc:u lists both packs (services/misc.c).
 #define AOC_DATA_ID 0x01007EF00011F001ull
-const char *fs_aoc_image(void) {
+static const char *aoc_path(void) {
     static char path[1100];
     const char *e = getenv("LARECOMP_AOC_IMAGE");
     char root[1024];
@@ -612,7 +616,41 @@ const char *fs_aoc_image(void) {
     else if (rt_version_root(100, root, sizeof root)) snprintf(path, sizeof path, "%s/dlc/aoc.bin", root);
     else return NULL;
     struct stat sb;
-    return !stat(path, &sb) && sb.st_size > 0 ? path : NULL;
+    return !stat(path, &sb) ? path : NULL;
+}
+
+// The DLC's image checked as the main romfs.bin is (its header against its size): a copy that stopped early kept its
+// header, and listing the DLC's packs anyway had the game's SDK abort 1 s after OpenDataStorageByDataId failed (#472,
+// aoc.bin with 0.00 of its 1.39 GB). Remembered per size and time, as the launcher asks every frame.
+static bool aoc_state(const char **path, char *why, size_t why_size) {
+    static char seen[1100], reason[128];
+    static off_t seen_size = -1;
+    static time_t seen_time;
+    static bool ok;
+    const char *p = aoc_path();
+    struct stat sb;
+    if (!p || stat(p, &sb)) return false;
+    if (strcmp(seen, p) || seen_size != sb.st_size || seen_time != sb.st_mtime) {
+        snprintf(seen, sizeof seen, "%s", p);
+        seen_size = sb.st_size, seen_time = sb.st_mtime;
+        reason[0] = 0;
+        ok = romfs_image_ok(p, reason, sizeof reason);
+        if (!ok) LOG("[fs] the DLC's data (%s) is incomplete or damaged: %s\n", p, reason);
+    }
+    *path = p;
+    if (why && why_size) snprintf(why, why_size, "%s", reason);
+    return ok;
+}
+
+const char *fs_aoc_image(void) {  // NULL when not set up, or damaged (fs_aoc_damaged)
+    const char *p;
+    return aoc_state(&p, NULL, 0) ? p : NULL;
+}
+
+// A DLC file there that can't be used: why (for the launcher, which says so and offers Install/Remove).
+bool fs_aoc_damaged(char *why, size_t why_size) {
+    const char *p;
+    return aoc_path() && !aoc_state(&p, why, why_size);
 }
 
 static Service *open_aoc_storage(void) {
@@ -642,8 +680,18 @@ static Service *open_aoc_storage(void) {
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
-typedef struct { char root[1024]; } HostFs;
-typedef struct { int fd; char path[1100]; } HostFile;
+typedef struct { char root[1024]; bool save; } HostFs;  // save: a save data's (not the SD card's)
+typedef struct { int fd; char path[1100]; bool save; } HostFile;
+
+// A save being written: the game's changes to a save since its last Commit (0: none). The app in the background holds
+// the game at its next present only once that save is committed (nvn/objects.c nvn_background), so Android killing
+// the app in the background doesn't cut a save in half. A save not committed within 20 s doesn't hold it up longer.
+static uint64_t save_dirty_ns;  // (__atomic_*)
+static void save_dirty(bool save) { if (save) __atomic_store_n(&save_dirty_ns, plat_now_ns() | 1, __ATOMIC_RELAXED); }
+bool fs_save_pending(void) {
+    uint64_t t = __atomic_load_n(&save_dirty_ns, __ATOMIC_RELAXED);
+    return t && plat_now_ns() - t < 20000000000ull;
+}
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 
 static const char *in_path(IpcReq *req, int i) {
@@ -671,7 +719,9 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *b = out_buf(req, 0);
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
         plat_write_prepare(b->addr, size);
+        uint64_t bench_read_t = bench_clock();
         ssize_t n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
+        bench_io_done(BP_FILE_NS, BP_FILE_BYTES, bench_read_t, n > 0 ? (uint64_t)n : 0);
         if (strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
         }
@@ -684,11 +734,12 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *a = in_buf(req, 0);
         if (strstr(f->path, "savedata"))
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
+        save_dirty(f->save);
         if (pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off) < 0) resp->result = errno_result();
         break;
     }
     case 2: fsync(f->fd); break;
-    case 3: if (ftruncate(f->fd, IN(int64_t, 0))) resp->result = errno_result(); break;
+    case 3: save_dirty(f->save); if (ftruncate(f->fd, IN(int64_t, 0))) resp->result = errno_result(); break;
     case 4: {
         struct stat sb;
         fstat(f->fd, &sb);
@@ -768,6 +819,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     HostFs *fs = s->state;
     char p[2048], p2[2048];
     host_path(fs, in_path(req, 0), p, sizeof p);
+    if (req->cmd <= 6 || req->cmd == 13) save_dirty(fs->save);  // (create, delete, rename, clean: the save changes)
     switch (req->cmd) {
     case 0: {  // CreateFile(option, size)
         int fd = open(p, O_CREAT | O_EXCL | O_RDWR, 0644);
@@ -797,6 +849,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         if (fd < 0) { resp->result = errno_result(); break; }
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
+        f->save = fs->save;
         strlcpy(f->path, p, sizeof f->path);
         ipc_return_object(resp, service_new("IFile", file, f));
         break;
@@ -811,7 +864,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         ipc_return_object(resp, service_new("IDirectory", directory, hd));
         break;
     }
-    case 10: break;  // Commit
+    case 10: if (fs->save) __atomic_store_n(&save_dirty_ns, 0, __ATOMIC_RELAXED); break;  // Commit
     case 11: case 12: OUT(int64_t, 0) = 0x40000000; resp_size(resp, 8); break;
     case 13: rm_rf(p, true); break;
     case 14: memset(resp->data, 0, 0x20); resp_size(resp, 0x20); break;
@@ -895,6 +948,7 @@ static Service *open_host_fs(const char *sub) {
     HostFs *fs = calloc(1, sizeof *fs);
     if (getenv("LARECOMP_SAVE_DIR")) g_save_dir = getenv("LARECOMP_SAVE_DIR");  // test runs use a scratch copy
     snprintf(fs->root, sizeof fs->root, "%s/%s", g_save_dir, sub);
+    fs->save = strcmp(sub, "sdcard") != 0;
     {   // LARECOMP_SAVE_SEED=<save folder>: a save that doesn't exist yet starts as a copy of that one's (another game
         // version's data root starting from the player's saves - android/run_v160.sh)
         const char *seed = getenv("LARECOMP_SAVE_SEED");

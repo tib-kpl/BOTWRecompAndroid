@@ -58,6 +58,7 @@ Settings g_settings = {
     .lsfg_mult = 2,
     .lsfg_flow = 75,
     .gpu_heap = -1,
+    .low_ram = -1,
     .inplace_reads = -1,
     .turnip_lrz = -1,
     .event_fps_unlock = false,  // (some events count frames: hle/framepace.c in_event)
@@ -71,6 +72,7 @@ Settings g_settings = {
 #ifdef __ANDROID__
     .upscaler = UPSCALE_SGSR1,  // (one pass: ~1 ms on the Adreno 830 to 2560x1440, FSR 1's two ~2.7 ms; 40 fps against 38)
     .native_code = false,       // (an experiment: runtime/native.c)
+    .pipe_prewarm = false,      // (an experiment: vulkan/pipeline_prewarm.inc)
     .sync_lag = true,           // (a few more fps; the CPU's reads of GPU results a frame old: nvn/objects.c nvnSyncWait)
     .out_lines = OUT_AUTO,      // (POCO F7 Ultra, 3200x1440, 1.8.2's Great Plateau: GPU 22.8 ms a frame at the screen's,
                                 // 18.6 at 1080 lines with a larger scene - the final image's passes over 2.2x the pixels)
@@ -244,7 +246,9 @@ void settings_reset_defaults(void) {
     g_settings.thermal_cap = d->thermal_cap;
     g_settings.shader_int32 = d->shader_int32;
     g_settings.sync_lag = d->sync_lag;
+    g_settings.low_ram = d->low_ram;
     g_settings.native_code = d->native_code;
+    g_settings.pipe_prewarm = d->pipe_prewarm;
     g_settings.files_in_place = d->files_in_place;
 #endif
 }
@@ -298,8 +302,10 @@ void settings_load(void) {
         else if (!strcmp(key, "shader_int32")) g_settings.shader_int32 = atoi(val) != 0;
         else if (!strcmp(key, "sync_lag")) g_settings.sync_lag = atoi(val) != 0;
         else if (!strcmp(key, "native_code")) g_settings.native_code = atoi(val) != 0;
+        else if (!strcmp(key, "pipe_prewarm")) g_settings.pipe_prewarm = atoi(val) != 0;
         else if (!strcmp(key, "files_in_place")) g_settings.files_in_place = atoi(val) != 0;
         else if (!strcmp(key, "gpu_heap")) g_settings.gpu_heap = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
+        else if (!strcmp(key, "low_ram")) g_settings.low_ram = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "inplace_reads")) g_settings.inplace_reads = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "turnip_lrz")) g_settings.turnip_lrz = !strcmp(val, "auto") ? -1 : atoi(val) != 0;
         else if (!strcmp(key, "log_file")) g_settings.log_file = atoi(val) != 0;
@@ -414,11 +420,13 @@ void settings_save(void) {
     fprintf(f, "cutscenes_60 = %d\n", g_settings.event_fps_unlock);
     fprintf(f, "shader_int32 = %d\nsync_lag = %d\nnative_code = %d\nfiles_in_place = %d\n", g_settings.shader_int32,
             g_settings.sync_lag, g_settings.native_code, g_settings.files_in_place);
+    fprintf(f, "pipe_prewarm = %d\n", g_settings.pipe_prewarm ? 1 : 0);
     static const char *const tri[] = {"auto", "0", "1"};  // (-1 / 0 / 1)
 #define TRI(v) tri[(v) < 0 ? 0 : (v) ? 2 : 1]
     fprintf(f, "gpu_heap = %s\ninplace_reads = %s\nturnip_lrz = %s\nlog_file = %d\ngpu_model = %s\n", TRI(g_settings.gpu_heap),
             TRI(g_settings.inplace_reads), TRI(g_settings.turnip_lrz), g_settings.log_file, g_settings.gpu_model);
     fprintf(f, "driver_env = %s\nheap_file = %d\n", g_settings.driver_env, g_settings.heap_file);
+    fprintf(f, "low_ram = %s\n", TRI(g_settings.low_ram));
 #undef TRI
     fprintf(f, "touch_drag_camera = %d\ntouch_drag_sens = %.2f\ntouch_sticks_hidden = %d\ntouch_half_areas = %d\n",
             g_settings.touch_drag_camera, g_settings.touch_drag_sens, g_settings.touch_sticks_hidden,

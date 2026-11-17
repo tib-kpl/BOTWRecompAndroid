@@ -541,6 +541,39 @@ static void android_call(const char *method) {  // a static method of the activi
     env->DeleteLocalRef(act);
 }
 
+// The app closed and opened again, the settings saved first (the menu's options read once as it starts: menu.mm)
+void launcher_restart_app(void) {
+    settings_save();
+    android_call("restartApp");
+}
+
+// Video > Frame generation > Import Lossless.dll: the system's file picker, a copy into the app's files
+// (BOTWRecompAndroidActivity importLsfgDll), then nativeLsfgImported - the result for the menu
+extern "C" void vk_fg_dll_imported(void);  // (vulkan/lsfg/lsfg_present.c)
+static std::string g_lsfg_msg;  // (g_lock)
+void launcher_pick_lsfg_dll(void) { android_call("pickLsfgDll"); }
+std::string launcher_lsfg_import_msg(void) {
+    pthread_mutex_lock(&g_lock);
+    std::string m = g_lsfg_msg;
+    pthread_mutex_unlock(&g_lock);
+    return m;
+}
+extern "C" JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nativeLsfgImported(JNIEnv *env, jclass,
+                                                                                                        jint result, jstring detail) {
+    const char *t = env->GetStringUTFChars(detail, NULL);
+    std::string d = t ? t : "";
+    if (t) env->ReleaseStringUTFChars(detail, t);
+    char msg[700];
+    if (result == 0) snprintf(msg, sizeof msg, tr("Lossless.dll imported: %s"), d.c_str());
+    else if (result == 1) msg[0] = 0;
+    else snprintf(msg, sizeof msg, tr("That didn't work: %s"), d.c_str());
+    fprintf(stderr, "[lsfg] import: %s\n", result == 0 ? d.c_str() : result == 1 ? "cancelled" : msg);
+    if (result == 0) vk_fg_dll_imported();
+    pthread_mutex_lock(&g_lock);
+    g_lsfg_msg = msg;
+    pthread_mutex_unlock(&g_lock);
+}
+
 static void android_call_int(const char *method, int v) {  // (one int argument)
     JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
     jobject act = (jobject)SDL_GetAndroidActivity();
@@ -855,7 +888,8 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_botwrecompandroid_BOTWRecompAndroi
 // The DLC (Settings > DLC; BOTWRecompAndroidActivity importDlc): its image built as romfs.bin is, at
 // <1.0.0's data root>/dlc/aoc.bin (services/fs.c fs_aoc_image), the movies loose in dlc/romfs (hle/movie.c)
 static std::string g_dlc_msg;  // (g_lock) the last install's result
-extern "C" const char *fs_aoc_image(void);  // (runtime/services/fs.c: the DLC image, NULL when not set up)
+extern "C" const char *fs_aoc_image(void);  // (runtime/services/fs.c: the DLC image, NULL when not set up or damaged)
+extern "C" bool fs_aoc_damaged(char *why, size_t why_size);  // (a DLC file there that can't be used)
 static bool g_dlc_failed, g_dlc_busy;
 static std::atomic<float> g_dlc_frac{-1};
 static std::string dlc_dir(void) {
@@ -1551,7 +1585,7 @@ static void launcher_pad_open_all(void) {
     ImGui::GetIO().ClearInputKeys();
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
-    for (int i = 0; ids && i < n; i++) SDL_OpenGamepad(ids[i]);
+    for (int i = 0; ids && i < n; i++) if (input_pad_usable(ids[i])) SDL_OpenGamepad(ids[i]);
     SDL_free(ids);
 }
 
@@ -1560,6 +1594,7 @@ static bool launcher_pad_event(const SDL_Event &e) {
     ImGuiIO &io = ImGui::GetIO();
     switch (e.type) {
     case SDL_EVENT_GAMEPAD_ADDED:
+        if (!input_pad_usable(e.gdevice.which)) return true;  // (a fingerprint sensor, #477)
         SDL_OpenGamepad(e.gdevice.which);
         io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         return true;
@@ -1942,6 +1977,8 @@ static void prelaunch_tab(float sc) {
         bool failed = g_dlc_failed, dbusy = g_dlc_busy;
         pthread_mutex_unlock(&g_lock);
         bool have = fs_aoc_image() != NULL;
+        char damaged_why[128];
+        bool damaged = fs_aoc_damaged(damaged_why, sizeof damaged_why);  // (the game then runs without the DLC)
         ImGui::PushTextWrapPos(0);
         ImGui::TextDisabled("%s", tr("The Expansion Pass - The Master Trials and The Champions' Ballad - for game versions "
                                      "1.6.0, 1.8.2 and 1.9.0. Choose the folder with your own DLC's extracted romfs: the "
@@ -1949,6 +1986,11 @@ static void prelaunch_tab(float sc) {
                                      "one is only the Ballad's unlock and isn't needed. The DLC isn't included with "
                                      "BOTWRecompAndroid."));
         ImGui::Text("%s", tr(have ? "Installed." : "Not installed."));
+        if (damaged) {
+            ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", tr("The DLC's file is damaged or incomplete. The game runs "
+                                                                  "without it: reinstall it with Install DLC, or Remove DLC."));
+            ImGui::TextDisabled("%s", damaged_why);
+        }
         float f = g_dlc_frac;
         if (dbusy && f >= 0) ImGui::Text(tr("Installing the DLC... %d%%"), (int)(f * 100));
         if (dbusy || g_busy) ImGui::BeginDisabled();
@@ -1958,7 +2000,7 @@ static void prelaunch_tab(float sc) {
             pthread_mutex_unlock(&g_lock);
             android_call("pickDlcFolder");  // (then importDlc -> nativeBuildDlc -> nativeDlcDone)
         }
-        if (have) {
+        if (have || damaged) {
             ImGui::SameLine();
             if (ImGui::Button(tr("Remove DLC"))) {
                 remove_tree(dlc_dir());
@@ -2207,7 +2249,7 @@ extern "C" void launcher_run(const char *root) {
             // the backend (manual mode, no gamepads of its own) clears HasGamepad every frame, and ImGui then drops the
             // controller presses launcher_pad_event fed in and turns gamepad navigation off: set it again while a
             // controller is connected
-            if (SDL_HasGamepad()) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+            if (input_pad_present()) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
             ImGui::NewFrame();
 
             ImVec2 ds = io.DisplaySize;
