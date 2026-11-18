@@ -34,6 +34,8 @@ typedef struct {
                          // screens, Android's default) - nvn/output_scale.c
     int antialias;       // AA_*: anti-aliasing of the game image before it is scaled to the window
     bool temporal_aa;    // Vulkan: optional conservative temporal stabilization (no engine motion vectors)
+    bool shadows;        // the game's shadows drawn (off: their draws skipped - a flatter picture, a little less GPU
+                         // work; vulkan/exec.c)
     float volume;        // master volume, 1 = 100%
     bool reverb;         // room reverb effect
     bool movie_audio;

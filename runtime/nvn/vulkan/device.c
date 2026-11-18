@@ -17,6 +17,7 @@
 #include "../../settings.h"
 #include "../../ui/menu.h"
 #include "vk.h"
+#include "dyn_vi.h"
 #include "timing_trace.h"
 #include "device_compat.h"
 #include "turnip_policy.h"
@@ -472,6 +473,7 @@ void vk_device_fault_probe(void) {
 // GPU) gives the vsync period and when earlier frames reached the screen; the pacer keeps each frame queued half a
 // vsync before one (backend_vsync_offset). LARECOMP_PACE_VSYNC=0: off, the extension not even enabled.
 static bool display_timing;
+static bool g_driver_props;
 #endif
 
 static void create_device(void) {
@@ -491,6 +493,8 @@ static void create_device(void) {
     VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executable_have = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vids_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 optional = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
 #define QUERY_OPTIONAL(name, feature) do { if (has_ext(ep, ne, name)) { \
         feature.pNext = optional.pNext; optional.pNext = &feature; } } while (0)
@@ -499,10 +503,11 @@ static void create_device(void) {
     QUERY_OPTIONAL(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, fault_have);
     QUERY_OPTIONAL(VK_KHR_MAINTENANCE_5_EXTENSION_NAME, maintenance5_have);
     QUERY_OPTIONAL(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, executable_have);
+    QUERY_OPTIONAL(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME, vids_have);
 #undef QUERY_OPTIONAL
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &optional);
 #endif
-    const char *ext[32];
+    const char *ext[48];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 #ifdef __ANDROID__
@@ -520,6 +525,7 @@ static void create_device(void) {
         if (g_vk.api < COMPAT_EXT[i].below && cg[COMPAT_EXT[i].optional]) ext[n_ext++] = COMPAT_EXT[i].name;
     // (VkPhysicalDeviceDriverProperties: core from 1.2, before that its own extension, only queried)
     bool driver_props = g_vk.api >= VK_API_VERSION_1_2 || has_ext(ep, ne, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
+    g_driver_props = driver_props;
 #endif
     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
 #ifdef __ANDROID__
@@ -614,6 +620,7 @@ static void create_device(void) {
     if (display_timing) ext[n_ext++] = VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME;
     // (frame generation, lsfg/: its shaders read unbound slots - null descriptors)
     bool robustness2 = has_ext(ep, ne, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME) && !env_on("LARECOMP_NO_ROBUSTNESS2");
+    bool have_dyn_vi = has_ext(ep, ne, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
 #endif
     free(ep);
 
@@ -883,6 +890,30 @@ static void create_device(void) {
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pex = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR, .pipelineExecutableInfo = VK_TRUE};
     if (g_vk.exec_stats) { pex.pNext = f.pNext; f.pNext = &pex; }
+    // Move vertex attribute/binding layout from PipeKey to vkCmdSetVertexInputEXT to cut permutation churn.
+    // Enabled by default on Turnip and ARM proprietary Mali r49+ (LARECOMP_DYN_VI=1/0 overrides, LARECOMP_NO_DYN_VI=1: off).
+    const char *dvi = getenv("LARECOMP_DYN_VI");
+    bool no_dvi = env_on("LARECOMP_NO_DYN_VI");
+    bool want_dvi = vk_dyn_vi_want((uint32_t)driver.driverID, driver.driverInfo, driver_props, dvi, no_dvi);
+    g_vk.dyn_vi = want_dvi && g_vk.eds && have_dyn_vi && vids_have.vertexInputDynamicState &&
+                  g_vk.props.limits.maxVertexInputBindings > 16;  // ZERO_BINDING = 16
+    const char *dvi_why = no_dvi ? "LARECOMP_NO_DYN_VI"
+        : (dvi && *dvi && !want_dvi) ? "LARECOMP_DYN_VI=0"
+        : !want_dvi ? (driver_props ? "driver excluded by default" : "no driver properties")
+        : !g_vk.eds ? "no extendedDynamicState"
+        : !have_dyn_vi ? "missing extension"
+        : !vids_have.vertexInputDynamicState ? "feature disabled"
+        : g_vk.props.limits.maxVertexInputBindings <= 16 ? "maxVertexInputBindings <= 16"
+        : (dvi && *dvi) ? "LARECOMP_DYN_VI" : "driver default";
+    LOG("[vk-cap] dynamic vertex input: %s (%s)\n", g_vk.dyn_vi ? "on" : "off", dvi_why);
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vids = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT,
+        .vertexInputDynamicState = VK_TRUE};
+    if (g_vk.dyn_vi) {
+        ext[n_ext++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+        vids.pNext = f.pNext;
+        f.pNext = &vids;
+    }
 #endif
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
@@ -893,6 +924,10 @@ static void create_device(void) {
 #ifdef __ANDROID__
     volkLoadDevice(g_vk.dev);
     compat_aliases();
+    if (g_vk.dyn_vi && !vkCmdSetVertexInputEXT) {
+        g_vk.dyn_vi = false;
+        LOG("[vk-cap] dynamic vertex input disabled: vkCmdSetVertexInputEXT missing from driver\n");
+    }
     LOG("[vk] Vulkan %u.%u device, %u extensions\n", VK_API_VERSION_MAJOR(g_vk.api), VK_API_VERSION_MINOR(g_vk.api), n_ext);
 #endif
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
@@ -1154,6 +1189,8 @@ static void android_create_surface(struct ANativeWindow *aw) {
 // Frame rate 40 / 45 (#207, #216): between 30 and 60, at a rate the screen shows evenly - 40 fps is three vsyncs at
 // 120 Hz, 45 two at 90 Hz; at 60 Hz neither is (25 / 16.7 ms frames), so 30 there. The POCO F7 Ultra's system kept
 // its 120 Hz when asked for 45 fps content (2026-11-03): the screen's own rate decides, read once a second.
+static int between_for(float hz) { return hz > 110 ? 40 : hz > 80 ? 45 : hz > 50 ? 30 : 45; }
+
 int vk_between_fps(void) {
     static int fps = 45;
     static uint64_t next;
@@ -1162,11 +1199,26 @@ int vk_between_fps(void) {
         next = now + 1000000000ull;
         const SDL_DisplayMode *m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
         float hz = m ? m->refresh_rate : 0;
-        int f = hz > 110 ? 40 : hz > 80 ? 45 : hz > 50 ? 30 : 45;
+        int f = between_for(hz);
         if (f != fps) LOG("[vk] Frame rate 40 / 45: %d fps on a %.0f Hz screen\n", f, hz);
         fps = f;
     }
     return fps;
+}
+
+// ... and the one the window asks for (android_frame_rate): from the fastest rate the screen offers, not the current
+// one - HyperOS keeps a game at 60 Hz on a 120 Hz screen until it asks for more, so from the current rate 40 / 45 fell
+// to 30 and never asked (POCO F7 Pro, 2026-11-15). The frame rate itself still follows the screen's rate
+// (vk_between_fps): 30 until the system switches, and on a system that won't.
+static int vk_between_target(void) {
+    static int fps;
+    if (!fps) {
+        extern float plat_max_refresh_hz(void);
+        float hz = plat_max_refresh_hz();
+        fps = hz > 0 ? between_for(hz) : -1;
+        LOG("[vk] Frame rate 40 / 45: the screen offers up to %.0f Hz\n", hz);
+    }
+    return fps > 0 ? fps : vk_between_fps();
 }
 
 // (hle/benchmark.c) the screen's refresh rate now
@@ -1181,7 +1233,7 @@ double vk_display_hz(void) {
 static void android_frame_rate(struct ANativeWindow *aw) {
     static struct ANativeWindow *asked_aw;
     static float asked = -1;
-    float want = fps_mode_now() == 4 && vk_between_fps() != 30 ? (float)vk_between_fps() : 0.0f;
+    float want = fps_mode_now() == 4 && vk_between_target() != 30 ? (float)vk_between_target() : 0.0f;
     bool fg = false;
     {   // Frame generation on: room on the screen for the frames it makes - the chosen frame rate times its multiplier
         // (60 fps x 2: 120 Hz). Android leaves a game at 60 Hz unless asked, and then a 40-50 fps game left no refresh
@@ -2029,6 +2081,7 @@ static void quick_exit_handler(void) {
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
     if (g_vk.dev) {
+        vk_shader_build_report("exit");
 #ifndef __ANDROID__
         if (trace) LOG("[vk] exit: waiting for the GPU\n");
         vkDeviceWaitIdle(g_vk.dev);
@@ -2261,6 +2314,27 @@ bool vk_driver_is_radv(void) {
         r = d.driverID == VK_DRIVER_ID_MESA_RADV;
     }
     return r > 0;
+}
+
+// ARM Mali proprietary driver (or vendor 0x13B5 when driverID is unset, e.g. Vulkan 1.1).
+bool vk_driver_is_mali(void) {
+    static _Atomic int m = -1;
+    int cur = atomic_load_explicit(&m, memory_order_relaxed);
+    if (cur < 0 && g_vk.phys) {
+        VkPhysicalDeviceDriverProperties d = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        if (g_driver_props) {
+            VkPhysicalDeviceProperties2 p = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &d};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &p);
+        }
+        cur = (d.driverID == VK_DRIVER_ID_ARM_PROPRIETARY || (!d.driverID && g_vk.props.vendorID == 0x13B5)) ? 1 : 0;
+        atomic_store_explicit(&m, cur, memory_order_relaxed);
+    }
+    return cur >= 0 ? cur > 0 : g_vk.props.vendorID == 0x13B5;
+}
+
+bool vk_slot_async_default(void) {
+    extern bool vk_low_ram(void);
+    return vk_low_ram() || vk_driver_is_mali();
 }
 #endif
 
