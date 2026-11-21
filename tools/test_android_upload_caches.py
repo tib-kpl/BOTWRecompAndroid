@@ -102,6 +102,7 @@ static uint64_t ga_ring(uint64_t n) {
     uint64_t off = top; top += n; return off;
 }
 typedef struct { uint8_t *ptr; } VkSpan;
+static void cbwin_cache_drop(void) {}
 static uint8_t snapshots[1 << 18];
 static unsigned snapshot_used, snapshot_copies;
 static uint64_t stat_cb_copied, stat_cb_hits, stat_cb_misses, stat_cb_collisions;
