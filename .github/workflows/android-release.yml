@@ -179,5 +179,5 @@ jobs:
           else
             gh release create "$tag" dist/* --target "$GITHUB_SHA" \
               --title "BOTWRecompAndroid — build ${GITHUB_RUN_NUMBER}" \
-              --notes-file notes.md --prerelease --latest=false
+              --notes-file notes.md --latest
           fi
