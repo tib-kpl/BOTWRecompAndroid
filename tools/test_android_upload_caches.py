@@ -41,6 +41,12 @@ typedef _Bool bool;
 #define MAX_BIND 96
 #define GMAP_BUFFER_INDEX 20
 #define CBPATCH_BUFFER_INDEX 23
+// cbwin retire seqlock (exec.c) uses C11 atomics; the sliced copy helpers carry no headers.
+#define memory_order_seq_cst __ATOMIC_SEQ_CST
+#define atomic_fetch_add_explicit(p, v, o) __atomic_fetch_add((p), (v), (o))
+#define atomic_fetch_sub_explicit(p, v, o) __atomic_fetch_sub((p), (v), (o))
+#define atomic_load_explicit(p, o) __atomic_load_n((p), (o))
+#define atomic_thread_fence(o) __atomic_thread_fence(o)
 typedef enum {
     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
     VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
