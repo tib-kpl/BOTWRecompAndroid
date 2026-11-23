@@ -2109,6 +2109,47 @@ static void quick_exit_handler(void) {
 }
 
 #ifdef __ANDROID__
+// Driver compatibility's Automatic (settings.h gpu_heap / inplace_reads / turnip_lrz, from LASRecompAndroid): the
+// fastest paths on the Adreno 8xx GPUs they were made on, the compatible ones elsewhere (an Adreno 750 drew LAS's text
+// and colors wrong with them). name: Vulkan's "Adreno (TM) 830v1" or the kernel's "Adreno830v2".
+bool vk_adreno_8xx(const char *name) {
+    const char *a = name ? strstr(name, "Adreno") : NULL;
+    if (!a) return false;
+    while (*a && (*a < '0' || *a > '9')) a++;
+    int n = atoi(a);
+    return n >= 800 && n < 900;
+}
+// A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU
+bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_adreno_8xx(g_vk.props.deviceName) : setting != 0; }
+// gpu_heap's: Automatic is on wherever Turnip can place the heap. Off on a Turnip Adreno 7xx (an Adreno 732, which
+// Turnip names "Adreno (TM) 735": PR #103), the game's text glyphs (a buffer ~2.7 GB into the 3 GB heap, past Turnip's
+// 128 MB storage range) read as zeros - every menu, dialogue and item name blank. Only the heap: 0.2.5 widened
+// vk_turnip_path_on itself, and with it the in-place target reads it also gates, checked on the Adreno 830 only - the
+// likely cause of the terrain striped on an Adreno 750 (issue #129: BOTW's terrain decals read the targets they write).
+// Automatic on an Adreno 6xx: only with more than 8 GB of RAM. The placed heap (~3.1 GB for BOTW, committed at once)
+// left an 8 GB OnePlus 7 Pro (Adreno 640, 7.3 GB visible, RAM saving on) without device memory for the driver: after
+// 8-28 minutes vkCreateGraphicsPipelines failed with VK_ERROR_OUT_OF_DEVICE_MEMORY and the game crashed soon after;
+// with CPU copies, 2 hours without a crash, text and all, and 13-16 fps instead of 10-14 (#520). Not the 7xx (their
+// text, above, untried with copies since). On stays on by hand.
+static int adreno_number(const char *name) {
+    const char *a = name ? strstr(name, "Adreno") : NULL;
+    if (!a) return 0;
+    while (*a && (*a < '0' || *a > '9')) a++;
+    return atoi(a);
+}
+bool vk_turnip_heap_ram_off(void) {  // (also the start screen's note under the setting)
+    int n = adreno_number(g_vk.props.deviceName);
+    if (n < 600 || n >= 700) return false;
+    extern bool vk_low_ram_auto(long *total_mb);
+    long total_mb = 0;
+    vk_low_ram_auto(&total_mb);
+    return total_mb && total_mb < 9 * 1024;  // (8 GB phones report ~7.3-7.7 GB, 12 GB ones ~11)
+}
+bool vk_turnip_heap_on(int setting) {
+    if (setting >= 0 || vk_adreno_8xx(g_vk.props.deviceName)) return vk_turnip_path_on(setting);
+    if (vk_turnip_heap_ram_off()) return false;
+    return g_vk.map_placed && vk_driver_is_turnip();
+}
 static bool g_lrz_at_start = true;
 bool vk_lrz_at_start(void) { return g_lrz_at_start; }  // (the start screen: a change needs a restart)
 static char g_driver_env_at_start[256];  // (the same for the driver's switches, g_settings.driver_env)

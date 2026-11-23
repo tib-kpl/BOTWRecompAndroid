@@ -42,6 +42,7 @@ typedef struct {
     bool show_fps;
     bool motion;          // the phone's (or a controller's) gyroscope as the controller's motion sensor (hle/motion.c)
     int motion_source;    // whose: 0 automatic (a controller's once its gyroscope is alive), 1 the phone's, 2 a controller's
+    int pad_gyro_axes;    // a controller's gyroscope axis order: 0 as reported, 1 y,x,z, 2 z,y,x, 3 x,z,y (hle/motion.c, #511)
     bool lsfg; int lsfg_mult, lsfg_flow;  // frame generation (vulkan/lsfg): on, frames per game frame 2..4, motion resolution % (0: the game's)
     bool motion_flat;     // the phone's sensors as the Switch's screen in handheld mode, not a flat controller (hle/motion.c)
 #ifdef __ANDROID__
@@ -68,8 +69,8 @@ typedef struct {
     // (turnip_lrz, log_file). -1 Automatic: per-option GPU profiles in vulkan/turnip_policy.h;
     // 1 on, 0 off. Adreno 740 enables target reads only; the upstream 8xx profile stays unchanged.
     int gpu_heap;         // Turnip: the game's memory mapped as GPU memory (vulkan/exec.c vk_heap_place); off: CPU copies
-                          // (Automatic follows vulkan/turnip_policy.h, including the tested Adreno 740 exception)
-    int inplace_reads;    // Turnip: draws sample targets they write as they are (vulkan/exec.c resolve_feedback); off: copies
+                          // (Automatic: vulkan/turnip_policy.h and vulkan/device.c vk_turnip_heap_on, with the tested Adreno 740 exception)
+    int inplace_reads;    // Turnip (Automatic per GPU profile) and Mali (manual On): draws sample targets they write as they are (vulkan/exec.c resolve_feedback); off: copies
     int turnip_lrz;       // Turnip's low-resolution Z; off: TU_DEBUG=nolrz before the driver loads (vulkan/device.c)
     bool log_file;        // the log in a file as well (platform/android.c), to send with a report
     char gpu_model[64];   // the GPU of the last start ("Adreno (TM) 830v1"): turnip_lrz's Automatic, before the driver

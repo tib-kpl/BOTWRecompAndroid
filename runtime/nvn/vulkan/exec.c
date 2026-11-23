@@ -3922,10 +3922,15 @@ typedef struct {
     uint32_t used_s;     // when it was last bound (g_exec_s: no clock read per draw)
     uint64_t seq;        // and that submission (pipe_evict)
     bool evicted;        // its VkPipeline destroyed by pipe_evict: built again at its next use
+    uint32_t retry_s;    // (failed for lack of memory) built again at its first use from then on (g_exec_s), 0: never
 #ifdef __ANDROID__
     bool prewarmed;
 #endif
 } Pipe;
+// A pipeline that failed for lack of memory (build_pipeline): pipe_evict frees the unused ones at once, whatever
+// pipe_keep says. Before, the failure was for good - its draws dropped for the rest of the session: 15 failed with
+// VK_ERROR_OUT_OF_DEVICE_MEMORY and ~25k draws skipped every 2 s until the game crashed a few seconds later (#520).
+static _Atomic int pipe_oom;
 static VkObjectCache pipe_cache;
 static _Atomic size_t pipeline_keys;
 static Pipe *last_pipeline;  // (draw_'s: the previous draw's, reused when nothing changed)
@@ -3951,7 +3956,8 @@ static int pipe_keep(void) {
 static void pipe_evict(void) {
     static uint32_t next;
     int keep = pipe_keep();
-    if (keep <= 0 || g_exec_s < next) return;
+    bool oom = atomic_exchange(&pipe_oom, 0) != 0;  // (out of memory: now, and down to 3/4 of the live ones)
+    if (!oom && (keep <= 0 || g_exec_s < next)) return;
     next = g_exec_s + 10;  // (every 10 s)
     uint64_t evict_start = bench_clock();
     int live = 0;
@@ -3959,9 +3965,9 @@ static void pipe_evict(void) {
         Pipe *p = pipe_cache.entries[i].object;
         if (p && !p->evicted && atomic_load(&p->state) == 1) live++;
     }
-    if (live <= keep) { bench_elapsed(BP_EVICT_NS, evict_start); return; }
+    if (!oom && live <= keep) { bench_elapsed(BP_EVICT_NS, evict_start); return; }
     uint64_t done = vk_completed_seq();
-    int target = keep * 4 / 5, gone = 0;
+    int target = oom ? live * 3 / 4 : keep * 4 / 5, gone = 0;
     // oldest first: two passes, the unused for 2 minutes, then for 30 s
     static const uint32_t ages[2] = {120, 30};  // (s)
     for (int pass = 0; pass < 2 && live > target; pass++) {
@@ -4226,6 +4232,18 @@ static void build_pipeline(void *arg) {
     long long mg0 = vk_mnow();
     VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pp->pipe);
     vk_mgrow_add(MG_GPIPE, mg0);
+    {   // LARECOMP_PIPE_FAIL_OOM=<n>: the n-th to (n+19)-th pipelines built fail once as out of device memory (a test of
+        // the retry, #520; twenty, so some of them are drawn again)
+        static long fail_at = -1;
+        static _Atomic long built;
+        if (fail_at < 0) fail_at = getenv("LARECOMP_PIPE_FAIL_OOM") ? atol(getenv("LARECOMP_PIPE_FAIL_OOM")) : 0;
+        long nth = fail_at > 0 && r == VK_SUCCESS ? atomic_fetch_add(&built, 1) + 1 : 0;
+        if (nth && nth >= fail_at && nth < fail_at + 20) {
+            vkDestroyPipeline(g_vk.dev, pp->pipe, NULL);
+            pp->pipe = VK_NULL_HANDLE;
+            r = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        }
+    }
     if (r != VK_SUCCESS) {
         static int n;
         if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
@@ -4260,10 +4278,16 @@ static void build_pipeline(void *arg) {
 #endif
     atomic_fetch_add(&stat_compiles, 1);
     if (r == VK_SUCCESS) atomic_fetch_add(&live_gpipes, 1);
-    if (r != VK_SUCCESS) {  // (each failing key once: its draws are dropped)
+    if (r != VK_SUCCESS) {  // (each failing key once: its draws are dropped - for lack of memory, until a retry)
         static int n;
-        if (n++ < 20) LOG("[vk] graphics pipeline failed (%d): vs %llx fs %llx\n", (int)r,
-                          (unsigned long long)k->prog->code[0], (unsigned long long)k->prog->code[1]);
+        bool mem = r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY;
+        if (n++ < 20) LOG("[vk] graphics pipeline failed (%d): vs %llx fs %llx%s\n", (int)r,
+                          (unsigned long long)k->prog->code[0], (unsigned long long)k->prog->code[1],
+                          mem ? " - out of memory: unused pipelines freed, built again in 5 s" : "");
+        if (mem) {
+            pp->retry_s = g_exec_s + 5;
+            atomic_store(&pipe_oom, 1);
+        }
     }
     signal_build_done(&pp->state, r == VK_SUCCESS ? 1 : 2);
 }
@@ -4716,13 +4740,28 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
                 // fence every write they then read. Sampling a target the pass writes is a feedback loop Vulkan leaves
                 // undefined (without VK_EXT_attachment_feedback_loop_layout): on Turnip only, where it was checked
                 // frame by frame on the Adreno 830, and checked on the Odin's Adreno 740. Automatic selects a GPU
-                // profile (settings.h inplace_reads, turnip_policy.h); LARECOMP_FEEDBACK_INPLACE=1 on any driver.
+                // profile (settings.h inplace_reads, turnip_policy.h); ARM Mali allows explicit opt-in via
+                // inplace_reads > 0 ("On") or LARECOMP_FEEDBACK_INPLACE=1; LARECOMP_FEEDBACK_COPY=1 forces copies.
                 if (g_inplace_copy < 0) {
+                    const char *fi_raw = getenv("LARECOMP_FEEDBACK_INPLACE");
+                    const char *fi = (fi_raw && *fi_raw) ? fi_raw : NULL;
+                    bool inplace = fi ? atoi(fi) != 0 : false;
+                    bool fb_copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL;
+                    const char *why = fb_copy ? "LARECOMP_FEEDBACK_COPY" : fi ? "LARECOMP_FEEDBACK_INPLACE" : "automatic";
+#ifdef __ANDROID__
                     extern bool vk_driver_is_turnip(void);
-                    bool inplace = getenv("LARECOMP_FEEDBACK_INPLACE") || (vk_driver_is_turnip() && vk_turnip_path_setting(g_vk.props.deviceName, g_settings.inplace_reads, VK_TURNIP_TARGET_READS));
-                    g_inplace_copy = getenv("LARECOMP_FEEDBACK_COPY") != NULL || !inplace;
-                    LOG("[vk] targets a draw writes, sampled by it: %s (%s)\n", g_inplace_copy ? "copies" : "in place",
-                        g_settings.inplace_reads < 0 ? "automatic" : "settings");
+                    extern bool vk_driver_is_mali(void);
+                    extern bool vk_turnip_path_on(int setting);
+                    int ir_set = g_settings.inplace_reads;
+                    if (!fi) {
+                        bool mali_on = vk_driver_is_mali() && ir_set > 0;
+                        inplace = (vk_driver_is_turnip() && vk_turnip_path_setting(g_vk.props.deviceName, ir_set, VK_TURNIP_TARGET_READS)) || mali_on;
+                        if (!fb_copy)
+                            why = ir_set < 0 ? "automatic" : "settings";
+                    }
+#endif
+                    g_inplace_copy = fb_copy || !inplace;
+                    LOG("[vk] targets a draw writes, sampled by it: %s (%s)\n", g_inplace_copy ? "copies" : "in place", why);
                 }
                 extern int vk_ab(const char *what);
                 if (!g_inplace_copy && bit && bit < 1u << 8 && AB("copy") != 1) {
@@ -5706,10 +5745,14 @@ bool vk_heap_place(uint64_t size) {
         LOG("[vk] game memory through a shared file: on in the settings, but this driver can't export its memory (no "
             "VK_KHR_external_memory_fd) - shader global memory through CPU copies\n");
     if ((!g_vk.map_placed && !memfd) || getenv("LARECOMP_VK_NO_PLACED")) return NOT_PLACED();
-    if (memfd ? g_settings.gpu_heap == 0 : !vk_turnip_heap_setting(g_vk.props.deviceName, g_settings.gpu_heap, g_vk.map_placed, vk_driver_is_turnip())) {
-        // The start screen's Automatic heap policy keeps the tested 740 exception.
-        LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
-            g_settings.gpu_heap < 0 ? "automatic GPU profile" : "settings");
+    extern bool vk_turnip_heap_on(int setting);
+    if (memfd ? g_settings.gpu_heap == 0 : !vk_turnip_heap_on(g_settings.gpu_heap)) {
+        // (the start screen's Driver compatibility: Automatic is on wherever Turnip places it - vulkan/device.c)
+        extern bool vk_adreno_8xx(const char *name), vk_driver_is_turnip(void);
+        LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
+            g_settings.gpu_heap >= 0 ? "settings" : !vk_driver_is_turnip() ? "automatic: not Turnip"
+            : vk_adreno_8xx(g_vk.props.deviceName) ? "automatic"
+            : vk_turnip_gpu_model(g_vk.props.deviceName) == 740 ? "automatic: the Adreno 740 profile" : "automatic: an Adreno 6xx with 8 GB of RAM or less, #520");
         return NOT_PLACED();
     }
     {   // The placed heap is committed at once (~3.1 GB for BOTW), where CPU copies commit only the pages the game
@@ -8498,6 +8541,13 @@ static void draw_(CmdRec *r, bool indexed) {
         } else if (pp->evicted) {  // (destroyed by pipe_evict: built again)
             pp->evicted = false;
             bench_add(BP_REBUILDS, 1);
+            schedule_pipeline_build(pp, keep);
+        } else if (pp->retry_s && g_exec_s >= pp->retry_s && atomic_load(&pp->state) == 2) {  // (out of memory before)
+            static int nlog;
+            if (nlog++ < 20) LOG("[vk] graphics pipeline vs %llx fs %llx: built again (out of memory before)\n",
+                                 (unsigned long long)pp->k.prog->code[0], (unsigned long long)pp->k.prog->code[1]);
+            pp->retry_s = 0;
+            atomic_store(&pp->state, 0);
             schedule_pipeline_build(pp, keep);
         }
         // Verification rebuilds the original key to detect missing invalidations during later device tests.
