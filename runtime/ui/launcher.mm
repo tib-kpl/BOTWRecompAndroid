@@ -17,6 +17,8 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -63,6 +65,7 @@ void *ui_metal_device(void);
 bool vk_frame_begin(const float clear[4]);
 void vk_frame_end(const char *shot_path);
 void *vk_frame_cmd(void);
+bool vk_rendering_active(void);
 bool vk_imgui_backend_init(void);
 void vk_imgui_backend_shutdown(void);
 uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h);
@@ -628,8 +631,14 @@ static bool android_copy_document(const std::string &uri, const std::string &dst
 // The log file (Driver compatibility; runtime/platform/android.c): written to a folder the player picks
 // (BOTWRecompAndroidActivity pickLogFolder / openLog), where a file manager can open it - Android/data/ is out of its reach
 extern "C" void android_log_file(bool on);
+extern "C" bool vk_adreno_8xx(const char *name);  // (Driver compatibility's Automatic: runtime/nvn/vulkan/device.c)
+extern "C" bool vk_adreno_7xx(const char *name);  // (the present mode's Automatic, #367)
+extern "C" bool vk_turnip_heap_on(int setting);
 extern "C" bool vk_turnip_heap_ram_off(void);  // (an Adreno 6xx with 8 GB or less: #520)
 extern "C" bool vk_lrz_at_start(void);
+extern "C" bool vk_dyn_render_supported(void);
+extern "C" bool vk_dyn_render_auto(void);
+extern "C" bool vk_dyn_render_at_start(void);
 extern "C" const char *vk_driver_env_at_start(void);
 extern "C" bool vk_heap_file_possible(void);
 extern "C" const char *vk_gpu_name(void);
@@ -1811,7 +1820,7 @@ static void prelaunch_tab(float sc) {
         ImGui::Text(tr("This GPU: %s"), vk_gpu_desc());
         if (!vk_driver_is_turnip())
             ImGui::TextDisabled("%s", tr(vk_driver_is_mali()
-                ? "These options are for Turnip: on Mali only draw-target reads in place apply."
+                ? "These options are for Turnip: on Mali only draw-target reads in place and dynamic rendering apply."
                 : "These options are for Turnip: the driver in use takes the safer paths anyway."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Game memory on the GPU (Turnip)"));
@@ -1831,11 +1840,31 @@ static void prelaunch_tab(float sc) {
         ImGui::Spacing();
         ImGui::Text("%s", tr("Draw-target reads in place"));
         changed |= tri("inplace", &g_settings.inplace_reads, VK_TURNIP_TARGET_READS);
-        ImGui::TextDisabled("%s", tr("On lets decals and effects read the target they draw into. Off uses intermediate copies for compatibility. Applies when the game starts."));
+ImGui::TextDisabled("%s", tr("On: decals and effects read the image they draw on as it is, the fastest way. Off: a copy "
+                                  "of it each time, slower (fewer fps) but by the Vulkan rules. Automatic: on for Adreno 8xx "
+                                  "and Mali GPUs, off for the others. Applies when the game starts."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Turnip low-resolution Z (LRZ)"));
         changed |= tri("lrz", &g_settings.turnip_lrz, VK_TURNIP_LRZ);
         ImGui::TextDisabled("%s", tr("Turnip's early depth test. Off can fix missing or broken drawing on some GPUs. Applies after restarting BOTWRecompAndroid."));
+        ImGui::Spacing();
+        ImGui::Text("%s", tr("Wait for the screen (FIFO)"));  // (settings.h present_fifo, vulkan/device.c present_mode)
+        changed |= tri("fifo", &g_settings.present_fifo, vk_adreno_7xx(vk_gpu_name()));
+        ImGui::TextDisabled("%s", tr("On: each finished frame waits for the screen to show it. Off: a newer frame replaces "
+                                  "one still waiting, a little smoother. Turn it on if the picture freezes for seconds "
+                                  "while the sound and the game go on. Automatic: on for Adreno 7xx GPUs, off for the "
+                                  "others. Applies when the game starts."));
+        ImGui::Spacing();
+        ImGui::Text("%s", tr("Dynamic rendering"));  // (settings.h dyn_render, vulkan/device.c)
+        if (!vk_dyn_render_supported()) ImGui::BeginDisabled();
+        changed |= tri("dynrender", &g_settings.dyn_render, vk_dyn_render_auto());
+        if (!vk_dyn_render_supported()) ImGui::EndDisabled();
+        ImGui::TextDisabled("%s", tr("On: draws begin passes without building render-pass objects. Off: uses classic "
+                                  "render passes instead, avoiding driver memory churn on newer Mali drivers. Automatic: "
+                                  "off on ARM Mali r49 and newer, on for other drivers that support it. Applies when "
+                                  "BOTWRecompAndroid restarts."));
+        if (!vk_dyn_render_supported())
+            ImGui::TextDisabled("%s", tr("This driver doesn't support dynamic rendering: classic render passes are always used."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Driver variables"));  // (#227: g_settings.driver_env, vulkan/device.c)
         ImGui::SetNextItemWidth(-FLT_MIN);
@@ -1845,7 +1874,9 @@ static void prelaunch_tab(float sc) {
                                   "spaces. Leave it empty unless a guide for your phone tells you which ones. Applies when "
                                   "BOTWRecompAndroid restarts."));
         bool lrz_now = vk_turnip_path_setting(vk_gpu_name(), g_settings.turnip_lrz, VK_TURNIP_LRZ);
-        if (lrz_now != vk_lrz_at_start() || strcmp(g_settings.driver_env, vk_driver_env_at_start())) {  // (read once, at the start)
+        bool dr_now = vk_dyn_render_supported() && (g_settings.dyn_render < 0 ? vk_dyn_render_auto() : g_settings.dyn_render != 0);
+        if (lrz_now != vk_lrz_at_start() || dr_now != vk_dyn_render_at_start() ||
+            strcmp(g_settings.driver_env, vk_driver_env_at_start())) {  // (read once, at the start)
             ImGui::Text("%s", tr("Restart BOTWRecompAndroid to apply it."));
             ImGui::SameLine();
             ImGui::PushID("lrz");  // (the driver's own Restart now may be showing too)
@@ -2119,7 +2150,10 @@ extern "C" void launcher_run(const char *root) {
     ImGui_ImplMetal_Init(dev);
 #else
     ImGui_ImplSDL3_InitForVulkan(win);
-    vk_imgui_backend_init();
+    if (!vk_imgui_backend_init()) {
+        fprintf(stderr, "FATAL: ImGui Vulkan backend init failed\n");
+        exit(EXIT_FAILURE);
+    }
 #endif
     ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, NULL, 0);  // (controllers: launcher_pad_event)
     launcher_pad_open_all();
@@ -2825,7 +2859,8 @@ extern "C" void launcher_run(const char *root) {
                 exit(0);
             }
 #else
-            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)vk_frame_cmd());
+            if (vk_rendering_active())
+                ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)vk_frame_cmd());
             bool shot = shot_at && ++frame == shot_at;
             vk_frame_end(shot ? getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/launcher.png" : NULL);
             if (shot) exit(0);

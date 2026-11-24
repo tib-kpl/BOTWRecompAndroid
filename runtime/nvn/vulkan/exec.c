@@ -2787,8 +2787,9 @@ static void begin_pass(void) {
                     (void *)b, b ? (void *)b->image : NULL, (unsigned long long)vk_frame_counter());
         }
     }
-    vk_begin_rendering(cb, &ri, pass_color, pass_depth != VK_FORMAT_UNDEFINED ? pass_depth : pass_stencil,
-                       (VkSampleCountFlagBits)pass_samples);
+    if (!vk_begin_rendering(cb, &ri, pass_color, pass_depth != VK_FORMAT_UNDEFINED ? pass_depth : pass_stencil,
+                            (VkSampleCountFlagBits)pass_samples))
+        return;
     if (g_debug_frame) pass_dump_b = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
     pass_dump_layer = ~0u;
     if (g_debug_frame && !pass_dump_b && st.rt.depth && st.rt.depth->backend) {  // depth only (shadow maps)
@@ -3029,12 +3030,14 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = pc_layout()};
-    {   // (no dynamic rendering: against a compatible render pass, rpcompat.c)
+    if (!g_vk.dyn_render) {  // (no dynamic rendering: against a compatible render pass, rpcompat.c)
         VkRenderPass crp = vk_rp_compat(pass_ncolor, pass_color, pass_depth, pass_stencil, ms.rasterizationSamples);
-        if (crp) pi.pNext = rinfo.pNext, pi.renderPass = crp;
+        if (!crp) return VK_NULL_HANDLE;
+        pi.pNext = rinfo.pNext, pi.renderPass = crp;
     }
     VkPipeline p = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS) LOG("[vk] clear pipeline failed\n");
+    if (!p) return VK_NULL_HANDLE;
     clear_tab[slot].key = key;
     clear_tab[slot].pipe = p;
     return p;
@@ -3043,6 +3046,7 @@ static VkPipeline clear_pipeline(int index, int kind, uint32_t mask, bool depth,
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
                   uint32_t smask) {
     begin_pass();
+    if (!in_pass) return;
     for (int i = 0; i < nlclear; i++) {  // (done by the pass's load operations: begin_pass - each once)
         if (lclear[i].rec != g_cur_rec) continue;
         uint32_t asp = lclear[i].aspects;
@@ -3112,10 +3116,11 @@ static void descriptor_plan(const VkBindingInfo *binds, int count, uint32_t set,
     for (int i = 0; i < count; i++) {
         const VkBindingInfo *b = &binds[i];
         if (b->set != set) continue;
+        int ubo = b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         if ((b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) ||
-            (is_ubo(b->type) && b->binding < 17) || b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+            (ubo && b->binding < 17) || b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
             plan->regular[plan->nregular++] = (uint8_t)i;
-        else if (is_ubo(b->type) &&
+        else if (ubo &&
                  (b->binding == 18 || b->binding == 19 || b->binding == GMAP_BUFFER_INDEX || b->binding == CBPATCH_BUFFER_INDEX))
             plan->deferred[plan->ndeferred++] = (uint8_t)i;
     }
@@ -3882,6 +3887,29 @@ static int rt_kind(uint32_t f) {
     }
 }
 
+// The shader key's kind for an output into format f: rt_kind's, and on a Mali 5 / 6 (unsigned) and 7 / 8 (signed) for
+// 16 / 8-bit integer components, so the fragment shader writes the register's low bits (translate.c) as NVIDIA's
+// hardware stores them. Mali saturates a wider value instead: BOTW draws BC4 blocks through an RGBA16_UINT view with
+// bits above 16 left over (SavageWindRecomp 9950b9e: NPC speech bubbles came out 0xFFFF). Other GPUs: as before (their
+// shaders and pipeline keys unchanged). LARECOMP_RT_NARROW=0 / 1: off / on any GPU.
+static int rt_kind_key(uint32_t f) {
+    int k = rt_kind(f);
+    if (!k) return 0;
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("LARECOMP_RT_NARROW");
+        on = e ? atoi(e) != 0 : vk_driver_is_mali();
+    }
+    if (!on) return k;
+    switch (vk_format(f)) {
+    case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16A16_UINT: return 5;
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT: return 6;
+    case VK_FORMAT_R16_SINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R16G16B16A16_SINT: return 7;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_SINT: return 8;
+    default: return k;
+    }
+}
+
 // Colour target i's format as the draws write it: its view's, when the view names one. BOTW draws its BC4 noise volume
 // through a view as RGBA16_UINT (a texel a block); typed by the texture's own format (BC: float), the fragment shader
 // wrote floats to an integer target - zero blocks on Mali.
@@ -4216,9 +4244,15 @@ static void build_pipeline(void *arg) {
                                        .pViewportState = &vs, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                        .pDepthStencilState = &ds, .pColorBlendState = &cb, .pDynamicState = &dy,
                                        .layout = k->prog->layout};
-    {   // (no dynamic rendering: against a compatible render pass, rpcompat.c)
+    if (!g_vk.dyn_render) {  // (no dynamic rendering: against a compatible render pass, rpcompat.c)
         VkRenderPass crp = vk_rp_compat(k->ncolor, k->color, k->depth, k->stencil, ms.rasterizationSamples);
-        if (crp) pi.pNext = ri.pNext, pi.renderPass = crp;
+        if (!crp) {
+            pp->retry_s = g_exec_s + 5;
+            atomic_store(&pipe_oom, 1);
+            signal_build_done(&pp->state, 2);
+            return;
+        }
+        pi.pNext = ri.pNext, pi.renderPass = crp;
     }
 #ifdef __ANDROID__
     if (g_vk.exec_stats) pi.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
@@ -4738,10 +4772,11 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
                 // bookkeeping) share that pass. Those passes of a few draws run in system memory on Turnip (~0.02 ms).
                 // Only the writes before the game's last barrier (NVN's rule) left the ground dark: its draws don't
                 // fence every write they then read. Sampling a target the pass writes is a feedback loop Vulkan leaves
-                // undefined (without VK_EXT_attachment_feedback_loop_layout): on Turnip only, where it was checked
-                // frame by frame on the Adreno 830, and checked on the Odin's Adreno 740. Automatic selects a GPU
-                // profile (settings.h inplace_reads, turnip_policy.h); ARM Mali allows explicit opt-in via
-                // inplace_reads > 0 ("On") or LARECOMP_FEEDBACK_INPLACE=1; LARECOMP_FEEDBACK_COPY=1 forces copies.
+                // undefined (without VK_EXT_attachment_feedback_loop_layout): Automatic selects a GPU profile (settings.h
+                // inplace_reads, turnip_policy.h) on Turnip and is on for ARM's Mali driver (#549: a Mali-G615 r44p1 drew it right, 27.6 -> 29.7 fps and 25% -> 88% of the
+                // time at 30, the copies gone; TOTKRecompAndroid's G720 likewise), off elsewhere; settings.h
+                // inplace_reads On / Off over it, LARECOMP_FEEDBACK_INPLACE=1 / 0 too; LARECOMP_FEEDBACK_COPY=1 forces
+                // copies on any driver.
                 if (g_inplace_copy < 0) {
                     const char *fi_raw = getenv("LARECOMP_FEEDBACK_INPLACE");
                     const char *fi = (fi_raw && *fi_raw) ? fi_raw : NULL;
@@ -4754,7 +4789,7 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
                     extern bool vk_turnip_path_on(int setting);
                     int ir_set = g_settings.inplace_reads;
                     if (!fi) {
-                        bool mali_on = vk_driver_is_mali() && ir_set > 0;
+                        bool mali_on = vk_driver_is_mali() && ir_set != 0;  // (Automatic or On: #549)
                         inplace = (vk_driver_is_turnip() && vk_turnip_path_setting(g_vk.props.deviceName, ir_set, VK_TURNIP_TARGET_READS)) || mali_on;
                         if (!fb_copy)
                             why = ir_set < 0 ? "automatic" : "settings";
@@ -5234,7 +5269,9 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
             float ly = pane ? f[23]
                      : text ? (vert_plus && !fixed ? f[7] / f[15] * 360.0f / g : f[7] / f[15] * 360.0f)
                             : 0;
-            if (pane && g_cur_fs_hash == 0xd1d87dfe0c81ad63ull && lx > 290.0f && ly < -140.0f) {
+            // (the disc itself, at 510, -240: the same shader draws another piece of the group at 328, -302 - in a shrine,
+            // with no minimap, it came and went and took the group up and down with it every second, #261)
+            if (pane && g_cur_fs_hash == 0xd1d87dfe0c81ad63ull && fabsf(lx - 510.0f) < 30.0f && fabsf(ly + 240.0f) < 30.0f) {
                 extern void widescreen_minimap_seen(void);  // (the minimap's disc, at 510, -240: it's on screen)
                 widescreen_minimap_seen();
             }
@@ -6075,6 +6112,8 @@ static void gfast_finish(VkCommandBuffer cb) {
 // What a storing shader wrote goes back to guest memory once its submission is done (gcopy_retire: from vk_transient
 // before the ring reuses a chunk, and after every wait). Without this, global loads read zero: the game's text is
 // drawn by a vertex shader that reads its vertices that way (nothing of it showed).
+// (shadow, bseq: the arena's; pre: outside it, the range as it was when copied for the GPU - gcopy_back_changed)
+typedef struct { const uint8_t *src; uint64_t addr, len, seq; uint8_t *shadow; const uint64_t *bseq; uint8_t *pre; } GcBack;
 static GcBack gc_back[256];
 static int gc_nback;
 static pthread_mutex_t gc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -6111,6 +6150,48 @@ static void ga_back_block(uint8_t *g, const uint8_t *src, uint8_t *sh, uint64_t 
     }
 }
 
+// Outside the arena (on a Mali whose driver offers the host import the arena is off: device.c), what a storing shader
+// wrote went back as a whole-range memcpy of the copy it worked on, taken when the call was translated: every word the
+// game's threads wrote since - in the 4 KB margin before each bound buffer and the gaps merged in (gcopy_ranges), where
+// the game's heap keeps its block headers and free-list links - went back to its old value. #401 (Mali-G1, 0.4.10 and
+// 0.4.11, Native and Recompiled alike) hung walking the heap's free list that looped, after a few minutes of fights;
+// 0.4.10's fix was only in the arena, which never started on that phone. Now only the 8-byte words the GPU changed
+// (src against pre, the range as it was copied) go back, each by compare-and-swap expecting pre's value: a word the game
+// wrote meanwhile stays the game's (counted, the first ones logged). Unaligned ends byte by byte, the same rule.
+// LARECOMP_GCOPY_WHOLE=1: the whole range, as before.
+static void gcopy_back_changed(uint8_t *g, const uint8_t *src, const uint8_t *pre, uint64_t n) {
+    static uint64_t kept, told;
+    uint64_t k0 = kept, i = 0;
+    for (; i < n && ((uintptr_t)(g + i) & 7); i++) {  // (the head, to 8-byte alignment)
+        if (src[i] == pre[i]) continue;
+        if (g[i] == pre[i]) g[i] = src[i]; else kept++;
+    }
+    for (; i + 8 <= n; i += 8) {
+        uint64_t s, p;
+        memcpy(&s, src + i, 8);
+        memcpy(&p, pre + i, 8);
+        if (s == p) continue;  // (the GPU didn't change it: the game's, whatever it holds now)
+        uint64_t expect = p;
+        if (__atomic_compare_exchange_n((uint64_t *)(g + i), &expect, s, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) continue;
+        kept++;  // (the game wrote it since the copy: kept - the whole-range copy undid it)
+        if (told < 20) {
+            told++;
+            LOG("[vk] copy-back: a word the game wrote meanwhile kept, at heap+%llx (GPU %016llx, game %016llx, before %016llx)\n",
+                (unsigned long long)((uintptr_t)(g + i) - HEAP_BASE), (unsigned long long)s, (unsigned long long)expect,
+                (unsigned long long)p);
+        }
+    }
+    for (; i < n; i++) {  // (the tail)
+        if (src[i] == pre[i]) continue;
+        if (g[i] == pre[i]) g[i] = src[i]; else kept++;
+    }
+    static uint64_t next_log = 1;
+    if (kept != k0 && kept >= next_log) {  // (1, 2, 4, 8... so far)
+        next_log = kept * 2;
+        LOG("[vk] copy-back: %llu game writes kept so far (the whole-range copy undid them)\n", (unsigned long long)kept);
+    }
+}
+
 static void gcopy_retire(uint64_t done) {
     extern int vk_ab(const char *what);
     bool grouped = vk_ab("writeback") != 0;
@@ -6129,7 +6210,10 @@ static void gcopy_retire(uint64_t done) {
     for (int i = 0; i < gc_nback; i++) {
         if (gc_back[i].seq <= done) {
             if (!gc_back[i].shadow) {
-                memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
+                if (gc_back[i].pre) {
+                    gcopy_back_changed((uint8_t *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].pre, gc_back[i].len);
+                    free(gc_back[i].pre);
+                } else memcpy((void *)(uintptr_t)gc_back[i].addr, gc_back[i].src, gc_back[i].len);
                 continue;
             }
             // (the arena: 256 bytes at a time, what the GPU changed since the last upload - the shadow - and the CPU
@@ -6664,6 +6748,7 @@ static VkDescriptorBufferInfo gmiss_info(void) {
 
 static void gres_reset(void) {
     pthread_mutex_lock(&gc_lock);
+    for (int i = 0; i < gc_nback; i++) free(gc_back[i].pre);
     gc_nback = 0;  // (their shadow / bseq pointers and guest addresses belong to the boot being torn down)
     pthread_mutex_unlock(&gc_lock);
     for (int i = 0; i < ga_nres; i++) { free(ga_res[i].shadow); free(ga_res[i].bseq); }
@@ -6880,8 +6965,14 @@ static void gcopy_prepare(unsigned stage_mask, bool store) {
         gmap_tab[i * 4 + 0] = (uint32_t)r[i].lo;
         gmap_tab[i * 4 + 1] = (uint32_t)len;
         gmap_tab[i * 4 + 2] = (uint32_t)(off >> 2);
-        if (r[i].store && !gres_init() && gc_nback < 256)
-            gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq, NULL, NULL};
+        if (r[i].store && !gres_init() && gc_nback < 256) {
+            // (the range as it is now, kept: gcopy_retire writes back only what the GPU changed from it - #401)
+            static int whole = -1;
+            if (whole < 0) whole = getenv("LARECOMP_GCOPY_WHOLE") && atoi(getenv("LARECOMP_GCOPY_WHOLE"));
+            uint8_t *pre = whole ? NULL : malloc(len);
+            if (pre) memcpy(pre, (const uint8_t *)gc_span.ptr + off, len);
+            gc_back[gc_nback++] = (GcBack){(const uint8_t *)gc_span.ptr + off, HEAP_BASE + r[i].lo, len, seq, NULL, NULL, pre};
+        }
         off += (len + 255) & ~255ull;
     }
     pthread_mutex_unlock(&gc_lock);
@@ -7974,7 +8065,7 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.flip_y = fkey.flip_y = nvn_window_origin() == 0;
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
-    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(rt_format(i));
+    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind_key(rt_format(i));
 #ifdef __ANDROID__
     if (gmem_miss_log_on())  // (copy mode: early depth tests for the shaders that log misses - ShaderKey)
         fkey.no_ds_write = !st.rt.depth || !((st.ds[0] && st.ds[1]) || (st.ds[3] && ((st.stencil_mask[0] | st.stencil_mask[1]) & 0xFF)));
@@ -8360,6 +8451,7 @@ static void draw_(CmdRec *r, bool indexed) {
 #endif
     begin_pass();
     ninplace = 0;
+    if (!in_pass) { stat_skipped++; return; }
     VkCommandBuffer cb = vk_cmd();
 
     uint32_t mode = (uint32_t)r->x[0];
@@ -9364,12 +9456,16 @@ static VkPipeline present_pipeline_a(VkFormat fmt, bool alpha) {  // alpha: the 
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = present_layout};
-    {   // (no dynamic rendering: against a compatible render pass, rpcompat.c)
+    if (!g_vk.dyn_render) {  // (no dynamic rendering: against a compatible render pass, rpcompat.c)
         VkRenderPass crp = vk_rp_compat(1, &fmt, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, ms.rasterizationSamples);
-        if (crp) pi.pNext = ri.pNext, pi.renderPass = crp;
+        if (!crp) return VK_NULL_HANDLE;
+        pi.pNext = ri.pNext, pi.renderPass = crp;
     }
-    VkPipeline p;
-    VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
+    VkPipeline p = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS || !p) {
+        LOG("[vk] present pipeline failed\n");
+        return VK_NULL_HANDLE;
+    }
     for (int i = 0; i < 6; i++) if (!cache[i].p) { cache[i].f = fmt; cache[i].a = alpha; cache[i].p = p; break; }
     return p;
 }
@@ -9434,12 +9530,16 @@ static VkPipeline post_pipeline(const char *fs, VkFormat fmt) {
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = post_layout};
-    {   // (no dynamic rendering: against a compatible render pass, rpcompat.c)
+    if (!g_vk.dyn_render) {  // (no dynamic rendering: against a compatible render pass, rpcompat.c)
         VkRenderPass crp = vk_rp_compat(1, &fmt, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, ms.rasterizationSamples);
-        if (crp) pi.pNext = ri.pNext, pi.renderPass = crp;
+        if (!crp) return VK_NULL_HANDLE;
+        pi.pNext = ri.pNext, pi.renderPass = crp;
     }
-    VkPipeline p;
-    VK_CHECK(vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p));
+    VkPipeline p = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS || !p) {
+        LOG("[vk] post pipeline failed\n");
+        return VK_NULL_HANDLE;
+    }
     for (int i = 0; i < 16; i++) if (!cache[i].p) { cache[i].fs = fs; cache[i].f = fmt; cache[i].p = p; break; }
     return p;
 }
@@ -9510,6 +9610,7 @@ static VkImageView smaa_lut(int i) {
 static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float pc[8],
                       bool clear) {
     VkPipeline pipe = post_pipeline(fs, dst->format);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
+    if (!pipe) return;
     vk_full_barrier(cb);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(dst),
                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -9517,7 +9618,7 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {dst->width, dst->height}},
                           .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vk_begin_rendering(cb, &ri, &dst->format, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
+    if (!vk_begin_rendering(cb, &ri, &dst->format, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT)) return;
     VkDescriptorSet ds = vk_alloc_set(post_set_layout);
     VkDescriptorImageInfo ii[3];
     VkWriteDescriptorSet w[3];
@@ -9716,6 +9817,7 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     if (!b || !b->image || (b->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) return;
     VkImageView src = post_process(cb, b, pv[6] > 0 ? vw / pv[6] : vw, pv[7] > 0 ? vh / pv[7] : vh);
     VkPipeline p = present_pipeline(g_vk.sc_format);
+    if (!p || !vk_rendering_active()) return;
     VkDescriptorSet ds = vk_alloc_set(present_set_layout);
     VkDescriptorImageInfo ii = {vk_default_sampler(true), src, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
@@ -9791,24 +9893,25 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
     const VkFormat rgba8 = VK_FORMAT_R8G8B8A8_UNORM;
-    vk_begin_rendering(cb, &ri, &rgba8, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT);
     VkPipeline p = present_pipeline_a(VK_FORMAT_R8G8B8A8_UNORM, strstr(path, "pass_") != NULL);
-    VkDescriptorSet ds = vk_alloc_set(present_set_layout);
-    VkDescriptorImageInfo ii = {vk_default_sampler(true), raw_view(b), VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
-                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
-    VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
-    VkRect2D sc = {{0, 0}, {w, h}};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
-    float pv[8] = {renderer_origin_lower_left() && !strstr(path, "window") ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
-    vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
-    ss_forget();  // (static-VI pipeline and another layout: draws re-bind state)
-    vkCmdDraw(cb, 3, 1, 0, 0);
-    vk_end_rendering(cb);
+    if (p && vk_begin_rendering(cb, &ri, &rgba8, VK_FORMAT_UNDEFINED, VK_SAMPLE_COUNT_1_BIT)) {
+        VkDescriptorSet ds = vk_alloc_set(present_set_layout);
+        VkDescriptorImageInfo ii = {vk_default_sampler(true), raw_view(b), VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
+                                   .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+        vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+        VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
+        VkRect2D sc = {{0, 0}, {w, h}};
+        vkCmdSetViewport(cb, 0, 1, &vp);
+        vkCmdSetScissor(cb, 0, 1, &sc);
+        float pv[8] = {renderer_origin_lower_left() && !strstr(path, "window") ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
+        vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
+        ss_forget();  // (static-VI pipeline and another layout: draws re-bind state)
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vk_end_rendering(cb);
+    }
     vk_full_barrier(cb);
     VkSpan out = vk_readback((uint64_t)w * h * 4);
     VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};

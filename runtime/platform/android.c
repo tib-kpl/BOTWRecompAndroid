@@ -286,6 +286,15 @@ void plat_commit(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 static uint64_t wt_lo, wt_hi;
 static uint8_t *wt_state;  // per 4 KB page: 0 not tracked (counts as written), 1 read-only since asked, 2 written since
                            // (all three: tentative definitions, declared above plat_reset_guest)
+// A write fault reopens the run of still-read-only pages around the faulting one, up to wt_frun pages each way
+// (LARECOMP_WT_FAULT_RUN_KB, default 1024), in one mprotect, instead of a page (and the next) per fault. Each page made
+// writable alone in a read-only stretch splits the window's mapping in three, and the pieces never merge again: that
+// is how a Mali in the copy mode reached Android's ~65000 mappings after half an hour (#450 #496). Fewer SIGSEGV round
+// trips too. The pages of the run count as written (state 2), as the faulting one: what lies over them (vertex buffers,
+// textures) is checked again at its next use. From Swap2-Native's fault_run (Banana Native 6624426f, MIT), as in
+// TOTKRecompAndroid 4fd9095.
+static uint64_t wt_frun = 256;  // (pages)
+static uint64_t wt_n_runs, wt_n_run_pages;  // (counted for the mappings log, plat_written_pages)
 static atomic_flag wt_spin = ATOMIC_FLAG_INIT;  // (taken in the signal handler too: no mutex)
 static bool wt_broken;  // (an mprotect failed - out of memory mappings: no new pages tracked)
 static void wt_lock(void) { while (atomic_flag_test_and_set_explicit(&wt_spin, memory_order_acquire)) {} }
@@ -299,7 +308,13 @@ void plat_write_tracking_enable(uint64_t lo, uint64_t hi) {
     if (!s) return;
     wt_lo = lo; wt_hi = hi;
     wt_state = s;
-    fprintf(stderr, "[android] page write tracking on %#llx-%#llx\n", (unsigned long long)lo, (unsigned long long)hi);
+    {  // (read here, not in the fault handler: getenv isn't signal-safe)
+        const char *e = getenv("LARECOMP_WT_FAULT_RUN_KB");
+        long kb = e ? atol(e) : 1024;
+        wt_frun = kb < 4 ? 1 : (uint64_t)kb >> 2;  // (at least the next page: a store across a boundary, wt_fault)
+    }
+    fprintf(stderr, "[android] page write tracking on %#llx-%#llx (a fault reopens up to %llu KB each way)\n",
+            (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)wt_frun << 2);
 }
 
 // (signal handler) a write to a page made read-only here: true when handled
@@ -332,6 +347,18 @@ static bool wt_fault(uint64_t a) {
     else if (wt_odd_addr == a && ++wt_odd_repeats > 8) { wt_unlock(); return false; }  // (a real fault)
     else if (wt_odd_addr != a) wt_odd_addr = a, wt_odd_repeats = 0;
     if (wt_state[p] != 1) wt_odd++;
+    if (wt_state[p] == 1) {  // (the run around it, one mprotect - above wt_frun)
+        uint64_t s = p, e = p + 1;  // (e: one past the run's last page; the faulting page always, the next while read-only)
+        while (s > 0 && p - s < wt_frun && wt_state[s - 1] == 1) s--;
+        while (e < np && e - p <= wt_frun && wt_state[e] == 1) e++;
+        for (uint64_t k = s; k < e; k++) wt_state[k] = 2;  // (state first, then the protection)
+        wt_n_runs++, wt_n_run_pages += e - s;
+        if (mprotect((void *)(uintptr_t)(wt_lo + (s << 12)), (size_t)(e - s) << 12, PROT_READ | PROT_WRITE))
+            ours = wt_reopen_all();  // (out of mappings, above; else it stays a fault)
+        else ours = true;
+        wt_unlock();
+        return ours;
+    }
     // (2: another thread's fault on it got there first - writable already. The next page too: a store across the
     // boundary may report its first byte, in the page before the protected one)
     // (the next page only while still read-only: a real fault on this one must not retry forever)
@@ -426,8 +453,9 @@ int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, u
                 len += snprintf(most + len, sizeof most - len, "%s%s %d", r ? ", " : "", top[best].name, top[best].n);
                 top[best].n = -top[best].n;
             }
-            fprintf(stderr, "[android] memory mappings: %d (the game's memory %d, the GPU driver's %d, other %d; most: %s)\n", n,
-                    in_window, gpu, n - in_window - gpu, most);
+            fprintf(stderr, "[android] memory mappings: %d (the game's memory %d, the GPU driver's %d, other %d; most: %s); "
+                    "write faults %llu, reopening %llu pages\n", n, in_window, gpu, n - in_window - gpu, most,
+                    (unsigned long long)wt_n_runs, (unsigned long long)wt_n_run_pages);
             {   // whose the mallocs are (#249: [anon:scudo:secondary] grew ~2000 every 5 minutes on a Mali)
                 extern int g_cmd_shadow_pages, g_cmd_host_chunks, vk_live_counts(char *out, int cap);
                 struct mallinfo mi = mallinfo();
@@ -1063,6 +1091,11 @@ static void adpf_work_locked(int slot, uint64_t work_ns, uint64_t target_ns, uin
         report2 = (int (*)(APerformanceHintSession *, AWorkDuration *))dlsym(lib, "APerformanceHint_reportActualWorkDuration2");
         if (wd_create && wd_start && wd_total && wd_cpu && wd_gpu && report2) wd = wd_create();
         LOG("[android] performance hints with the GPU's time: %s\n", wd ? "yes" : "no (API < 35)");
+        {   // (whether the GPU's clock can be read, logged once: below)
+            void plat_gpu_clock_mhz(int *now_mhz, int *cap_mhz);
+            int g, cap;
+            plat_gpu_clock_mhz(&g, &cap);
+        }
         loaded = 1;
     }
     if (s_split < 0) s_split = getenv("LARECOMP_ADPF_SPLIT") != NULL;
@@ -1221,6 +1254,38 @@ void plat_frame_work_gpu(uint64_t cpu_ns, uint64_t gpu_ns, uint64_t target_ns, u
     adpf_work(0, cpu_ns, target_ns, gpu_ns, game_ns);
 }
 void plat_render_work(uint64_t work_ns, uint64_t target_ns) { adpf_work(1, work_ns, target_ns, 0, 0); }
+
+// The GPU's clock now and the system's cap on it, MHz, from the kernel (Adreno: kgsl-3d0 gpuclk and max_gpuclk, in Hz),
+// for the log - where the frame rate drops to 20 fps and the tries at 30 fail, whether the clock sat low (#557, #367;
+// Swap2-Native saw an Adreno 830's cap walked down by the system after a menu). -1 each when the system doesn't let
+// the app read them (adb's shell can't on the POCO F7 Ultra); the first call logs which.
+static int gpu_clock_file(const char *name) {
+    char p[96];
+    snprintf(p, sizeof p, "/sys/class/kgsl/kgsl-3d0/%s", name);
+    return open(p, O_RDONLY | O_CLOEXEC);
+}
+static int gpu_clock_read(int fd) {
+    char b[32];
+    ssize_t n = fd >= 0 ? pread(fd, b, sizeof b - 1, 0) : -1;
+    if (n <= 0) return -1;
+    b[n] = 0;
+    long long hz = atoll(b);
+    return hz > 1000000 ? (int)(hz / 1000000) : hz > 0 ? (int)hz : -1;  // (Hz; some kernels say MHz)
+}
+void plat_gpu_clock_mhz(int *now_mhz, int *cap_mhz) {
+    static int fd_now = -2, fd_cap = -2;
+    if (fd_now == -2) {
+        fd_now = gpu_clock_file("gpuclk");
+        int e1 = fd_now < 0 ? errno : 0;
+        fd_cap = gpu_clock_file("max_gpuclk");
+        int a = gpu_clock_read(fd_now), c = gpu_clock_read(fd_cap);
+        LOG("[android] GPU clock: %s%s\n", a > 0 ? "readable" : "not readable",
+            a > 0 ? "" : e1 == EACCES ? " (permission denied)" : e1 ? " (no kgsl-3d0)" : "");
+        if (a > 0) LOG("[android] GPU clock now %d MHz, cap %d MHz\n", a, c);
+    }
+    *now_mhz = gpu_clock_read(fd_now);
+    *cap_mhz = gpu_clock_read(fd_cap);
+}
 
 void plat_adpf_stats(PlatAdpfStats *out) {
     if (!out) return;

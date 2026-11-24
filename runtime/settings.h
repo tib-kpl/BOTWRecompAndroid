@@ -70,8 +70,13 @@ typedef struct {
     // 1 on, 0 off. Adreno 740 enables target reads only; the upstream 8xx profile stays unchanged.
     int gpu_heap;         // Turnip: the game's memory mapped as GPU memory (vulkan/exec.c vk_heap_place); off: CPU copies
                           // (Automatic: vulkan/turnip_policy.h and vulkan/device.c vk_turnip_heap_on, with the tested Adreno 740 exception)
-    int inplace_reads;    // Turnip (Automatic per GPU profile) and Mali (manual On): draws sample targets they write as they are (vulkan/exec.c resolve_feedback); off: copies
+    int inplace_reads;    // Turnip (Automatic on 8xx) and Mali (Automatic on, #549): draws sample targets they write as they are (vulkan/exec.c resolve_feedback); off: copies
     int turnip_lrz;       // Turnip's low-resolution Z; off: TU_DEBUG=nolrz before the driver loads (vulkan/device.c)
+    int present_fifo;     // the swapchain's present mode: 1 FIFO (each image waits for the screen), 0 MAILBOX; -1
+                          // Automatic: FIFO on Adreno 7xx (#367: the picture froze with MAILBOX while the game ran on),
+                          // MAILBOX elsewhere (vulkan/device.c present_mode; LARECOMP_VK_PRESENT over it)
+    int dyn_render;       // Vulkan dynamic rendering: 1 on, 0 classic VkRenderPass, -1 Automatic (off on ARM Mali r49+,
+                          // on elsewhere: vulkan/device.c); LARECOMP_NO_DYNAMIC_RENDERING over it; restart to apply
     bool log_file;        // the log in a file as well (platform/android.c), to send with a report
     char gpu_model[64];   // the GPU of the last start ("Adreno (TM) 830v1"): turnip_lrz's Automatic, before the driver
     bool heap_file;       // the game's memory as GPU memory through an exported file mapped at its address, where the driver
