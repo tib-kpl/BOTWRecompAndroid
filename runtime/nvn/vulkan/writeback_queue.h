@@ -8,6 +8,7 @@ typedef struct {
     uint64_t addr, len, seq;
     uint8_t *shadow;
     const uint64_t *bseq;
+    uint8_t *pre; // (outside the arena: the range as it was when copied for the GPU - gcopy_back_changed)
 } GcBack;
 
 // Arena writebacks observe the buffer at submission completion, not at each draw.
@@ -19,7 +20,7 @@ static inline int writeback_queue_add(GcBack *queue, int *count, int capacity, G
         for (int i = *count; i-- > 0;) {
             GcBack *e = &queue[i];
             if (e->seq == item.seq && e->src == item.src && e->addr == item.addr && e->len == item.len &&
-                e->shadow == item.shadow && e->bseq == item.bseq) return 2;
+                e->shadow == item.shadow && e->bseq == item.bseq && e->pre == item.pre) return 2;
         }
     }
     if (*count >= capacity) return 0;
