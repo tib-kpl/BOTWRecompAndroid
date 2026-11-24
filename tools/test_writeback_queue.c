@@ -21,13 +21,13 @@ int main(void) {
     };
     for (size_t i = 0; i < sizeof variants / sizeof variants[0]; i++)
         assert(writeback_queue_add(q, &n, 16, variants[i], true) == 1);
-    assert(writeback_queue_add(q, &n, 16, variants[6], true) == 1);
+    assert(writeback_queue_add(q, &n, 16, variants[7], true) == 1);
     assert(writeback_queue_add(q, &n, 16, base, false) == 1);
-    assert(n == 10);
+    assert(n == 11);
     // A duplicate still succeeds when full; a distinct request cannot overwrite existing entries.
     assert(writeback_queue_add(q, &n, n, base, true) == 2);
     GcBack next = base; next.seq++;
     assert(writeback_queue_add(q, &n, n, next, false) == 0);
-    assert(n == 10 && q[0].seq == 5 && q[1].seq == 6);
+    assert(n == 11 && q[0].seq == 5 && q[1].seq == 6);
     puts("Only identical resident writebacks from the same submission coalesce");
 }
