@@ -1,3 +1,11 @@
+# Normalize all text files to LF in the repository; never store CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.jar binary
+*.ttf binary
+*.lib binary
 # Keep Android build scripts compatible with Bash on development hosts.
 *.sh text eol=lf
 *.py text eol=lf

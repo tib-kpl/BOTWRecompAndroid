@@ -1815,8 +1815,8 @@ static void prelaunch_tab(float sc) {
                 : "These options are for Turnip: the driver in use takes the safer paths anyway."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Game memory on the GPU (Turnip)"));
-        changed |= tri("heap", &g_settings.gpu_heap, VK_TURNIP_HEAP);
-        ImGui::TextDisabled("%s", tr("On maps the game's memory directly for GPU access. Off uses CPU copies. Direct mapping can be slower on some GPUs. Applies when the game starts."));
+        changed |= tri("heap", &g_settings.gpu_heap, VK_TURNIP_HEAP);
+        ImGui::TextDisabled("%s", tr("On maps the game's memory directly for GPU access. Off uses CPU copies. Direct mapping can be slower on some GPUs. Applies when the game starts."));
         if (vk_driver_is_turnip() && vk_turnip_heap_ram_off())  // (vulkan/device.c: #520)
             ImGui::TextDisabled("%s", tr("Automatic is off on this phone: an Adreno 6xx with 8 GB of RAM or less runs out of "
                                       "GPU memory with it after a few minutes, and the game closes."));
@@ -1829,9 +1829,9 @@ static void prelaunch_tab(float sc) {
         if (!vk_heap_file_possible())
             ImGui::TextDisabled("%s", tr("This driver can't export its memory: the option does nothing here."));
         ImGui::Spacing();
-        ImGui::Text("%s", tr("Draw-target reads in place"));
-        changed |= tri("inplace", &g_settings.inplace_reads, VK_TURNIP_TARGET_READS);
-        ImGui::TextDisabled("%s", tr("On lets decals and effects read the target they draw into. Off uses intermediate copies for compatibility. Applies when the game starts."));
+        ImGui::Text("%s", tr("Draw-target reads in place"));
+        changed |= tri("inplace", &g_settings.inplace_reads, VK_TURNIP_TARGET_READS);
+        ImGui::TextDisabled("%s", tr("On lets decals and effects read the target they draw into. Off uses intermediate copies for compatibility. Applies when the game starts."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Turnip low-resolution Z (LRZ)"));
         changed |= tri("lrz", &g_settings.turnip_lrz, VK_TURNIP_LRZ);

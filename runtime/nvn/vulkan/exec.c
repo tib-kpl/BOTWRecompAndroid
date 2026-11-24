@@ -4750,18 +4750,18 @@ static void resolve_feedback(Prog *pr, uint32_t draw_written) {
                     const char *why = fb_copy ? "LARECOMP_FEEDBACK_COPY" : fi ? "LARECOMP_FEEDBACK_INPLACE" : "automatic";
 #ifdef __ANDROID__
                     extern bool vk_driver_is_turnip(void);
-                    extern bool vk_driver_is_mali(void);
-                    extern bool vk_turnip_path_on(int setting);
-                    int ir_set = g_settings.inplace_reads;
-                    if (!fi) {
-                        bool mali_on = vk_driver_is_mali() && ir_set > 0;
-                        inplace = (vk_driver_is_turnip() && vk_turnip_path_setting(g_vk.props.deviceName, ir_set, VK_TURNIP_TARGET_READS)) || mali_on;
-                        if (!fb_copy)
-                            why = ir_set < 0 ? "automatic" : "settings";
-                    }
-#endif
-                    g_inplace_copy = fb_copy || !inplace;
-                    LOG("[vk] targets a draw writes, sampled by it: %s (%s)\n", g_inplace_copy ? "copies" : "in place", why);
+                    extern bool vk_driver_is_mali(void);
+                    extern bool vk_turnip_path_on(int setting);
+                    int ir_set = g_settings.inplace_reads;
+                    if (!fi) {
+                        bool mali_on = vk_driver_is_mali() && ir_set > 0;
+                        inplace = (vk_driver_is_turnip() && vk_turnip_path_setting(g_vk.props.deviceName, ir_set, VK_TURNIP_TARGET_READS)) || mali_on;
+                        if (!fb_copy)
+                            why = ir_set < 0 ? "automatic" : "settings";
+                    }
+#endif
+                    g_inplace_copy = fb_copy || !inplace;
+                    LOG("[vk] targets a draw writes, sampled by it: %s (%s)\n", g_inplace_copy ? "copies" : "in place", why);
                 }
                 extern int vk_ab(const char *what);
                 if (!g_inplace_copy && bit && bit < 1u << 8 && AB("copy") != 1) {
@@ -5745,14 +5745,14 @@ bool vk_heap_place(uint64_t size) {
         LOG("[vk] game memory through a shared file: on in the settings, but this driver can't export its memory (no "
             "VK_KHR_external_memory_fd) - shader global memory through CPU copies\n");
     if ((!g_vk.map_placed && !memfd) || getenv("LARECOMP_VK_NO_PLACED")) return NOT_PLACED();
-    extern bool vk_turnip_heap_on(int setting);
-    if (memfd ? g_settings.gpu_heap == 0 : !vk_turnip_heap_on(g_settings.gpu_heap)) {
-        // (the start screen's Driver compatibility: Automatic is on wherever Turnip places it - vulkan/device.c)
-        extern bool vk_adreno_8xx(const char *name), vk_driver_is_turnip(void);
-        LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
-            g_settings.gpu_heap >= 0 ? "settings" : !vk_driver_is_turnip() ? "automatic: not Turnip"
+    extern bool vk_turnip_heap_on(int setting);
+    if (memfd ? g_settings.gpu_heap == 0 : !vk_turnip_heap_on(g_settings.gpu_heap)) {
+        // (the start screen's Driver compatibility: Automatic is on wherever Turnip places it - vulkan/device.c)
+        extern bool vk_adreno_8xx(const char *name), vk_driver_is_turnip(void);
+        LOG("[vk] guest heap as GPU memory: off (%s) - shader global memory through CPU copies\n",
+            g_settings.gpu_heap >= 0 ? "settings" : !vk_driver_is_turnip() ? "automatic: not Turnip"
             : vk_adreno_8xx(g_vk.props.deviceName) ? "automatic"
-            : vk_turnip_gpu_model(g_vk.props.deviceName) == 740 ? "automatic: the Adreno 740 profile" : "automatic: an Adreno 6xx with 8 GB of RAM or less, #520");
+            : vk_turnip_gpu_model(g_vk.props.deviceName) == 740 ? "automatic: the Adreno 740 profile" : "automatic: an Adreno 6xx with 8 GB of RAM or less, #520");
         return NOT_PLACED();
     }
     {   // The placed heap is committed at once (~3.1 GB for BOTW), where CPU copies commit only the pages the game
