@@ -5,18 +5,19 @@
 int main(void) {
     GcBack q[16]; int n = 0;
     uint8_t gpu[512], shadow[512], other[512]; uint64_t seq[2];
-    GcBack base = {gpu, 0x1000, 256, 5, shadow, seq};
+    GcBack base = {gpu, 0x1000, 256, 5, shadow, seq, NULL};
     assert(writeback_queue_add(q, &n, 16, base, true) == 1);
     for (int i = 0; i < 1000; i++) assert(writeback_queue_add(q, &n, 16, base, true) == 2);
     assert(n == 1);
     GcBack variants[] = {
-        {gpu, 0x1000, 256, 6, shadow, seq}, // Different submission.
-        {gpu + 256, 0x1000, 256, 5, shadow, seq}, // Different GPU allocation/offset.
-        {gpu, 0x1100, 256, 5, shadow, seq}, // Different guest destination.
-        {gpu, 0x1000, 512, 5, shadow, seq}, // Different extent.
-        {gpu, 0x1000, 256, 5, other, seq}, // Resident merge replaced the shadow.
-        {gpu, 0x1000, 256, 5, shadow, seq + 1}, // Different ownership metadata.
-        {gpu, 0x1000, 256, 5, NULL, NULL}, // Unshadowed copies preserve ordering.
+        {gpu, 0x1000, 256, 6, shadow, seq, NULL}, // Different submission.
+        {gpu + 256, 0x1000, 256, 5, shadow, seq, NULL}, // Different GPU allocation/offset.
+        {gpu, 0x1100, 256, 5, shadow, seq, NULL}, // Different guest destination.
+        {gpu, 0x1000, 512, 5, shadow, seq, NULL}, // Different extent.
+        {gpu, 0x1000, 256, 5, other, seq, NULL}, // Resident merge replaced the shadow.
+        {gpu, 0x1000, 256, 5, shadow, seq + 1, NULL}, // Different ownership metadata.
+        {gpu, 0x1000, 256, 5, shadow, seq, other}, // Different pre-copy snapshot.
+        {gpu, 0x1000, 256, 5, NULL, NULL, NULL}, // Unshadowed copies preserve ordering.
     };
     for (size_t i = 0; i < sizeof variants / sizeof variants[0]; i++)
         assert(writeback_queue_add(q, &n, 16, variants[i], true) == 1);
