@@ -15,6 +15,7 @@ static int between_fps;
 int vk_between_fps(void) { return between_fps; }
 double vk_frame_work_ms(void) { return -1; }  // (no measured frame work: the interval escape stays off)
 uint64_t plat_now_ns(void) { return now; }
+void plat_gpu_clock_mhz(int *now_mhz, int *cap_mhz) { *now_mhz = 0; *cap_mhz = 0; }
 
 int main(int argc, char **argv) {
     assert(argc == 3);
