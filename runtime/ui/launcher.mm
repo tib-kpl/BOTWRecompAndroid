@@ -1804,16 +1804,19 @@ static void prelaunch_tab(float sc) {
     {   // (runtime/settings.h gpu_heap / inplace_reads / turnip_lrz / log_file: for GPUs where a Turnip path draws wrong;
         // LASRecompAndroid's, with BOTW's in-place reads of draw targets)
         bool changed = false;
-        auto tri = [&](const char *id, int *v, VkTurnipPath path) {  // Automatic / On / Off: -1 / 1 / 0
+        auto tri_auto = [&](const char *id, int *v, bool auto_on) {  // Automatic / On / Off: -1 / 1 / 0
             bool ch = false;
             ImGui::PushID(id);
-            ch |= ImGui::RadioButton(tr(vk_turnip_path_auto(vk_gpu_name(), path) ? "Automatic (on for this GPU)" : "Automatic (off for this GPU)"), v, -1);
+            ch |= ImGui::RadioButton(tr(auto_on ? "Automatic (on for this GPU)" : "Automatic (off for this GPU)"), v, -1);
             ImGui::SameLine();
             ch |= ImGui::RadioButton(tr("On"), v, 1);
             ImGui::SameLine();
             ch |= ImGui::RadioButton(tr("Off"), v, 0);
             ImGui::PopID();
             return ch;
+        };
+        auto tri = [&](const char *id, int *v, VkTurnipPath path) {
+            return tri_auto(id, v, vk_turnip_path_auto(vk_gpu_name(), path));
         };
         ImGui::PushTextWrapPos(0);
         ImGui::TextDisabled("%s", tr("Automatic uses a separate compatibility profile for each option and GPU. On and Off override that profile."));
@@ -1839,7 +1842,8 @@ static void prelaunch_tab(float sc) {
             ImGui::TextDisabled("%s", tr("This driver can't export its memory: the option does nothing here."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Draw-target reads in place"));
-        changed |= tri("inplace", &g_settings.inplace_reads, VK_TURNIP_TARGET_READS);
+        changed |= tri_auto("inplace", &g_settings.inplace_reads,
+                             vk_turnip_path_auto(vk_gpu_name(), VK_TURNIP_TARGET_READS) || vk_driver_is_mali()); // (Mali: #549)
 ImGui::TextDisabled("%s", tr("On: decals and effects read the image they draw on as it is, the fastest way. Off: a copy "
                                   "of it each time, slower (fewer fps) but by the Vulkan rules. Automatic: on for Adreno 8xx "
                                   "and Mali GPUs, off for the others. Applies when the game starts."));
@@ -1849,7 +1853,7 @@ ImGui::TextDisabled("%s", tr("On: decals and effects read the image they draw on
         ImGui::TextDisabled("%s", tr("Turnip's early depth test. Off can fix missing or broken drawing on some GPUs. Applies after restarting BOTWRecompAndroid."));
         ImGui::Spacing();
         ImGui::Text("%s", tr("Wait for the screen (FIFO)"));  // (settings.h present_fifo, vulkan/device.c present_mode)
-        changed |= tri("fifo", &g_settings.present_fifo, vk_adreno_7xx(vk_gpu_name()));
+        changed |= tri_auto("fifo", &g_settings.present_fifo, vk_adreno_7xx(vk_gpu_name()));
         ImGui::TextDisabled("%s", tr("On: each finished frame waits for the screen to show it. Off: a newer frame replaces "
                                   "one still waiting, a little smoother. Turn it on if the picture freezes for seconds "
                                   "while the sound and the game go on. Automatic: on for Adreno 7xx GPUs, off for the "
@@ -1857,7 +1861,7 @@ ImGui::TextDisabled("%s", tr("On: decals and effects read the image they draw on
         ImGui::Spacing();
         ImGui::Text("%s", tr("Dynamic rendering"));  // (settings.h dyn_render, vulkan/device.c)
         if (!vk_dyn_render_supported()) ImGui::BeginDisabled();
-        changed |= tri("dynrender", &g_settings.dyn_render, vk_dyn_render_auto());
+        changed |= tri_auto("dynrender", &g_settings.dyn_render, vk_dyn_render_auto());
         if (!vk_dyn_render_supported()) ImGui::EndDisabled();
         ImGui::TextDisabled("%s", tr("On: draws begin passes without building render-pass objects. Off: uses classic "
                                   "render passes instead, avoiding driver memory churn on newer Mali drivers. Automatic: "
