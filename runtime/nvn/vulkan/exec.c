@@ -185,13 +185,22 @@ static void done_note(uint64_t v) {
 // then read without asking the driver. On Turnip over KGSL (Galaxy Tab A9+) reading the timeline's value waited in
 // the kernel until the GPU had finished what was submitted - the render thread stopped after every submission until
 // the GPU caught up, so the two never worked at the same time (half of its time; 2026-11-13). Default: on with Turnip
-// (any phone: its timeline is emulated over KGSL) and on low RAM (exec.c vk_low_ram); LARECOMP_SEQ_THREAD=1 / 0.
+// (any phone: its timeline is emulated over KGSL), on low RAM (exec.c vk_low_ram) and on Mali (device.c
+// vk_driver_is_mali: the same stall there, below); LARECOMP_SEQ_THREAD=1 / 0.
 // It waits on a fence per submission (SEQ_FENCES of them, reused in turn), not on the timeline: Mesa emulates the
 // timeline there (vk_sync_timeline) behind one mutex, and its waits held it - every vkQueueSubmit2 (which signals the
 // timeline) stopped on that mutex until the GPU had finished, ~13% of the render thread's time and ~15 ms of an idle
 // GPU inside each world frame (simpleperf --trace-offcpu, 2026-11-14). The others' waits (vk_wait_seq) go by what it
 // found (done_cv), so no thread but the submitting one touches the timeline. LARECOMP_SEQ_FENCES=0: the timeline, as
 // before.
+// Mali (ARM's own driver, not Mesa): the timeline is the driver's, but reading its value blocks in the kernel until
+// the GPU has caught up with everything submitted - the same stall the Turnip-on-KGSL case above was made for, and
+// the waiter thread with its per-submission fences is the same fix. Without it, on a Helio G95's Mali-G76 (Redmi Note
+// 9 Pro, 8 GB) every read of vk_completed_seq - vk_collect_dead, the ring, the caches, once a submission or more -
+// stopped the render thread until the GPU finished: the render thread spent half of each world frame waiting
+// (simpleperf --trace-offcpu, 2026-11-15), where it is a few percent on Turnip with the fences. On with the fences:
+// nothing else reads the timeline, so it isn't signalled (LARECOMP_SEQ_NO_TIMELINE, above), and the others' waits go
+// by what the waiter saw.
 #define SEQ_FENCES 64
 static int seq_thread = -1;
 static bool seq_thread_broken, seq_fences_on;
@@ -234,7 +243,8 @@ static bool seq_thread_on(void) {
         extern bool vk_low_ram(void);
         const char *e = getenv("LARECOMP_SEQ_THREAD");
         extern bool vk_driver_is_turnip(void);  // (device.c: Mesa's emulated timeline, KGSL - every Turnip phone)
-        seq_thread = e ? atoi(e) != 0 : vk_low_ram() || vk_driver_is_turnip();
+        extern bool vk_driver_is_mali(void);    // (device.c: its timeline value read blocks in the kernel - same stall)
+        seq_thread = e ? atoi(e) != 0 : vk_low_ram() || vk_driver_is_turnip() || vk_driver_is_mali();
         if (seq_thread) {
             const char *f = getenv("LARECOMP_SEQ_FENCES");
             seq_fences_on = !f || atoi(f) != 0;
@@ -2824,15 +2834,8 @@ static void pass_size(int *w, int *h) {
 
 static bool g_wide_backdrop;  // (this draw is a layout pane showing a target widened to the window: cbuf_info, scissor_rect)
 static bool g_off_layout;  // (this draw is a menu layout's pane placed past the 16:9 screen's sides: scissor_rect)
-// The map is open: its terrain pane (cb3-hashed fs e91b1fb6, 1280x608, full-width) was drawn this frame or the one
-// before, with a game menu up. Its layout then spreads out with its stretched terrain (cbuf_info) and isn't clipped to
-// the 16:9 part (scissor_rect).
-static uint64_t g_map_frame;
-static bool map_open(float g) {
-    extern bool widescreen_in_menu(void);
-    return (g > 1.001f || (g >= 9.0f / 16.0f && g < 0.999f)) && g_map_frame && renderer_present_count() - g_map_frame <= 2 &&
-           widescreen_in_menu();
-}
+extern void widescreen_map_seen(void);
+extern bool widescreen_map_open(float wide);
 
 static VkRect2D scissor_rect(void) {
     int w, h;
@@ -2866,11 +2869,11 @@ static VkRect2D scissor_rect(void) {
             float k = t0->width / 1280.0f, g = widescreen_factor();
             x += (int)lroundf(widescreen_hud_shift(((float)x + sw * 0.5f - t0->width * 0.5f) / k,
                                                    (t0->height * 0.5f - (y + sh * 0.5f)) / (t0->height / 720.0f)) * k);
-            if (map_open(g)) {  // (the map's clips spread out with its stretched terrain: width for wide, height for tall)
+            if (widescreen_map_open(g)) {  // (the map's clips spread out with its stretched terrain: width for wide, height for tall)
                 if (g > 1.001f) {
                     float c = (x + sw * 0.5f - t0->width * 0.5f) * g;
                     sw = (int)lroundf(sw * g), x = (int)lroundf(t0->width * 0.5f + c - sw * 0.5f);
-                } else if (g < 0.999f) {
+                } else if (g < 0.999f && !g_settings.center_world_map) {
                     float c = (y + sh * 0.5f - t0->height * 0.5f) / g;
                     sh = (int)lroundf(sh / g), y = (int)lroundf(t0->height * 0.5f + c - sh * 0.5f);
                 }
@@ -2902,7 +2905,7 @@ static VkRect2D scissor_rect(void) {
         extern float widescreen_factor(void);
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
         float g = widescreen_factor();
-        if (t0 && g_off_layout && g > 1.001f && widescreen_ui_centred() && widescreen_in_menu() && !map_open(g) &&
+        if (t0 && g_off_layout && g > 1.001f && widescreen_ui_centred() && widescreen_in_menu() && !widescreen_map_open(g) &&
             vk_texture_scale_group(t0) == RS_OUT) {
             int b0 = (int)floorf(w * (1 - 1 / g) * 0.5f), b1 = w - b0;
             if (x < b0) { sw -= b0 - x; x = b0; }
@@ -5291,7 +5294,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                     widescreen_scope_seen();
                 }
                 if (pane && g_cur_fs_hash == 0xe91b1fb6e1eb920bull && full_width_pane(f) && widescreen_in_menu())
-                    g_map_frame = renderer_present_count();  // (the map's terrain)
+                    widescreen_map_seen();  // (the map's terrain)
                 bool cropped = widescreen_cropped();
                 if (!cropped && widescreen_in_menu() && pane && g_cur_fs_hash == 0xe91b1fb6e1eb920bull && full_width_pane(f)) {
                     // Stretch map terrain vertically to fill the narrow display (matching map_open markers/headers).
@@ -5312,7 +5315,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                     // Full-width edge bands (e.g. loading screen 1280x275 cream header) extend their outer screen-touching
                     // edge to +-360/g while pinning their interior seam in place.
                     float y_lo = 0, y_hi = 0, e_need = 0;
-                    bool band_cand = !cropped && !map_open(g) && pane && (adapted || fixed) && full_width_pane(f) &&
+                    bool band_cand = !cropped && !widescreen_map_open(g) && pane && (adapted || fixed) && full_width_pane(f) &&
                                      fabsf(f[20]) < 0.01f && f[21] > 0.01f && fabsf(f[22]) < 0.01f &&
                                      f[133] >= 16.0f && f[133] < 719.5f;
                     if (band_cand) {
@@ -5355,7 +5358,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                             }
                             return ubo_span(c, size);
                         }
-                    } else if (!cropped && map_open(g) && ((pane && (adapted || fixed)) || text)) {
+                    } else if (!cropped && widescreen_map_open(g) && ((pane && (adapted || fixed)) || text)) {
                         // Spread map panes/markers/texts vertically to match full-height terrain, keeping full-width
                         // map headers/bars (height >= 607.5 or y beyond +-360.5) stretched with the terrain.
                         panefix_log(pane ? "tall-map-pane" : "tall-map-text", f);
@@ -5459,9 +5462,9 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 // the sides, 2026-10-28), at any scale (the Game Over fade animates it)
                 VkSpan c = vk_transient_copy(f, size, 256);
                 for (int i = 16; i < 20; i++) ((float *)c.ptr)[i] *= g;
-                if (g_cur_fs_hash == 0xe91b1fb6e1eb920bull) g_map_frame = renderer_present_count();  // (the map's terrain)
+                if (g_cur_fs_hash == 0xe91b1fb6e1eb920bull) widescreen_map_seen();  // (the map's terrain)
                 return ubo_span(c, size);
-            } else if (map_open(g) && size >= 0x230 && f[15] == 0 && f[0] > 0 &&
+            } else if (widescreen_map_open(g) && size >= 0x230 && f[15] == 0 && f[0] > 0 &&
                        (fabsf(fabsf(f[5] / f[0]) - 16.0f / 9.0f * g) < 0.01f || fabsf(fabsf(f[5] / f[0]) - 16.0f / 9.0f) < 0.01f)) {
                 // The map (map_open): its terrain is stretched g times across the wide screen (full-width above), so
                 // everything placed on it - markers, names, the frame's pieces - goes g times farther from the middle,
@@ -5479,7 +5482,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 if (full_width_window(f) || past) for (int i = 16; i < 20; i++) m[i] *= g;
                 else m[19] = fabsf(f[19]) <= 640.0f ? f[19] * g : f[19] + copysignf(640.0f * (g - 1), f[19]);
                 return ubo_span(c, size);
-            } else if (map_open(g) && f[15] > 1.0f && f[0] > 0) {  // (the map's texts: their origin, the same)
+            } else if (widescreen_map_open(g) && f[15] > 1.0f && f[0] > 0) {  // (the map's texts: their origin, the same)
                 VkSpan c = vk_transient_copy(f, size, 256);
                 float *m = (float *)c.ptr;
                 if (fabsf(fabsf(f[5] / f[0]) - 16.0f / 9.0f) < 0.01f) for (int i = 0; i < 3; i++) m[i] /= g;  // (narrowed, its

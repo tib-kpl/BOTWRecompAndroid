@@ -75,6 +75,7 @@ extern "C" bool touch_controls_visible(void);  // ui/touch_controls.mm
 extern "C" void touch_controls_draw(ImVec2 display, ImFont *font);
 #endif
 static void set_open(bool open);
+extern "C" int nfp_reader_state(void);  // (services/nfp.c: the game looks for an amiibo)
 extern "C" void menu_test_open(void) {
     set_open(true);
     if (getenv("LARECOMP_MENU_TAB")) { extern int g_tab_request_ext; g_tab_request_ext = atoi(getenv("LARECOMP_MENU_TAB")); }
@@ -96,6 +97,8 @@ static void set_open(bool open) {
         static bool opened;  // the controller's cursor: the first tab (Controls) the first time this session, later the
         menu_tabs_focus(!opened);  // selected one
         opened = true;
+        extern int g_tab_request_ext;
+        if (nfp_reader_state() == 1) g_tab_request_ext = 8;  // (the game looks for an amiibo: Controls, amiibo on top)
     }
     else { settings_save(); osk_cancel(); g_text_busy = false; }
 }
@@ -510,7 +513,14 @@ static bool choice(const char *label, int *value, const char *const *names, int 
     ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.45f);
     bool changed = false;
     ImGui::SetNextItemWidth(reserve > 0 ? -reserve : -1);
-    if (ImGui::BeginCombo("##c", tr(names[*value]))) {
+    // (the open list: taller, its scrollbar wide and its grab long enough for a finger, and it scrolls with a finger -
+    // the amiibo list had only a thin scrollbar to drag)
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, ImGui::GetFontSize() * 0.9f);
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, ImGui::GetFontSize() * 2.0f);
+    bool open_list = ImGui::BeginCombo("##c", tr(names[*value]), ImGuiComboFlags_HeightLarge);
+    ImGui::PopStyleVar(2);
+    if (open_list) {
+        ui_touch_scroll();
         for (int i = 0; i < n; i++) {
             ImGui::PushID(i);  // (the shown names may repeat once translated)
             if (ImGui::Selectable(tr(names[i]), i == *value)) { *value = i; changed = true; }
@@ -554,6 +564,9 @@ static void tab_display(void) {
                "edges (menus stay in the middle). Game versions 1.8.2 and 1.9.0 (1.0.0 and 1.6.0 keep 16:9 with bars); a change applies "
                "when the game starts again (Quit -> Return to start, then Play). Original 16:9: the game's own framing, "
                "with bars.");
+    if (g_settings.aspect == ASPECT_UNLOCKED)
+        opt_toggle("Center world map at 16:9", &g_settings.center_world_map, false,
+                   "On narrow landscape screens, show the map with its original proportions and bars above and below.");
 #ifndef __ANDROID__  // (Android: always the whole screen)
     bool fs = g_settings.fullscreen;
     if (opt_toggle("Fullscreen", &fs, false, "Fills the screen. Also: F11, Alt+Enter or Cmd+Ctrl+F.")) {
@@ -565,8 +578,16 @@ static void tab_display(void) {
     opt_toggle("Show FPS", &g_settings.show_fps, false,
                "Shows the performance overlay: the frame rate and how the phone is doing. Drag it with a finger to move it; "
                "double-tap it to switch compact / detailed.");
+    // (folded by default: nine rows under Show FPS crowded the page. The what-it-shows rows only for the detailed
+    // style - the compact line always shows the same five readings)
+    static bool overlay_open;
     if (g_settings.show_fps) {  // (ui/perf_overlay.mm; LASRecompAndroid's, with Swap2-Native's overlay's settings)
         opt_indent(1);
+        if (opt_action("Overlay settings", overlay_open ? "Hide" : "Show",
+                       "The overlay's style, size and opacity, and what the detailed style shows."))
+            overlay_open = !overlay_open;
+    }
+    if (g_settings.show_fps && overlay_open) {
         static const char *styles[] = {"Detailed", "Compact"};
         opt_choice("Overlay style", &g_settings.overlay_style, styles, 2, 0,
                    "Detailed: the GPU, frame rate and frame time with 48 s charts, CPU clock caps, temperatures, battery, "
@@ -587,13 +608,14 @@ static void tab_display(void) {
             {OVERLAY_BATTERY, "Battery and temperatures", "The SoC's and the battery's temperature, and the battery's level."},
             {OVERLAY_MEMORY, "Memory", "The game's memory (and its chart) and the phone's free memory."},
         };
-        for (const auto &it : items) {
-            bool on = (g_settings.overlay_items & it.bit) != 0;
-            if (opt_toggle(it.label, &on, true, it.desc))
-                g_settings.overlay_items = on ? g_settings.overlay_items | it.bit : g_settings.overlay_items & ~it.bit;
-        }
-        opt_indent(-1);
+        if (g_settings.overlay_style == 0)
+            for (const auto &it : items) {
+                bool on = (g_settings.overlay_items & it.bit) != 0;
+                if (opt_toggle(it.label, &on, true, it.desc))
+                    g_settings.overlay_items = on ? g_settings.overlay_items | it.bit : g_settings.overlay_items & ~it.bit;
+            }
     }
+    if (g_settings.show_fps) opt_indent(-1);
 #else
     opt_toggle("Show FPS", &g_settings.show_fps, false, "Shows the frame rate in the top right corner.");
 #endif
@@ -890,7 +912,41 @@ static void tab_quit(float scale, bool in_game) {
     opt_end();
 }
 
+// amiibo (services/nfp.c): a figure picked here is "touched" on the game's virtual reader. At the top of Controls while
+// the game looks for one (the amiibo rune: a second tap on the touch controls' power opens the menu here), lower down
+// otherwise.
+extern "C" int nfp_amiibo_count(void);
+extern "C" const char *nfp_amiibo_name(int i);
+extern "C" int nfp_reader_state(void);
+extern "C" void nfp_touch(int i);
+extern "C" void nfp_lift(void);
+static void set_open(bool open);
+static void amiibo_section(int state) {
+    static int pick;
+    static std::vector<const char *> names;
+    if (names.empty())
+        for (int i = 0; i < nfp_amiibo_count(); i++) names.push_back(nfp_amiibo_name(i));
+    header("amiibo");
+    choice("amiibo", &pick, names.data(), (int)names.size());
+    hint(state == 1 ? "The game is looking for an amiibo: pick one and touch it."
+         : state == 2 ? "An amiibo is on the reader."
+                      : "Use the amiibo rune in the game and place it, then open this menu and touch an amiibo here. "
+                        "Each figure gives its items once a day, as on the Switch.");
+    // (a big button, the page's width: a finger's)
+    if (state == 1 && ImGui::Button(tr("Touch the amiibo"), ImVec2(-FLT_MIN, ImGui::GetFontSize() * 2.6f))) {
+        nfp_touch(pick);
+        set_open(false);  // (back to the game, which reads it)
+    }
+    if (state == 2) {
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Lift the amiibo"))) nfp_lift();
+    }
+    ImGui::Spacing();
+}
+
 static void tab_about(void) {
+    int nfp_state = nfp_reader_state();
+    if (nfp_state) amiibo_section(nfp_state);
     header("System language");
     {
         // what the game is told the console's language is: its text follows this (runtime/settings.c)
@@ -918,7 +974,8 @@ static void tab_about(void) {
     {
         static const char *const gyro_axes[] = {"As reported", "Swap left-right and up-down", "Swap up-down and tilt",
                                                 "Swap left-right and tilt"};
-        if (choice("Controller gyro axes", &g_settings.pad_gyro_axes, gyro_axes, 4)) settings_save();  // (hle/motion.c, #511 #521)
+        int axes = g_settings.pad_gyro_axes;
+        if (choice("Controller gyro axes", &axes, gyro_axes, 4)) settings_set_pad_gyro_axes(axes);  // (hle/motion.c, #511 #521)
     }
     hint("If aiming with the controller's gyroscope moves the wrong way (left-right becomes up-down), try another order.");
     if (toggle("Phone motion like the Switch's screen", &g_settings.motion_flat)) settings_save();  // (hle/motion.c, #211 #247)
@@ -939,6 +996,7 @@ static void tab_about(void) {
     }
 #endif
     ImGui::Spacing();
+    if (!nfp_state) amiibo_section(0);
     controls_bindings_draw(ImGui::GetFontSize() / 34);
     ImGui::Spacing();
     header("Menu");
@@ -1313,6 +1371,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(18 * scale, 18 * scale));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(14 * scale, 14 * scale));
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 22 * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 48 * scale);  // (the scrollbar's grab: long enough for a finger on long pages)
     float bottom = 84 * scale, height = fmaxf(1, ImGui::GetContentRegionAvail().y - bottom);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
     ImGui::BeginChild("##touchpage", ImVec2(0, height), ImGuiChildFlags_None);
@@ -1358,7 +1417,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
     }
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
     g_tab_request = -2;
     opt_focus_first(false);
     return;
@@ -1480,6 +1539,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     const double tw = target_w, th = target_h;
 #endif
     bool open = g_open.load();
+    // (the game looks for an amiibo - the amiibo rune out: the menu isn't opened by itself, it covered the rune's aiming;
+    // a second tap on the power - ui/touch_controls.mm - opens it on the amiibo picker)
     bool kbd = g_kbd.load() == 1;
 #ifdef __ANDROID__
     bool touch = touch_controls_visible();
@@ -1555,7 +1616,6 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         touch_controls_draw(io.DisplaySize, g_font_big ? g_font_big : ImGui::GetFont());
     }
 #endif
-
     if (open) {
         // dim the game behind the menu
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 110));
